@@ -679,8 +679,19 @@ export class PBoss extends EventEmitter<PBossEvents> {
    */
   async launchDaemon(): Promise<void> {
     await ensureDirs();
-    const daemonScript = join(import.meta.dir, "daemon.ts");
-    const bunPath = Bun.which("bun") || "bun";
+    const bunPath = Bun.which("bun");
+    let spawnArgs: string[];
+
+    if ((Bun as any).isStandaloneExecutable || !bunPath) {
+      spawnArgs = [process.execPath, "__daemon"];
+    } else {
+      const daemonScript = join(import.meta.dir, "daemon.ts");
+      if (existsSync(daemonScript)) {
+        spawnArgs = [bunPath, "run", daemonScript];
+      } else {
+        spawnArgs = [process.execPath, "__daemon"];
+      }
+    }
 
     // Open log files for daemon stdout/stderr
     const outLog = Bun.file(DAEMON_OUT_LOG_FILE);
@@ -689,7 +700,7 @@ export class PBoss extends EventEmitter<PBossEvents> {
     if (!(await outLog.exists())) await Bun.write(outLog, "");
     if (!(await errLog.exists())) await Bun.write(errLog, "");
 
-    const proc = Bun.spawn([bunPath, "run", daemonScript], {
+    const proc = Bun.spawn(spawnArgs, {
       stdout: outLog,
       stderr: errLog,
       stdin: "ignore",

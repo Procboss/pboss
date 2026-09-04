@@ -53,25 +53,37 @@ export class ClusterManager {
    buildWorkerCommand(config: ProcessDescription): string[] {
      const cmd: string[] = [];
  
-      if (config.interpreter) {
-        cmd.push(config.interpreter);
-        if (config.interpreterArgs) cmd.push(...config.interpreterArgs);
-      } else {
-        const ext = path.extname(config.script).slice(1).toLowerCase();
-        if (ext === "ts" || ext === "tsx" || ext === "js" || ext === "jsx" || ext === "mjs" || ext === "cjs") {
-          cmd.push("bun", "run");
-        } else if (ext === "py") {
-          cmd.push(process.platform === "win32" ? "python" : "python3");
-        } else if (ext === "bat" || ext === "cmd") {
-          cmd.push("cmd.exe", "/c");
-        } else if (ext === "ps1") {
-          cmd.push("powershell.exe", "-ExecutionPolicy", "Bypass", "-File");
-        } else if (ext === "sh") {
-          cmd.push("sh");
-        } else {
-          cmd.push("bun", "run");
-        }
-      }
+     if (config.interpreter) {
+       if (config.interpreter !== "none" && config.interpreter !== "binary" && config.interpreter !== "direct") {
+         cmd.push(config.interpreter);
+         if (config.interpreterArgs) cmd.push(...config.interpreterArgs);
+       }
+     } else {
+       const ext = path.extname(config.script).slice(1).toLowerCase();
+       if (ext === "ts" || ext === "tsx" || ext === "jsx" || ext === "mjs" || ext === "cjs" || ext === "js") {
+         cmd.push("bun", "run");
+       } else if (ext === "py") {
+         cmd.push(process.platform === "win32" ? "python" : "python3");
+       } else if (ext === "go") {
+         cmd.push("go", "run");
+       } else if (ext === "rb") {
+         cmd.push("ruby");
+       } else if (ext === "php") {
+         cmd.push("php");
+       } else if (ext === "jar") {
+         cmd.push("java", "-jar");
+       } else if (ext === "bat" || ext === "cmd") {
+         cmd.push("cmd.exe", "/c");
+       } else if (ext === "ps1") {
+         cmd.push("powershell.exe", "-ExecutionPolicy", "Bypass", "-File");
+       } else if (ext === "sh" || ext === "bash") {
+         cmd.push(process.platform === "win32" ? "bash" : "sh");
+       } else if (ext === "exe" || ext === "bin" || ext === "") {
+         // Standalone compiled executable (Go, Rust, C/C++, Swift, etc.) — executed directly
+       } else {
+         cmd.push("bun", "run");
+       }
+     }
  
      if (config.nodeArgs?.length) {
        cmd.push(...config.nodeArgs);

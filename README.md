@@ -66,7 +66,8 @@ ProcBoss (pboss) is free and open-source software built for the Bun community. I
   - [WebSocket API](#websocket-api)
 - [Prometheus and Grafana Integration](#prometheus-and-grafana-integration)
 - [Programmatic API](#programmatic-api)
-  - [Quick Start](#programmatic-quick-start)
+  - [Zero-Ceremony Quick Start](#zero-ceremony-quick-start)
+  - [Reading Processes Without Initialization](#reading-existing-processes-without-initialization)
   - [Connection Lifecycle](#connection-lifecycle)
   - [Process Management](#programmatic-process-management)
   - [Introspection](#introspection)
@@ -157,24 +158,34 @@ powershell -c "irm bun.sh/install.ps1 | iex"
 
 ## Installation
 
+### Via Snap (Linux)
+
+```bash
+sudo snap install pboss --classic
+```
+
+### Global Install (Bun)
+
+```bash
+bun add -g pboss
+```
+
 ### From Source
 
-```
+```bash
 git clone https://github.com/procboss/pboss.git
 cd pboss
 bun install
 bun link
 ```
 
-### Global Install
+### Pre-built Standalone Binaries
 
-```
-bun add -g pboss
-```
+Download self-contained single-file binaries from the [GitHub Releases](https://github.com/procboss/pboss/releases) page for Linux (x64 / arm64 / musl), macOS (Apple Silicon / Intel), and Windows (x64 / arm64). No Bun installation required.
 
 ### Verify Installation
 
-```
+```bash
 pboss --version
 ```
 
@@ -1459,39 +1470,68 @@ groups:
 
 ## Programmatic API
 
-ProcBoss exposes two levels of programmatic access. The `PBoss` client class communicates with the daemon over its Unix socket, giving you the same capabilities as the CLI from within any Bun application. For in-process usage without a daemon, you can use the `ProcessManager` class directly.
+ProcBoss exposes a complete programmatic API. A single machine only needs **one instance** of the process manager — every API function, static method, and singleton instance automatically communicates with that single machine-level daemon.
 
-### Programmatic Quick Start
+### Zero-Ceremony Quick Start
+
+You can import and call API methods directly without any initialization, construction (`new`), or connection ceremony:
 
 ```ts
-import PBoss from "pboss";
+// 1. Direct function exports (Zero initialization needed)
+import { getProcesses, list, describe, start, stop, restart } from "pboss";
 
-const pboss = new PBoss();
-await pboss.connect();
-
-// Start a clustered application
-await pboss.start({
-  script: "./server.ts",
-  name: "api",
-  instances: 4,
-  execMode: "cluster",
-  port: 3000,
-  env: { NODE_ENV: "production" },
-});
-
-// List all processes
-const processes = await pboss.list();
+// Read existing processes immediately
+const processes = await getProcesses();
 console.log(processes);
 
-// Stream metrics every 2 seconds
-pboss.on("metrics", (snapshot) => {
-  console.log(`CPU: ${snapshot.system.cpu}%  Memory: ${snapshot.system.memory}%`);
-});
-pboss.startPolling(2000);
+// Start, stop, or manage processes
+await start({ script: "./server.ts", name: "api", instances: 4, port: 3000 });
+await restart("api");
+```
 
-// Graceful shutdown
-pboss.stopPolling();
-await pboss.disconnect();
+```ts
+// 2. Default singleton import
+import pboss from "pboss";
+
+const procs = await pboss.list();
+const metrics = await pboss.metrics();
+```
+
+```ts
+// 3. PBoss Class & Static Methods
+import PBoss from "pboss";
+
+const procs = await PBoss.list();
+const info = await PBoss.describe("api");
+```
+
+---
+
+### Reading Existing Processes Without Initialization
+
+Anyone can read existing processes from disk or the running daemon without having to start or initialize anything:
+
+#### `getProcesses(): Promise<ProcessState[]>`
+
+Retrieves all managed processes on the machine. If the daemon is active, it returns live running processes. If the daemon is offline, it automatically reads saved process definitions from disk (`~/.pboss/dump.json`) **without spawning a background daemon**:
+
+```ts
+import { getProcesses } from "pboss";
+
+const processes = await getProcesses();
+for (const p of processes) {
+  console.log(`${p.name} (id: ${p.pm_id}) - ${p.status}`);
+}
+```
+
+#### `readSavedProcesses(): Promise<ProcessState[]>`
+
+Directly parses and returns the persisted process list from `~/.pboss/dump.json` with zero daemon or socket involvement:
+
+```ts
+import { readSavedProcesses } from "pboss";
+
+const saved = await readSavedProcesses();
 ```
 
 ---
@@ -1500,9 +1540,13 @@ await pboss.disconnect();
 
 #### `pboss.connect(): Promise<PBoss>`
 
-Connect to the ProcBoss daemon. If the daemon is not running, it is spawned automatically and the method waits up to 5 seconds for it to become responsive. Returns the `PBoss` instance for chaining.
+Explicitly connect to the ProcBoss daemon. If the daemon is not running, it is spawned automatically and the method waits up to 5 seconds for it to become responsive. Returns the `PBoss` instance for chaining.
+
+> **Note:** All API methods auto-connect on demand, so calling `.connect()` explicitly is optional and only needed if you want to listen for connection lifecycle events before executing commands.
 
 ```ts
+import PBoss from "pboss";
+
 const pboss = new PBoss();
 await pboss.connect();
 console.log(`Connected to daemon PID ${pboss.daemonPid}`);
@@ -1519,7 +1563,7 @@ console.log(pboss.connected); // false
 
 #### `pboss.connected: boolean`
 
-Read-only property indicating whether the client believes the daemon is reachable.
+Read-only property indicating whether the client is currently connected to the daemon.
 
 #### `pboss.daemonPid: number | null`
 
@@ -1529,12 +1573,14 @@ Read-only property containing the PID of the daemon process, or `null` if unknow
 
 ### Programmatic Process Management
 
-#### `pboss.start(options: StartOptions): Promise<ProcessState[]>`
+#### `start(options: StartOptions): Promise<ProcessState[]>`
 
 Start a new process or process group. The `script` path is automatically resolved to an absolute path. Returns the array of `ProcessState` objects for the started instances.
 
 ```ts
-const procs = await pboss.start({
+import { start } from "pboss";
+
+const procs = await start({
   script: "./worker.ts",
   name: "worker",
   instances: 2,
@@ -1544,14 +1590,14 @@ const procs = await pboss.start({
 console.log(`Started ${procs.length} instances`);
 ```
 
-The `StartOptions` object accepts all the same fields documented in the [Process Options](#process-options) configuration reference.
-
-#### `pboss.startEcosystem(config: EcosystemConfig): Promise<ProcessState[]>`
+#### `startEcosystem(config: EcosystemConfig): Promise<ProcessState[]>`
 
 Start an entire ecosystem configuration. All script paths within the config are resolved to absolute paths before being sent to the daemon.
 
 ```ts
-const procs = await pboss.startEcosystem({
+import { startEcosystem } from "pboss";
+
+const procs = await startEcosystem({
   apps: [
     { script: "./api.ts", name: "api", instances: 4, port: 3000 },
     { script: "./worker.ts", name: "worker", instances: 2 },
@@ -1559,91 +1605,109 @@ const procs = await pboss.startEcosystem({
 });
 ```
 
-#### `pboss.stop(target?: string | number): Promise<ProcessState[]>`
+#### `stop(target?: string | number): Promise<ProcessState[]>`
 
 Stop one or more processes. The `target` can be a process name, numeric ID, namespace, or `"all"`. Defaults to `"all"` when omitted.
 
 ```ts
-await pboss.stop("api");       // Stop by name
-await pboss.stop(0);           // Stop by ID
-await pboss.stop();            // Stop all
+import { stop } from "pboss";
+
+await stop("api");       // Stop by name
+await stop(0);           // Stop by ID
+await stop();            // Stop all
 ```
 
-#### `pboss.restart(target?: string | number): Promise<ProcessState[]>`
+#### `restart(target?: string | number): Promise<ProcessState[]>`
 
 Hard restart one or more processes. The process is fully stopped and then re-spawned.
 
 ```ts
-await pboss.restart("api");
-await pboss.restart();          // Restart all
+import { restart } from "pboss";
+
+await restart("api");
+await restart();          // Restart all
 ```
 
-#### `pboss.reload(target?: string | number): Promise<ProcessState[]>`
+#### `reload(target?: string | number): Promise<ProcessState[]>`
 
 Graceful zero-downtime reload. New instances are started before old ones are stopped, ensuring no dropped requests. Ideal for deploying new code.
 
 ```ts
-await pboss.reload("api");
-await pboss.reload();           // Reload all
+import { reload } from "pboss";
+
+await reload("api");
+await reload();           // Reload all
 ```
 
-#### `pboss.delete(target?: string | number): Promise<ProcessState[]>`
+#### `del(target?: string | number): Promise<ProcessState[]>` / `delete(target?)`
 
 Stop and remove one or more processes from ProcBoss's management entirely.
 
 ```ts
-await pboss.delete("api");
-await pboss.delete();           // Delete all
+import { del } from "pboss";
+
+await del("api");
+await del();           // Delete all
 ```
 
-#### `pboss.scale(target: string | number, count: number): Promise<ProcessState[]>`
+#### `scale(target: string | number, count: number): Promise<ProcessState[]>`
 
 Scale a process group to the specified number of instances. When scaling up, new instances inherit the configuration of existing ones. When scaling down, the highest-numbered instances are removed first.
 
 ```ts
-await pboss.scale("api", 8);   // Scale up to 8 instances
-await pboss.scale("api", 2);   // Scale down to 2 instances
+import { scale } from "pboss";
+
+await scale("api", 8);   // Scale up to 8 instances
+await scale("api", 2);   // Scale down to 2 instances
 ```
 
-#### `pboss.sendSignal(target: string | number, signal: string): Promise<void>`
+#### `sendSignal(target: string | number, signal: string): Promise<void>`
 
 Send an OS signal to a managed process.
 
 ```ts
-await pboss.sendSignal("api", "SIGUSR2");
-await pboss.sendSignal(0, "SIGHUP");
+import { sendSignal } from "pboss";
+
+await sendSignal("api", "SIGUSR2");
+await sendSignal(0, "SIGHUP");
 ```
 
-#### `pboss.reset(target?: string | number): Promise<ProcessState[]>`
+#### `reset(target?: string | number): Promise<ProcessState[]>`
 
 Reset the restart counter for one or more processes. Defaults to `"all"`.
 
 ```ts
-await pboss.reset("api");
-await pboss.reset();            // Reset all
+import { reset } from "pboss";
+
+await reset("api");
+await reset();            // Reset all
 ```
 
 ---
 
 ### Introspection
 
-#### `pboss.list(): Promise<ProcessState[]>`
+#### `list(): Promise<ProcessState[]>`
 
 List all managed processes with their current state.
 
 ```ts
-const processes = await pboss.list();
+import { list } from "pboss";
+
+const processes = await list();
 for (const proc of processes) {
-  console.log(`${proc.name} [${proc.status}] PID=${proc.pid} CPU=${proc.cpu}%`);
+  console.log(`${proc.name} [${proc.status}] PID=${proc.pid} CPU=${proc.monit.cpu}%`);
 }
 ```
 
-#### `pboss.describe(target: string | number): Promise<ProcessState[]>`
+#### `describe(target: string | number): Promise<ProcessState[]>`
 
 Get detailed information about a specific process or process group.
 
 ```ts
-const details = await pboss.describe("api");
+import { describe } from "pboss";
+
+const details = await describe("api");
 console.log(details[0]);
 ```
 
@@ -1651,38 +1715,55 @@ console.log(details[0]);
 
 ### Logs
 
-#### `pboss.logs(target?: string | number, lines?: number): Promise<Array<{ name: string; id: number; out: string; err: string }>>`
+#### `logs(target?: string | number, lines?: number): Promise<LogItem[]>`
 
 Retrieve recent log lines for one or all processes. Defaults to `"all"` with `20` lines.
 
 ```ts
-const logs = await pboss.logs("api", 100);
-for (const entry of logs) {
-  console.log(`[${entry.name}] stdout:\n${entry.out}`);
-  if (entry.err) console.error(`[${entry.name}] stderr:\n${entry.err}`);
+import { logs } from "pboss";
+
+const logItems = await logs("api", 100);
+for (const entry of logItems) {
+  console.log(`[${entry.name} | ${entry.ts}] ${entry.msg}`);
 }
 ```
 
-#### `pboss.flush(target?: string | number): Promise<void>`
+#### `streamLogs(target: string | number, callback: (log: LogItem) => void, signal?: AbortSignal): Promise<void>`
+
+Stream live logs in real time as they are emitted:
+
+```ts
+import { streamLogs } from "pboss";
+
+await streamLogs("api", (log) => {
+  console.log(`[${log.name}] ${log.msg}`);
+});
+```
+
+#### `flush(target?: string | number): Promise<void>`
 
 Truncate log files for one or all processes.
 
 ```ts
-await pboss.flush("api");      // Flush logs for "api"
-await pboss.flush();            // Flush all logs
+import { flush } from "pboss";
+
+await flush("api");      // Flush logs for "api"
+await flush();            // Flush all logs
 ```
 
 ---
 
 ### Programmatic Monitoring and Metrics
 
-#### `pboss.metrics(): Promise<MetricSnapshot>`
+#### `metrics(): Promise<MetricSnapshot>`
 
 Take a single metrics snapshot containing process-level and system-level telemetry.
 
 ```ts
-const snapshot = await pboss.metrics();
-console.log(`System CPU: ${snapshot.system.cpu}%`);
+import { metrics } from "pboss";
+
+const snapshot = await metrics();
+console.log(`System CPU Count: ${snapshot.system.cpuCount}`);
 for (const proc of snapshot.processes) {
   console.log(`  ${proc.name}: ${proc.memory} bytes, ${proc.cpu}% CPU`);
 }

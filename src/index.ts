@@ -19,6 +19,7 @@ import path, { resolve, extname } from "path";
 import {
   APP_NAME,
   VERSION,
+  DAEMON_SOCKET,
   DASHBOARD_PORT,
   METRICS_PORT,
 } from "./constants";
@@ -34,12 +35,8 @@ import type {
 } from "./types";
 import { statusColor } from "./colors";
 import { liveWatchProcess, printProcessTable } from "./process-table";
+import Daemon from "./daemon";
 import chalk from "chalk";
-
-// ---------------------------------------------------------------------------
-// Ensure directory structure exists
-// ---------------------------------------------------------------------------
-await ensureDirs();
 
 // ---------------------------------------------------------------------------
 // PBossCLI class — Delegates all process engine operations to PBoss API
@@ -1014,6 +1011,15 @@ class PBossCLI {
       case "--version":
         console.log(`${APP_NAME} v${VERSION}`);
         break;
+      case "__daemon":
+      case "daemon-server": {
+        const dm = new Daemon();
+        await dm.initialize(true);
+        dm.startServer();
+        console.log(`Daemon listening on ${DAEMON_SOCKET}`);
+        await new Promise(() => {});
+        break;
+      }
       case "help":
       case "-h":
       case "--help":
@@ -1032,5 +1038,13 @@ class PBossCLI {
 // Entrypoint
 // ---------------------------------------------------------------------------
 
-const cli = new PBossCLI();
-await cli.run(process.argv.slice(2));
+async function main() {
+  await ensureDirs();
+  const cli = new PBossCLI();
+  await cli.run(process.argv.slice(2));
+}
+
+main().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});

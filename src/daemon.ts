@@ -368,8 +368,13 @@ export default class Daemon {
 
 // ── Entrypoint (spawned by CLI) ───────────────────────────────────────────
 if (import.meta.main) {
-  const dm = new Daemon();
-  await dm.initialize();           // initialize first — writes PID, sets up pm/dashboard
-  const s = dm.startServer();      // then bind the socket
-  console.log(`Daemon listening on ${DAEMON_SOCKET}`);
+  (async () => {
+    const dm = new Daemon();
+    await dm.initialize();
+    dm.startServer();
+    console.log(`Daemon listening on ${DAEMON_SOCKET}`);
+  })().catch((err) => {
+    console.error("Daemon startup error:", err);
+    process.exit(1);
+  });
 }

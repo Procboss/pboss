@@ -1,0 +1,51 @@
+name: pboss
+base: core22
+version: '1.1.0'
+summary: Universal production process manager for any software stack
+description: |
+  ProcBoss (pboss) is a universal, production-grade process manager built on Bun native APIs.
+  Manage, cluster, and supervise any application or binary — Node.js, Bun, Go, Python, Rust, Ruby, PHP, Java, and custom executables — with pure performance and zero overhead.
+
+  Features:
+  - Multi-language & native binary execution (Node.js, Bun, Go, Python, Rust, Ruby, PHP, Java, Shell)
+  - Fork & cluster execution modes
+  - Auto-restart & crash recovery
+  - Zero-downtime graceful reload
+  - Live terminal monitor & dark-themed web dashboard
+  - Prometheus metrics exposition
+  - Log management with gzip rotation
+  - HTTP health checks & cron-scheduled restarts
+  - Standalone and foreground (container) modes
+
+grade: stable
+confinement: classic
+
+architectures:
+  - build-on: amd64
+  - build-on: arm64
+
+apps:
+  pboss:
+    command: bin/pboss
+    environment:
+      PATH: $SNAP/usr/bin:$SNAP/bin:$PATH
+
+parts:
+  pboss:
+    plugin: nil
+    source: .
+    build-packages:
+      - curl
+      - unzip
+    override-build: |
+      # Install Bun build tool
+      curl -fsSL https://bun.sh/install | bash
+      export PATH="$HOME/.bun/bin:$PATH"
+
+      # Install project dependencies
+      bun install
+
+      # Compile standalone binary for the target architecture
+      mkdir -p $CRAFT_PART_INSTALL/bin
+      bun build --compile --minify --bytecode ./src/index.ts --outfile $CRAFT_PART_INSTALL/bin/pboss
+      chmod +x $CRAFT_PART_INSTALL/bin/pboss
