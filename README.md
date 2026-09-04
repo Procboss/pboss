@@ -1,7 +1,8 @@
 # ⚡ ProcBoss (pboss)
 
-**A blazing-fast, full-featured process manager built entirely on Bun native APIs.**
-The modern PM2 replacement — zero Node.js dependencies, pure Bun performance.
+**A blazing-fast, universal production process manager built on Bun native APIs.**
+Run, cluster, monitor, and manage any application — Node.js, Bun, Go, Python, Rust, Ruby, PHP, Java, native binaries, and shell scripts — with pure performance and zero overhead.
+By [procboss.com](https://procboss.com).
 
 ![Runtime](https://img.shields.io/badge/runtime-Bun-f472b6?style=flat-square)
 ![Language](https://img.shields.io/badge/language-TypeScript-3178c6?style=flat-square)
@@ -13,7 +14,7 @@ The modern PM2 replacement — zero Node.js dependencies, pure Bun performance.
 
 ### Support ProcBoss
 
-ProcBoss (pboss) is free and open-source software built for the Bun community. If ProcBoss saves you time or powers your production services, please consider supporting its development:
+ProcBoss (pboss) is free and open-source software built for the developer community by [procboss.com](https://procboss.com). If ProcBoss saves you time or powers your production services, please consider supporting its development:
 
 - ⭐ **Star the Repo:** Star us on [GitHub](https://github.com/procboss/pboss) to help more developers discover ProcBoss.
 - 🐛 **Contribute:** Open issues, suggest features, or submit pull requests.
@@ -39,6 +40,7 @@ ProcBoss (pboss) is free and open-source software built for the Bun community. I
 - [Requirements](#requirements)
 - [Installation](#installation)
 - [Quick Start](#quick-start)
+- [Multi-Language & Runtime Support](#multi-language--runtime-support)
 - [CLI Reference](#cli-reference)
   - [Process Management](#process-management)
   - [Cluster Mode](#cluster-mode)
@@ -82,7 +84,6 @@ ProcBoss (pboss) is free and open-source software built for the Bun community. I
   - [Error Handling](#error-handling)
   - [Direct ProcessManager Usage](#direct-processmanager-usage)
 - [Architecture](#architecture)
-- [Comparison with PM2](#comparison-with-pm2)
 - [Recipes and Examples](#recipes-and-examples)
 - [Troubleshooting](#troubleshooting)
 - [File Structure](#file-structure)
@@ -93,17 +94,19 @@ ProcBoss (pboss) is free and open-source software built for the Bun community. I
 
 ## Why ProcBoss?
 
-PM2 is the de facto process manager for Node.js, but it carries years of legacy baggage, a heavy dependency tree, and is fundamentally built for the Node.js runtime. ProcBoss (pboss) is a ground-up reimagining of production process management designed exclusively for the Bun runtime.
+ProcBoss (pboss) is a universal, production-grade process manager built from the ground up for modern developer and DevOps workflows. While engineered on native Bun APIs for maximum throughput and minimal memory overhead, ProcBoss is completely **runtime-agnostic** and manages any program, language, or software stack.
 
-ProcBoss replaces PM2's Node.js internals with Bun-native APIs. It uses `Bun.spawn` for process management, `Bun.serve` for the dashboard and IPC, native `WebSocket` for daemon communication, `Bun.file` for high-performance I/O, and `Bun.gzipSync` for log compression. The result is a process manager that starts faster, uses less memory, and leverages Bun's superior performance across the board.
+ProcBoss replaces complex, heavyweight process managers with a clean, ultra-fast architecture. It uses `Bun.spawn` for lightning-fast process orchestration, `Bun.serve` for the real-time web dashboard and IPC, native `WebSocket` over Unix sockets, `Bun.file` for high-performance I/O, and `Bun.gzipSync` for automatic log compression. The result is a single machine-level daemon that starts in under 50ms, uses only ~12MB of RAM, and manages your entire infrastructure seamlessly.
 
 ---
 
 ## Features
 
+**Universal Multi-Language Support** — Native auto-detection and execution for Node.js, Bun, Go, Python, Rust, Ruby, PHP, Java JARs, Shell scripts, Windows scripts, and compiled binaries.
+
 **Core Process Management** — Start, stop, restart, reload, delete, and scale processes with automatic restart on crash, configurable restart strategies, memory-limit restarts, and tree killing.
 
-**Cluster Mode** — Run multiple instances of your application with per-worker environment injection, automatic port assignment, and round-robin-ready configuration using `NODE_APP_INSTANCE` conventions.
+**Cluster Mode** — Run multiple instances of your application with per-worker environment injection, automatic port assignment, and round-robin-ready configuration using `PBOSS_WORKER_ID` and `NODE_APP_INSTANCE` conventions.
 
 **Zero-Downtime Reload** — Graceful reload cycles through instances sequentially, starting the new process before stopping the old one, ensuring your application never drops a request.
 
@@ -158,30 +161,56 @@ powershell -c "irm bun.sh/install.ps1 | iex"
 
 ## Installation
 
-### Via Snap (Linux)
+### One-Line Universal Install
 
+Install and compile the native standalone `pboss` executable directly on your device:
+
+**Linux / macOS:**
+```bash
+curl -fsSL https://procboss.com/install.sh | bash
+```
+
+**Windows (PowerShell):**
+```powershell
+powershell -c "irm https://procboss.com/install.ps1 | iex"
+```
+
+**Windows (Command Prompt):**
+```cmd
+curl -fsSL https://procboss.com/install.cmd | cmd
+```
+
+---
+
+### Package Managers
+
+**Snap (Linux):**
 ```bash
 sudo snap install pboss --classic
 ```
 
-### Global Install (Bun)
+**Homebrew (macOS / Linux):**
+```bash
+brew install procboss/tap/pboss
+```
 
+**Bun Global Install:**
 ```bash
 bun add -g pboss
 ```
 
-### From Source
+---
+
+### Build From Source
 
 ```bash
 git clone https://github.com/procboss/pboss.git
 cd pboss
 bun install
-bun link
+bun run build:bin
 ```
 
-### Pre-built Standalone Binaries
-
-Download self-contained single-file binaries from the [GitHub Releases](https://github.com/procboss/pboss/releases) page for Linux (x64 / arm64 / musl), macOS (Apple Silicon / Intel), and Windows (x64 / arm64). No Bun installation required.
+---
 
 ### Verify Installation
 
@@ -248,6 +277,59 @@ Output:
 ```
 pboss save
 pboss startup
+```
+
+---
+
+## Multi-Language & Runtime Support
+
+ProcBoss runs and supervises any application, programming language, runtime, or compiled binary:
+
+| Runtime / Language | File Extension | Auto-detected Runner | Example |
+|---|---|---|---|
+| **TypeScript / JSX** | `.ts`, `.tsx`, `.jsx`, `.mjs`, `.cjs` | `bun run <file>` | `pboss start server.ts` |
+| **JavaScript (Bun)** | `.js` | `bun run <file>` | `pboss start app.js` |
+| **JavaScript (Node.js)** | `.js` | `node <file>` (via `--interpreter`) | `pboss start app.js --interpreter node` |
+| **Python** | `.py` | `python3 <file>` (or `python`) | `pboss start worker.py` |
+| **Go** | `.go` | `go run <file>` | `pboss start main.go` |
+| **Compiled Binaries (Go / Rust / C / C++)** | *(no ext)*, `.bin`, `.exe` | Direct binary execution | `pboss start ./my-go-server` |
+| **Ruby** | `.rb` | `ruby <file>` | `pboss start app.rb` |
+| **PHP** | `.php` | `php <file>` | `pboss start server.php` |
+| **Java** | `.jar` | `java -jar <file>` | `pboss start app.jar` |
+| **Shell / Bash** | `.sh`, `.bash` | `sh <file>` / `bash <file>` | `pboss start job.sh` |
+| **Windows Scripts** | `.bat`, `.cmd`, `.ps1` | `cmd.exe` / `powershell.exe` | `pboss start script.bat` |
+| **Custom Interpreter** | *any* | Custom runtime via `--interpreter` | `pboss start app.ts --interpreter "deno run -A"` |
+
+### Running Native Binaries (Go, Rust, C/C++)
+
+Compiled executables are executed directly with zero interpreter wrapper:
+
+```bash
+# Start a compiled Go or Rust binary
+pboss start ./dist/my-go-api --name api --instances 4
+
+# Run with explicit direct binary mode
+pboss start ./my-binary --interpreter none
+```
+
+### Running Python Services
+
+```bash
+# Auto-detects python3 on Linux/macOS or python on Windows
+pboss start worker.py --name py-worker
+
+# Custom virtualenv Python interpreter
+pboss start worker.py --interpreter ./venv/bin/python
+```
+
+### Running Node.js Applications
+
+```bash
+# Run with Node.js interpreter
+pboss start server.js --interpreter node --name node-api
+
+# Pass Node.js / V8 flags
+pboss start server.js --interpreter node --node-args "--max-old-space-size=4096"
 ```
 
 ---
@@ -528,7 +610,7 @@ Each cluster worker receives the following environment variables:
 | `PBOSS_CLUSTER` | Set to `"true"` in cluster mode |
 | `PBOSS_WORKER_ID` | Zero-indexed worker ID |
 | `PBOSS_INSTANCES` | Total number of instances |
-| `NODE_APP_INSTANCE` | Same as `PBOSS_WORKER_ID` (PM2 compatibility) |
+| `NODE_APP_INSTANCE` | Standard cluster worker index (`PBOSS_WORKER_ID`) |
 | `PORT` | `basePort + workerIndex` (if `--port` is specified) |
 
 ---
@@ -2110,42 +2192,45 @@ The `ProcessManager` provides the same process management capabilities but runs 
 
 ---
 
-## Comparison with PM2
-
-| Feature | PM2 | ProcBoss (pboss) |
-|---|---|---|
-| Runtime | Node.js | Bun |
-| Language | JavaScript | TypeScript |
-| Dependencies | ~40+ packages | Zero (Bun built-ins only) |
-| Process Spawning | `child_process.fork` | `Bun.spawn` |
-| IPC | Custom protocol over pipes | WebSocket over Unix socket |
-| HTTP Server | Express/http | `Bun.serve` |
-| Log Compression | External `pm2-logrotate` module | Built-in `Bun.gzipSync` |
-| Dashboard | PM2 Plus (paid) or `pm2-monit` | Built-in web dashboard (free) |
-| Prometheus Metrics | `pm2-prometheus-exporter` module | Built-in native export |
-| Startup Time | ~500ms | ~50ms |
-| Memory Overhead | ~40MB (daemon) | ~12MB (daemon) |
-| Cluster Mode | `cluster` module | `Bun.spawn` with env-based routing |
-| Ecosystem Files | JSON, JS, YAML | JSON, TypeScript |
-| Deploy System | Built-in | Built-in |
-| Module System | `pm2 install` | `pboss module install` |
-| TypeScript | Requires compilation | Native support |
-| File Watching | `chokidar` | Native `fs.watch` |
-| Docker / Foreground Mode | `--no-daemon` flag | `--no-daemon` / `-d` flag |
-
----
-
 ## Recipes and Examples
 
-### Basic HTTP Server
+### TypeScript / Bun Server
 
+```bash
+pboss start server.ts --name bun-api
 ```
-pboss start server.ts --name api
+
+### Node.js Server
+
+```bash
+pboss start server.js --interpreter node --name node-api
+```
+
+### Go Application (Source or Compiled)
+
+```bash
+# Run Go source directly
+pboss start main.go --name go-dev
+
+# Run compiled Go binary
+pboss start ./dist/my-go-server --name go-prod --instances 4
+```
+
+### Python Worker / API
+
+```bash
+pboss start worker.py --name py-worker
+```
+
+### Java JAR Service
+
+```bash
+pboss start app.jar --name java-service
 ```
 
 ### Production API with Clustering and Health Checks
 
-```
+```bash
 pboss start server.ts \
   --name api \
   --instances max \
@@ -2160,14 +2245,8 @@ pboss start server.ts \
 
 ### Development Mode with Watch
 
-```
+```bash
 pboss start server.ts --name dev-api --watch --ignore-watch node_modules,.git,dist
-```
-
-### Python Script
-
-```
-pboss start worker.py --name py-worker --interpreter python3
 ```
 
 ### Scheduled Restart (Daily at 3 AM)
