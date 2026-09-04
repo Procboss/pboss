@@ -1,5 +1,5 @@
 /**
- * BM2 — Bun Process Manager
+ * ProcBoss (pboss) — Bun Process Manager
  * A production-grade process manager for Bun.
  *
  * Features:
@@ -9,7 +9,8 @@
  * - Log management & rotation
  * - Deployment support
  *
- * https://github.com/bun-bm2/bm2
+ * https://procboss.com
+ * https://github.com/procboss/pboss
  * License: GPL-3.0-only
  */
  
@@ -20,24 +21,24 @@ export class StartupManager {
   async generate(platform?: string): Promise<string> {
     const os = platform || process.platform;
     const bunPath = Bun.which("bun") || (os === "win32" ? "bun.exe" : "/usr/local/bin/bun");
-    const bm2Path = join(import.meta.dir, "index.ts");
+    const pbossPath = join(import.meta.dir, "index.ts");
     const daemonPath = join(import.meta.dir, "daemon.ts");
 
     switch (os) {
       case "linux":
-        return this.generateSystemd(bunPath, bm2Path, daemonPath);
+        return this.generateSystemd(bunPath, pbossPath, daemonPath);
       case "darwin":
-        return this.generateLaunchd(bunPath, bm2Path, daemonPath);
+        return this.generateLaunchd(bunPath, pbossPath, daemonPath);
       case "win32":
-        return this.generateWindows(bunPath, bm2Path, daemonPath);
+        return this.generateWindows(bunPath, pbossPath, daemonPath);
       default:
         throw new Error(`Unsupported platform: ${os}`);
     }
   }
 
-  private generateWindows(bunPath: string, bm2Path: string, daemonPath: string): string {
-    const taskName = "BM2_Daemon";
-    return `# BM2 Windows Startup Configuration
+  private generateWindows(bunPath: string, pbossPath: string, daemonPath: string): string {
+    const taskName = "PBOSS_Daemon";
+    return `# PBOSS Windows Startup Configuration
 # To install as a Scheduled Task that starts automatically on user logon:
 #
 # schtasks /create /tn "${taskName}" /tr "\\"${bunPath}\\" run \\"${daemonPath}\\"" /sc onlogon /f /rl highest
@@ -49,15 +50,15 @@ export class StartupManager {
 # Register-ScheduledTask -TaskName "${taskName}" -Action $Action -Trigger $Trigger -Principal $Principal -Force
 #
 # To resurrect processes after startup:
-# "${bunPath}" run "${bm2Path}" resurrect
+# "${bunPath}" run "${pbossPath}" resurrect
 `;
   }
  
-   private generateSystemd(bunPath: string, bm2Path: string, daemonPath: string): string {
+   private generateSystemd(bunPath: string, pbossPath: string, daemonPath: string): string {
      
      const unit = `[Unit]
-Description=BM2 Process Manager
-Documentation=https://github.com/bm2
+Description=ProcBoss Process Manager
+Documentation=https://procboss.com
 After=network.target
 
 [Service]
@@ -67,36 +68,36 @@ LimitNOFILE=infinity
 LimitNPROC=infinity
 LimitCORE=infinity
 Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${join(bunPath, "..")}
-Environment=BM2_HOME=${join(process.env.HOME || "/root", ".bm2")}
+Environment=PBOSS_HOME=${join(process.env.HOME || "/root", ".pboss")}
 Restart=on-failure
 
 ExecStart=${bunPath} run ${daemonPath}
-ExecStartPost=${bunPath} run ${bm2Path} resurrect
-ExecReload=${bunPath} run ${bm2Path} reload all
-ExecStop=${bunPath} run ${bm2Path} kill
+ExecStartPost=${bunPath} run ${pbossPath} resurrect
+ExecReload=${bunPath} run ${pbossPath} reload all
+ExecStop=${bunPath} run ${pbossPath} kill
 
 [Install]
 WantedBy=multi-user.target
 `;
    
-const servicePath = "/etc/systemd/system/bm2.service";
-return `# BM2 Systemd Service
+const servicePath = "/etc/systemd/system/pboss.service";
+return `# PBOSS Systemd Service
 # Save to: ${servicePath}
 # Then run:
 #   sudo systemctl daemon-reload
-#   sudo systemctl enable bm2
-#   sudo systemctl start bm2
+#   sudo systemctl enable pboss
+#   sudo systemctl start pboss
 
 ${unit}`;
 }
  
-   private generateLaunchd(bunPath: string, bm2Path: string, daemonPath: string): string {
+   private generateLaunchd(bunPath: string, pbossPath: string, daemonPath: string): string {
      const plist = `<?xml version="1.0" encoding="UTF-8"?>
  <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
  <plist version="1.0">
  <dict>
      <key>Label</key>
-     <string>com.bm2.daemon</string>
+     <string>com.pboss.daemon</string>
      <key>ProgramArguments</key>
      <array>
          <string>${bunPath}</string>
@@ -108,9 +109,9 @@ ${unit}`;
      <key>KeepAlive</key>
      <true/>
      <key>StandardOutPath</key>
-     <string>${join(process.env.HOME || "/Users/user", ".bm2", "logs", "daemon-out.log")}</string>
+     <string>${join(process.env.HOME || "/Users/user", ".pboss", "logs", "daemon-out.log")}</string>
      <key>StandardErrorPath</key>
-     <string>${join(process.env.HOME || "/Users/user", ".bm2", "logs", "daemon-error.log")}</string>
+     <string>${join(process.env.HOME || "/Users/user", ".pboss", "logs", "daemon-error.log")}</string>
      <key>EnvironmentVariables</key>
      <dict>
          <key>PATH</key>
@@ -121,9 +122,9 @@ ${unit}`;
  </dict>
  </plist>`;
  
-const plistPath = `${process.env.HOME}/Library/LaunchAgents/com.bm2.daemon.plist`;
+const plistPath = `${process.env.HOME}/Library/LaunchAgents/com.pboss.daemon.plist`;
 
-return `# BM2 LaunchAgent (macOS)
+return `# PBOSS LaunchAgent (macOS)
 # Save to: ${plistPath}
 # Then run:
 # launchctl load ${plistPath}
@@ -137,7 +138,7 @@ ${plist}`;
  
      if (os === "linux") {
        
-       const servicePath = "/etc/systemd/system/bm2.service";
+       const servicePath = "/etc/systemd/system/pboss.service";
        
        const unitStart = content.indexOf("[Unit]");
        const unitContent = content.substring(unitStart);
@@ -148,16 +149,13 @@ ${plist}`;
          return "Failed to create the service file. Please ensure you have sufficient permissions (try running with sudo).";
        }
        
-      // Bun.spawn(["sudo", "systemctl", "daemon-reload"], { stdout: "inherit" }).exited;
-      // Bun.spawn(["sudo", "systemctl", "enable", "bm2"], { stdout: "inherit" }).exited;
-       
        await $`systemctl daemon-reload`;
-       await $`systemctl enable bm2`;
-       await $`systemctl start bm2`;
+       await $`systemctl enable pboss`;
+       await $`systemctl start pboss`;
  
        return `Service installed at ${servicePath}`;
     } else if (os === "darwin") {
-      const plistPath = `${process.env.HOME}/Library/LaunchAgents/com.bm2.daemon.plist`;
+      const plistPath = `${process.env.HOME}/Library/LaunchAgents/com.pboss.daemon.plist`;
       // Extract plist content
       const plistStart = content.indexOf("<?xml");
       const plistContent = content.substring(plistStart);
@@ -167,7 +165,7 @@ ${plist}`;
     } else if (os === "win32") {
       const bunPath = Bun.which("bun") || "bun.exe";
       const daemonPath = join(import.meta.dir, "daemon.ts");
-      const taskName = "BM2_Daemon";
+      const taskName = "PBOSS_Daemon";
 
       try {
         const proc = Bun.spawn([
@@ -199,23 +197,23 @@ ${plist}`;
 
     if (os === "linux") {
       
-      await $`systemctl stop bm2`;
-      await $`systemctl disable bm2`;
+      await $`systemctl stop pboss`;
+      await $`systemctl disable pboss`;
              
-      await $`rm -f /etc/systemd/system/bm2.service`;
+      await $`rm -f /etc/systemd/system/pboss.service`;
       await $`systemctl daemon-reload`;
      
-      return "BM2 service removed";
+      return "PBOSS service removed";
     
     } else if (os === "darwin") {
       
-      const plistPath = `${process.env.HOME}/Library/LaunchAgents/com.bm2.daemon.plist`;
+      const plistPath = `${process.env.HOME}/Library/LaunchAgents/com.pboss.daemon.plist`;
       
       await $`launchctl unload ${plistPath}`;
       await $`rm -f ${plistPath}`;
-      return "BM2 launch agent removed";
+      return "PBOSS launch agent removed";
     } else if (os === "win32") {
-      const taskName = "BM2_Daemon";
+      const taskName = "PBOSS_Daemon";
       try {
         const proc = Bun.spawn(["schtasks", "/delete", "/tn", taskName, "/f"], {
           stdout: "pipe",

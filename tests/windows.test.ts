@@ -14,9 +14,9 @@ describe("Windows Support & Cross-Platform Compatibility", () => {
       const startup = new StartupManager();
       const output = await startup.generate("win32");
 
-      expect(output).toContain("BM2 Windows Startup Configuration");
+      expect(output).toContain("PBOSS Windows Startup Configuration");
       expect(output).toContain("schtasks /create");
-      expect(output).toContain("BM2_Daemon");
+      expect(output).toContain("PBOSS_Daemon");
       expect(output).toContain("Register-ScheduledTask");
       expect(output).toContain("resurrect");
     });
@@ -137,7 +137,7 @@ describe("Windows Support & Cross-Platform Compatibility", () => {
   });
 
   describe("LogManager cross-platform rotation with Bun.gzipSync", () => {
-    const TEST_DIR = join(tmpdir(), `bm2-win-log-test-${Date.now()}`);
+    const TEST_DIR = join(tmpdir(), `pboss-win-log-test-${Date.now()}`);
 
     test("rotates and compresses logs using native Bun.gzipSync without external gzip CLI", async () => {
       await mkdir(TEST_DIR, { recursive: true });

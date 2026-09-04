@@ -1,3 +1,18 @@
+/**
+ * ProcBoss (pboss) — Bun Process Manager
+ * A production-grade process manager for Bun.
+ *
+ * Features:
+ * - Fork & cluster execution modes
+ * - Auto-restart & crash recovery
+ * - Health checks & monitoring
+ * - Log management & rotation
+ * - Deployment support
+ *
+ * https://procboss.com
+ * https://github.com/procboss/pboss
+ * License: GPL-3.0-only
+ */
 
 export function color(text: string, type: string) {
   const codes: Record<string, string> = {

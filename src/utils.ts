@@ -1,5 +1,5 @@
 /**
- * BM2 — Bun Process Manager
+ * ProcBoss (pboss) — Bun Process Manager
  * A production-grade process manager for Bun.
  *
  * Features:
@@ -9,16 +9,17 @@
  * - Log management & rotation
  * - Deployment support
  *
- * https://github.com/bun-bm2/bm2
+ * https://procboss.com
+ * https://github.com/procboss/pboss
  * License: GPL-3.0-only
  */
 
 import { join } from "path";
-import { ALL_DIRS, BM2_HOME } from "./constants";
+import { ALL_DIRS, PBOSS_HOME } from "./constants";
 import { mkdir } from "fs/promises";
 import { totalmem, freemem, loadavg, platform, hostname, uptime } from "node:os";
 
-export const DUMP_FILE = join(BM2_HOME, "dump.json");
+export const DUMP_FILE = join(PBOSS_HOME, "dump.json");
 
 export async function ensureDirs() {
   await Promise.all(

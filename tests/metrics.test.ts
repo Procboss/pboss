@@ -27,26 +27,26 @@ function formatPrometheusMetric(
 function generatePrometheusOutput(processes: ProcessMetrics[]): string {
   const lines: string[] = [];
 
-  lines.push("# HELP bm2_process_cpu CPU usage percentage");
-  lines.push("# TYPE bm2_process_cpu gauge");
-  lines.push("# HELP bm2_process_memory Memory usage in bytes");
-  lines.push("# TYPE bm2_process_memory gauge");
-  lines.push("# HELP bm2_process_uptime Process uptime in seconds");
-  lines.push("# TYPE bm2_process_uptime gauge");
-  lines.push("# HELP bm2_process_restarts Total restart count");
-  lines.push("# TYPE bm2_process_restarts counter");
-  lines.push("# HELP bm2_process_status Process status (1=online, 0=offline)");
-  lines.push("# TYPE bm2_process_status gauge");
+  lines.push("# HELP pboss_process_cpu CPU usage percentage");
+  lines.push("# TYPE pboss_process_cpu gauge");
+  lines.push("# HELP pboss_process_memory Memory usage in bytes");
+  lines.push("# TYPE pboss_process_memory gauge");
+  lines.push("# HELP pboss_process_uptime Process uptime in seconds");
+  lines.push("# TYPE pboss_process_uptime gauge");
+  lines.push("# HELP pboss_process_restarts Total restart count");
+  lines.push("# TYPE pboss_process_restarts counter");
+  lines.push("# HELP pboss_process_status Process status (1=online, 0=offline)");
+  lines.push("# TYPE pboss_process_status gauge");
 
   for (const proc of processes) {
     const labels = { name: proc.name, pid: String(proc.pid) };
-    lines.push(formatPrometheusMetric("bm2_process_cpu", proc.cpu, labels));
-    lines.push(formatPrometheusMetric("bm2_process_memory", proc.memory, labels));
-    lines.push(formatPrometheusMetric("bm2_process_uptime", proc.uptime, labels));
-    lines.push(formatPrometheusMetric("bm2_process_restarts", proc.restarts, labels));
+    lines.push(formatPrometheusMetric("pboss_process_cpu", proc.cpu, labels));
+    lines.push(formatPrometheusMetric("pboss_process_memory", proc.memory, labels));
+    lines.push(formatPrometheusMetric("pboss_process_uptime", proc.uptime, labels));
+    lines.push(formatPrometheusMetric("pboss_process_restarts", proc.restarts, labels));
     lines.push(
       formatPrometheusMetric(
-        "bm2_process_status",
+        "pboss_process_status",
         proc.status === "online" ? 1 : 0,
         labels
       )
@@ -58,23 +58,23 @@ function generatePrometheusOutput(processes: ProcessMetrics[]): string {
 
 describe("Prometheus Metric Formatting", () => {
   test("should format metric without labels", () => {
-    const result = formatPrometheusMetric("bm2_total_processes", 5);
-    expect(result).toBe("bm2_total_processes 5");
+    const result = formatPrometheusMetric("pboss_total_processes", 5);
+    expect(result).toBe("pboss_total_processes 5");
   });
 
   test("should format metric with labels", () => {
-    const result = formatPrometheusMetric("bm2_process_cpu", 25.5, {
+    const result = formatPrometheusMetric("pboss_process_cpu", 25.5, {
       name: "api",
       pid: "1234",
     });
-    expect(result).toBe('bm2_process_cpu{name="api",pid="1234"} 25.5');
+    expect(result).toBe('pboss_process_cpu{name="api",pid="1234"} 25.5');
   });
 
   test("should handle zero values", () => {
-    const result = formatPrometheusMetric("bm2_process_restarts", 0, {
+    const result = formatPrometheusMetric("pboss_process_restarts", 0, {
       name: "app",
     });
-    expect(result).toBe('bm2_process_restarts{name="app"} 0');
+    expect(result).toBe('pboss_process_restarts{name="app"} 0');
   });
 });
 
@@ -95,13 +95,13 @@ describe("Prometheus Output Generation", () => {
 
     const output = generatePrometheusOutput(processes);
 
-    expect(output).toContain("# HELP bm2_process_cpu");
-    expect(output).toContain("# TYPE bm2_process_cpu gauge");
-    expect(output).toContain('bm2_process_cpu{name="api",pid="1234"} 12.5');
-    expect(output).toContain('bm2_process_memory{name="api",pid="1234"} 104857600');
-    expect(output).toContain('bm2_process_uptime{name="api",pid="1234"} 3600');
-    expect(output).toContain('bm2_process_restarts{name="api",pid="1234"} 2');
-    expect(output).toContain('bm2_process_status{name="api",pid="1234"} 1');
+    expect(output).toContain("# HELP pboss_process_cpu");
+    expect(output).toContain("# TYPE pboss_process_cpu gauge");
+    expect(output).toContain('pboss_process_cpu{name="api",pid="1234"} 12.5');
+    expect(output).toContain('pboss_process_memory{name="api",pid="1234"} 104857600');
+    expect(output).toContain('pboss_process_uptime{name="api",pid="1234"} 3600');
+    expect(output).toContain('pboss_process_restarts{name="api",pid="1234"} 2');
+    expect(output).toContain('pboss_process_status{name="api",pid="1234"} 1');
   });
 
   test("should output status 0 for offline process", () => {
@@ -119,7 +119,7 @@ describe("Prometheus Output Generation", () => {
     ];
 
     const output = generatePrometheusOutput(processes);
-    expect(output).toContain('bm2_process_status{name="worker",pid="5678"} 0');
+    expect(output).toContain('pboss_process_status{name="worker",pid="5678"} 0');
   });
 
   test("should handle multiple processes", () => {
@@ -151,7 +151,7 @@ describe("Prometheus Output Generation", () => {
     expect(output).toContain('name="worker"');
 
     // Count occurrences of the metric names (one per process)
-    const cpuMatches = output.match(/bm2_process_cpu\{/g);
+    const cpuMatches = output.match(/pboss_process_cpu\{/g);
     expect(cpuMatches).toHaveLength(2);
   });
 

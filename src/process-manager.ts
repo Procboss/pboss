@@ -1,5 +1,5 @@
 /**
- * BM2 — Bun Process Manager
+ * ProcBoss (pboss) — Bun Process Manager
  * A production-grade process manager for Bun.
  *
  * Features:
@@ -9,7 +9,8 @@
  * - Log management & rotation
  * - Deployment support
  *
- * https://github.com/bun-bm2/bm2
+ * https://procboss.com
+ * https://github.com/procboss/pboss
  * License: GPL-3.0-only
  */
  import type {
@@ -182,26 +183,27 @@ import type { ReadableStreamController } from "bun";
        script: options.script,
        args: options.args || [],
        cwd: options.cwd || process.cwd(),
-       env: {
-         ...options.env,
-         ...(instances > 1
-           ? {
-               NODE_APP_INSTANCE: String(workerIndex),
-               BM2_INSTANCE_ID: String(workerIndex),
-             }
-           : {}),
-       },
-       instances,
-       execMode: instances > 1 ? "cluster" : (options.execMode || "fork"),
-       autorestart: options.autorestart !== false,
-       maxRestarts: options.maxRestarts ?? DEFAULT_MAX_RESTARTS,
-       minUptime: options.minUptime ?? DEFAULT_MIN_UPTIME,
-       maxMemoryRestart: options.maxMemoryRestart
-         ? parseMemory(options.maxMemoryRestart)
-         : undefined,
-       watch: Array.isArray(options.watch) ? true : (options.watch ?? false),
-       watchPaths: Array.isArray(options.watch) ? options.watch : undefined,
-       ignoreWatch: options.ignoreWatch || ["node_modules", ".git", ".bm2"],
+        env: {
+          ...options.env,
+          ...(instances > 1
+            ? {
+                NODE_APP_INSTANCE: String(workerIndex),
+                PBOSS_INSTANCE_ID: String(workerIndex),
+                BM2_INSTANCE_ID: String(workerIndex),
+              }
+            : {}),
+        },
+        instances,
+        execMode: instances > 1 ? "cluster" : (options.execMode || "fork"),
+        autorestart: options.autorestart !== false,
+        maxRestarts: options.maxRestarts ?? DEFAULT_MAX_RESTARTS,
+        minUptime: options.minUptime ?? DEFAULT_MIN_UPTIME,
+        maxMemoryRestart: options.maxMemoryRestart
+          ? parseMemory(options.maxMemoryRestart)
+          : undefined,
+        watch: Array.isArray(options.watch) ? true : (options.watch ?? false),
+        watchPaths: Array.isArray(options.watch) ? options.watch : undefined,
+        ignoreWatch: options.ignoreWatch || ["node_modules", ".git", ".pboss", ".bm2"],
        cronRestart: options.cron,
        interpreter: options.interpreter,
        interpreterArgs: options.interpreterArgs,
@@ -419,7 +421,7 @@ import type { ReadableStreamController } from "bun";
         if (!savedConfig || !savedConfig.script) continue;
 
         if (!(await Bun.file(savedConfig.script).exists())) {
-          console.warn(`[bm2] Cannot resurrect ${savedConfig.name}: script not found at ${savedConfig.script}`);
+          console.warn(`[pboss] Cannot resurrect ${savedConfig.name}: script not found at ${savedConfig.script}`);
           continue;
         }
 
@@ -462,7 +464,7 @@ import type { ReadableStreamController } from "bun";
 
       return states;
     } catch (err) {
-      console.error("[bm2] Resurrect failed:", err);
+      console.error("[pboss] Resurrect failed:", err);
       return [];
     }
   }

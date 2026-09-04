@@ -1,5 +1,5 @@
 /**
- * BM2 — Bun Process Manager
+ * ProcBoss (pboss) — Bun Process Manager
  * A production-grade process manager for Bun.
  *
  * Features:
@@ -9,7 +9,8 @@
  * - Log management & rotation
  * - Deployment support
  *
- * https://github.com/bun-bm2/bm2
+ * https://procboss.com
+ * https://github.com/procboss/pboss
  * License: GPL-3.0-only
  */
 import { parseCron } from "./utils";
@@ -42,7 +43,7 @@ export class CronManager {
 
         this.jobs.set(processId, { expression, timer });
       } catch (err) {
-        console.error(`[bm2] Cron schedule error for process ${processId}:`, err);
+        console.error(`[pboss] Cron schedule error for process ${processId}:`, err);
       }
     };
 

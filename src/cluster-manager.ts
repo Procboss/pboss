@@ -1,5 +1,5 @@
 /**
- * BM2 — Bun Process Manager
+ * ProcBoss (pboss) — Bun Process Manager
  * A production-grade process manager for Bun.
  *
  * Features:
@@ -9,7 +9,8 @@
  * - Log management & rotation
  * - Deployment support
  *
- * https://github.com/bun-bm2/bm2
+ * https://procboss.com
+ * https://github.com/procboss/pboss
  * License: GPL-3.0-only
  */
 import type { Subprocess } from "bun";
@@ -38,6 +39,9 @@ export class ClusterManager {
    ): Record<string, string> {
      return {
        ...baseEnv,
+       PBOSS_CLUSTER: "true",
+       PBOSS_WORKER_ID: String(workerId),
+       PBOSS_INSTANCES: String(totalWorkers),
        BM2_CLUSTER: "true",
        BM2_WORKER_ID: String(workerId),
        BM2_INSTANCES: String(totalWorkers),

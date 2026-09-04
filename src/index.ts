@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 /**
- * BM2 — Bun Process Manager
+ * ProcBoss (pboss) — Bun Process Manager
  * A production-grade process manager for Bun.
  *
  * Features:
@@ -10,37 +10,30 @@
  * - Log management & rotation
  * - Deployment support
  *
- * https://github.com/bun-bm2/bm2
+ * https://procboss.com
+ * https://github.com/procboss/pboss
  * License: GPL-3.0-only
  */
 
-import { existsSync, readFileSync, unlinkSync } from "fs";
-import path, { resolve, join, extname } from "path";
+import path, { resolve, extname } from "path";
 import {
   APP_NAME,
   VERSION,
-  DAEMON_SOCKET,
-  DAEMON_PID_FILE,
   DASHBOARD_PORT,
   METRICS_PORT,
-  DAEMON_OUT_LOG_FILE,
-  DAEMON_ERR_LOG_FILE,
 } from "./constants";
 import { ensureDirs, formatBytes, formatUptime, colorize, padRight } from "./utils";
+import { PBoss, loadEcosystemConfig } from "./api";
 import { DeployManager } from "./deploy";
 import { StartupManager } from "./startup-manager";
 import { EnvManager } from "./env-manager";
 import type {
-  DaemonMessage,
-  DaemonResponse,
   StartOptions,
-  EcosystemConfig,
   ProcessState,
   LogItem,
 } from "./types";
 import { statusColor } from "./colors";
 import { liveWatchProcess, printProcessTable } from "./process-table";
-import Daemon from "./daemon";
 import chalk from "chalk";
 
 // ---------------------------------------------------------------------------
@@ -49,227 +42,29 @@ import chalk from "chalk";
 await ensureDirs();
 
 // ---------------------------------------------------------------------------
-// BM2CLI class
+// PBossCLI class — Delegates all process engine operations to PBoss API
 // ---------------------------------------------------------------------------
 
-class BM2CLI {
-  
-  noDaemon = false;
+class PBossCLI {
+  public pboss: PBoss;
+  public noDaemon: boolean = false;
 
-  // -------------------------------------------------------------------------
-  // Daemon helpers
-  // -------------------------------------------------------------------------
-
-  isDaemonRunning(): boolean {
-    if (!existsSync(DAEMON_PID_FILE)) return false;
-    try {
-      const pid = parseInt(readFileSync(DAEMON_PID_FILE, "utf-8").trim());
-      process.kill(pid, 0);
-      return true;
-    } catch {
-      return false;
-    }
-  }
-
-  async startDaemon(): Promise<void> {
-    
-    if (this.isDaemonRunning()) return;
-
-    const daemonScript = join(import.meta.dir, "daemon.ts");
-    const bunPath = Bun.which("bun") || "bun";
-
-    const stdout = Bun.file(DAEMON_OUT_LOG_FILE);
-    const stderr = Bun.file(DAEMON_ERR_LOG_FILE);
-
-    if (!(await stdout.exists())) await Bun.write(stdout, "");
-    if (!(await stderr.exists())) await Bun.write(stderr, "");
-
-    const child = Bun.spawn([bunPath, "run", daemonScript], {
-      stdout,
-      stderr,
-      stdin: "ignore",
-    });
-
-    child.unref();
-
-    console.error(colorize("Starting daemon..", "green"));
-
-    for (let i = 0; i < 25; i++) {
-      if (this.isDaemonRunning()) return;
-      await Bun.sleep(200);
-    }
-
-    if (!this.isDaemonRunning()) {
-      throw new Error("Daemon failed to start (socket not found after 5 s)");
-    }
-  }
-
-  async stopDaemon(): Promise<void> {
-    try {
-      if (!this.isDaemonRunning()) return;
-
-      const pidText = await Bun.file(DAEMON_PID_FILE).text();
-      const pid = Number(pidText);
-
-      process.kill(pid, "SIGTERM");
-      console.error("Daemon stopped");
-
-      await Bun.write(DAEMON_PID_FILE, "");
-    } catch (err) {
-      console.error("Failed to stop daemon:", err);
-    }
-  }
-
-  async sendToDaemon(msg: DaemonMessage): Promise<DaemonResponse> {
-    
-    
-    if (this.noDaemon) {
-      return this.callDaemonCmd(msg)
-    }
-    
-    await this.startDaemon();
-
-    let res;
-
-    try {
-      res = await fetch("http://localhost/command", {
-        unix: DAEMON_SOCKET,
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(msg),
-      });
-
-      if (!res.ok) {
-        throw new Error(`Daemon error: ${res.status}`);
-      }
-
-      return (await res.json()) as DaemonResponse;
-    } catch (e: any) {
-      console.log("Results returned: " + (await res?.text()));
-      console.log();
-      console.log("sendToDaemon#Error:", e, e.stack);
-      return { type: "error", error: "Fetch Error", success: false };
-    }
-  }
-
-  async callDaemonCmd(msg: DaemonMessage): Promise<DaemonResponse> {
-    try {
-      const d = new Daemon();
-      await d.initialize();
-      return d.handleMessage(msg);
-    } catch (e: any) {
-      console.log("callDaemonCmd:", e, e.stack);
-      return { type: "error", error: "Fetch Error", success: false };
-    }
-  }
-  
-  async getDaemonStream<T>(data: DaemonMessage, callback: (data: T | null) => void) {
-    try {
-      
-      await this.startDaemon();
-     
-       const res = await fetch("http://localhost/command", {
-         unix: DAEMON_SOCKET,
-         method: "POST",
-         headers: { "Content-Type": "application/json" },
-         body: JSON.stringify(data)
-       })
-      
-       if (!res.body) {
-        console.error("No stream received");
-        process.exit(1);
-      }
-       
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      
-      
-      let buffer = "";
-    
-      while (true) {
-        
-        const { value, done } = await reader.read();
-        
-        if (done) break;
-    
-        buffer += decoder.decode(value, { stream: true });
-    
-        // split SSE messages
-        const parts = buffer.split("\n\n");
-        buffer = parts.pop()!;
-    
-        for (const part of parts) {
-          const line = part.replace(/^data:\s*/, "").trim();
-          if (!line) continue;
-          
-          try {
-            const result = JSON.parse(line) as T;
-            callback(result)
-          } catch { }
-          
-        }
-      }
-      
-    } catch (e: any) {
-      console.log("getDaemonStream:", e, e.stack);
-    }
-  }
-
-  // -------------------------------------------------------------------------
-  // Ecosystem config loader
-  // -------------------------------------------------------------------------
-
-  async loadEcosystemConfig(filePath: string): Promise<EcosystemConfig> {
-    
-    const abs = resolve(filePath);
-    const file = Bun.file(abs);
-
-    if (!(await file.exists())) {
-      throw new Error(`Ecosystem file not found: ${abs}`);
-    }
-
-    const ext = extname(abs);
-    let config: EcosystemConfig;
-
-    if (ext === ".json") {
-      config = (await file.json()) as EcosystemConfig;
-    } else {
-      const mod = await import(abs);
-      config = (mod.default || mod) as EcosystemConfig;
-    }
-
-    const cwd = path.dirname(abs);
-    
-    if (config.noDaemon) {
-      this.noDaemon = config.noDaemon;
-    }
-
-    config.apps = config.apps.map((i) => {
-      if ((i.cwd || "").trim() === "") {
-        i.cwd = cwd;
-      }
-      return i;
-    });
-
-    return config;
+  constructor(noDaemon: boolean = false) {
+    this.noDaemon = noDaemon;
+    this.pboss = new PBoss({ noDaemon });
   }
 
   // -------------------------------------------------------------------------
   // CLI flag parser
   //
   // Flags may appear in ANY order relative to the script path, e.g.:
-  //   bm2 start app.ts --no-daemon --name api
-  //   bm2 start --no-daemon app.ts --name api
-  //   bm2 start --name api --no-daemon app.ts
-  //
-  // The first non-flag token encountered is treated as the script path.
-  // Every subsequent non-flag token (or tokens after --) becomes an arg.
+  //   pboss start app.ts --no-daemon --name api
+  //   pboss start --no-daemon app.ts --name api
+  //   pboss start --name api --no-daemon app.ts
   // -------------------------------------------------------------------------
 
   parseStartFlags(args: string[]): StartOptions {
-    
     const opts: StartOptions = { script: "" };
-
     let i = 0;
     let scriptResolved = false;
     const positionalArgs: string[] = [];
@@ -407,10 +202,8 @@ class BM2CLI {
           break;
         default:
           if (arg.startsWith("-")) {
-            // Unknown flag — warn and skip
-            console.warn(colorize(`[bm2] Unknown flag ignored: ${arg}`, "dim"));
+            console.warn(colorize(`[pboss] Unknown flag ignored: ${arg}`, "dim"));
           } else {
-            // Positional token: first one is the script, rest are script args
             if (!scriptResolved) {
               opts.script = arg;
               scriptResolved = true;
@@ -425,7 +218,6 @@ class BM2CLI {
     }
 
     if (positionalArgs.length > 0) opts.args = positionalArgs;
-
     return opts;
   }
 
@@ -434,214 +226,190 @@ class BM2CLI {
   // -------------------------------------------------------------------------
 
   async cmdStart(args: string[]) {
-    
     if (args.length === 0) {
-      console.error(colorize("Usage: bm2 start <script|config> [options]", "red"));
+      console.error(colorize("Usage: pboss start <script|config> [options]", "red"));
       process.exit(1);
     }
 
-    // Peek at the first non-flag argument to decide if it's an ecosystem file.
-    // We do this before full parsing so we can branch early without consuming args.
     const firstPositional = args.find((a) => !a.startsWith("-"));
-
     if (!firstPositional) {
-      console.error(colorize("Usage: bm2 start <script|config> [options]", "red"));
+      console.error(colorize("Usage: pboss start <script|config> [options]", "red"));
       process.exit(1);
     }
 
     const ext = extname(firstPositional);
 
-    if (
-      ext === ".json" ||
-      firstPositional.includes("ecosystem") ||
-      firstPositional.includes("bm2.config") ||
-      firstPositional.includes("pm2.config")
-    ) {
-      
-      const config = await this.loadEcosystemConfig(firstPositional);
-      const raw = args.includes("--raw");
-      if (raw) {
-        config.apps = config.apps.map((app) => ({ ...app, raw: true }));
-      }
-      const res = await this.sendToDaemon({ type: "ecosystem", data: config });
-      
-      if (!res.success) {
-        console.error(colorize(`Error: ${res.error}`, "red"));
-        process.exit(1);
-      }
-      
-      if (!raw && !config.apps.some((app) => app.raw)) {
-        printProcessTable(res.data);
-      }
-            
-      if (this.noDaemon) {
-        await new Promise(() => {});
-      }
-      
-    } else {
+    try {
+      if (
+        ext === ".json" ||
+        firstPositional.includes("ecosystem") ||
+        firstPositional.includes("pboss.config") ||
+        firstPositional.includes("bm2.config") ||
+        firstPositional.includes("pm2.config")
+      ) {
+        const config = await loadEcosystemConfig(firstPositional);
+        const raw = args.includes("--raw");
+        if (raw) {
+          config.apps = config.apps.map((app) => ({ ...app, raw: true }));
+        }
+        if (config.noDaemon && !this.noDaemon) {
+          this.noDaemon = true;
+          this.pboss = new PBoss({ noDaemon: true });
+        }
 
-      // Parse all args — parseStartFlags finds the script itself
-      const opts = this.parseStartFlags(args);
-  
-      if (!opts.script) {
-        console.error(colorize("Error: no script specified", "red"));
-        process.exit(1);
+        const states = await this.pboss.startEcosystem(config);
+        if (!raw && !config.apps.some((app) => app.raw)) {
+          printProcessTable(states);
+        }
+
+        if (this.noDaemon) {
+          await new Promise(() => {});
+        }
+      } else {
+        const opts = this.parseStartFlags(args);
+        if (!opts.script) {
+          console.error(colorize("Error: no script specified", "red"));
+          process.exit(1);
+        }
+
+        opts.script = resolve(opts.script);
+        if (!opts.cwd) opts.cwd = path.dirname(opts.script);
+
+        const states = await this.pboss.start(opts);
+        if (!opts.raw) {
+          printProcessTable(states);
+        }
+
+        if (this.noDaemon) {
+          await new Promise(() => {});
+        }
       }
-  
-      opts.script = resolve(opts.script);
-      
-      if (!opts.cwd) opts.cwd = path.dirname(opts.script);
-  
-      const res = await this.sendToDaemon({ type: "start", data: opts });
-  
-      if (!res.success) {
-        console.error(colorize(`Error: ${res.error}`, "red"));
-        process.exit(1);
-      }
-  
-      if (!opts.raw) {
-        printProcessTable(res.data);
-      }
-  
-      if (this.noDaemon) {
-        await new Promise(() => {});
-      }
+    } catch (err: any) {
+      console.error(colorize(`Error: ${err.message}`, "red"));
+      process.exit(1);
     }
   }
 
   async cmdStop(args: string[]) {
     const target = args[0] || "all";
-    const type = target === "all" ? "stopAll" : "stop";
-    const data = target === "all" ? undefined : { target };
-
-    const res = await this.sendToDaemon({ type, data });
-    if (!res.success) {
-      console.error(colorize(`Error: ${res.error}`, "red"));
+    try {
+      const states = await this.pboss.stop(target);
+      printProcessTable(states);
+    } catch (err: any) {
+      console.error(colorize(`Error: ${err.message}`, "red"));
       process.exit(1);
     }
-    printProcessTable(res.data);
   }
 
   async cmdRestart(args: string[]) {
     const target = args[0] || "all";
-    const type = target === "all" ? "restartAll" : "restart";
-    const data = target === "all" ? undefined : { target };
-
-    const res = await this.sendToDaemon({ type, data });
-    if (!res.success) {
-      console.error(colorize(`Error: ${res.error}`, "red"));
+    try {
+      const states = await this.pboss.restart(target);
+      printProcessTable(states);
+    } catch (err: any) {
+      console.error(colorize(`Error: ${err.message}`, "red"));
       process.exit(1);
     }
-    printProcessTable(res.data);
   }
 
   async cmdReload(args: string[]) {
     const target = args[0] || "all";
-    const type = target === "all" ? "reloadAll" : "reload";
-    const data = target === "all" ? undefined : { target };
-
-    const res = await this.sendToDaemon({ type, data });
-    if (!res.success) {
-      console.error(colorize(`Error: ${res.error}`, "red"));
+    try {
+      const states = await this.pboss.reload(target);
+      printProcessTable(states);
+    } catch (err: any) {
+      console.error(colorize(`Error: ${err.message}`, "red"));
       process.exit(1);
     }
-    printProcessTable(res.data);
   }
 
   async cmdDelete(args: string[]) {
     const target = args[0] || "all";
-    const type = target === "all" ? "deleteAll" : "delete";
-    const data = target === "all" ? undefined : { target };
-
-    const res = await this.sendToDaemon({ type, data });
-    if (!res.success) {
-      console.error(colorize(`Error: ${res.error}`, "red"));
-      process?.exit(1);
+    try {
+      const states = await this.pboss.delete(target);
+      console.log(colorize("✓ Deleted", "green"));
+      printProcessTable(states);
+    } catch (err: any) {
+      console.error(colorize(`Error: ${err.message}`, "red"));
+      process.exit(1);
     }
-
-    console.log(colorize("✓ Deleted", "green"));
-    printProcessTable(res.data);
   }
 
   async cmdList(args: string[]) {
-    const res = await this.sendToDaemon({ type: "list" });
-    if (!res.success) {
-      console.error(colorize(`Error: ${res.error}`, "red"));
+    try {
+      const states = await this.pboss.list();
+      const liveMode = args.includes("--live");
+      if (liveMode) {
+        liveWatchProcess(states);
+      } else {
+        printProcessTable(states);
+      }
+    } catch (err: any) {
+      console.error(colorize(`Error: ${err.message}`, "red"));
       process.exit(1);
-    }
-
-    const liveMode = args.includes("--live");
-
-    if (liveMode) {
-      liveWatchProcess(res.data);
-    } else {
-      printProcessTable(res.data);
     }
   }
 
   async cmdDescribe(args: string[]) {
     const target = args[0];
     if (!target) {
-      console.error(colorize("Usage: bm2 describe <id|name>", "red"));
+      console.error(colorize("Usage: pboss describe <id|name>", "red"));
       process.exit(1);
     }
 
-    const res = await this.sendToDaemon({ type: "describe", data: { target } });
-    if (!res.success) {
-      console.error(colorize(`Error: ${res.error}`, "red"));
+    try {
+      const processes: ProcessState[] = await this.pboss.describe(target);
+      for (const p of processes) {
+        const env = p.pboss_env || p.bm2_env;
+        console.log(colorize(`\n─── ${p.name} (id: ${p.pm_id}) ───`, "bold"));
+        console.log(`  Status       : ${colorize(p.status, statusColor(p.status))}`);
+        console.log(`  PID          : ${p.pid || "N/A"}`);
+        console.log(`  Exec mode    : ${env?.execMode ?? "fork"}`);
+        console.log(`  Instances    : ${env?.instances ?? 1}`);
+        console.log(`  Namespace    : ${p.namespace || "default"}`);
+        console.log(`  Script       : ${env?.script ?? "-"}`);
+        console.log(`  CWD          : ${env?.cwd ?? "-"}`);
+        console.log(`  Args         : ${env?.args?.join(" ") || "(none)"}`);
+        console.log(`  Interpreter  : ${env?.interpreter || "bun"}`);
+        console.log(`  Restarts     : ${env?.restart_time ?? 0}`);
+        console.log(`  Unstable     : ${env?.unstable_restarts ?? 0}`);
+        console.log(
+          `  Uptime       : ${
+            (p.status === "online" && env?.pm_uptime) ? formatUptime(Date.now() - env.pm_uptime) : "N/A"
+          }`
+        );
+        console.log(`  Created at   : ${env?.created_at ? new Date(env.created_at).toISOString() : "N/A"}`);
+        console.log(`  CPU          : ${p.monit.cpu.toFixed(1)}%`);
+        console.log(`  Memory       : ${formatBytes(p.monit.memory)}`);
+        if (p.monit.handles !== undefined) console.log(`  Handles      : ${p.monit.handles}`);
+        if (p.monit.eventLoopLatency !== undefined)
+          console.log(`  EL Latency   : ${p.monit.eventLoopLatency.toFixed(2)} ms`);
+        console.log(`  Watch        : ${env?.watch}`);
+        console.log(`  Autorestart  : ${env?.autorestart}`);
+        console.log(`  Max restarts : ${env?.maxRestarts}`);
+        console.log(`  Kill timeout : ${env?.killTimeout} ms`);
+        if (env?.healthCheckUrl) console.log(`  Health URL   : ${env.healthCheckUrl}`);
+        if (env?.cronRestart) console.log(`  Cron restart : ${env.cronRestart}`);
+        if (env?.port) console.log(`  Port         : ${env.port}`);
+        console.log();
+      }
+    } catch (err: any) {
+      console.error(colorize(`Error: ${err.message}`, "red"));
       process.exit(1);
-    }
-
-    const processes: ProcessState[] = res.data;
-    for (const p of processes) {
-      console.log(colorize(`\n─── ${p.name} (id: ${p.pm_id}) ───`, "bold"));
-      console.log(`  Status       : ${colorize(p.status, statusColor(p.status))}`);
-      console.log(`  PID          : ${p.pid || "N/A"}`);
-      console.log(`  Exec mode    : ${p.bm2_env.execMode}`);
-      console.log(`  Instances    : ${p.bm2_env.instances}`);
-      console.log(`  Namespace    : ${p.namespace || "default"}`);
-      console.log(`  Script       : ${p.bm2_env.script}`);
-      console.log(`  CWD          : ${p.bm2_env.cwd}`);
-      console.log(`  Args         : ${p.bm2_env.args.join(" ") || "(none)"}`);
-      console.log(`  Interpreter  : ${p.bm2_env.interpreter || "bun"}`);
-      console.log(`  Restarts     : ${p.bm2_env.restart_time}`);
-      console.log(`  Unstable     : ${p.bm2_env.unstable_restarts}`);
-      console.log(
-        `  Uptime       : ${
-          p.status === "online" ? formatUptime(Date.now() - p.bm2_env.pm_uptime) : "N/A"
-        }`
-      );
-      console.log(`  Created at   : ${new Date(p.bm2_env.created_at).toISOString()}`);
-      console.log(`  CPU          : ${p.monit.cpu.toFixed(1)}%`);
-      console.log(`  Memory       : ${formatBytes(p.monit.memory)}`);
-      if (p.monit.handles !== undefined) console.log(`  Handles      : ${p.monit.handles}`);
-      if (p.monit.eventLoopLatency !== undefined)
-        console.log(`  EL Latency   : ${p.monit.eventLoopLatency.toFixed(2)} ms`);
-      console.log(`  Watch        : ${p.bm2_env.watch}`);
-      console.log(`  Autorestart  : ${p.bm2_env.autorestart}`);
-      console.log(`  Max restarts : ${p.bm2_env.maxRestarts}`);
-      console.log(`  Kill timeout : ${p.bm2_env.killTimeout} ms`);
-      if (p.bm2_env.healthCheckUrl) console.log(`  Health URL   : ${p.bm2_env.healthCheckUrl}`);
-      if (p.bm2_env.cronRestart) console.log(`  Cron restart : ${p.bm2_env.cronRestart}`);
-      if (p.bm2_env.port) console.log(`  Port         : ${p.bm2_env.port}`);
-      console.log();
     }
   }
-  
+
   async cmdLogs(args: string[]) {
-    
     let target: string | number = "all";
     let lines = 20;
     let follow = false;
-  
     let i = 0;
-  
+
     while (i < args.length) {
       const arg = args[i]!;
-  
       if ((arg === "--lines" || arg === "-l") && !Number.isNaN(Number(args[i + 1]))) {
         lines = parseInt(args[i + 1]!);
-        i++; // skip value
+        i++;
       } else if (arg.startsWith("--lines=")) {
         lines = parseInt(arg.split("=")[1]!);
       } else if (arg === "--follow" || arg === "-f") {
@@ -649,158 +417,143 @@ class BM2CLI {
       } else if (!arg.startsWith("-")) {
         target = arg;
       }
-  
       i++;
     }
-  
+
     const renderLog = (log: LogItem) => {
       let line;
-      if (log.level == "err") {
-        line = chalk.red(`[ERROR] ${log.name} | ${log.ts}: ${log.msg}\n`)
+      if (log.level === "err") {
+        line = chalk.red(`[ERROR] ${log.name} | ${log.ts}: ${log.msg}\n`);
       } else {
-        line = chalk.white(`${chalk.cyan(`[OUTPUT] ${log.name} | ${log.ts}`)}: ${log.msg}\n`)
+        line = chalk.white(`${chalk.cyan(`[OUTPUT] ${log.name} | ${log.ts}`)}: ${log.msg}\n`);
       }
-      console.log(line)  
-    }
-  
-    if (follow) {
-      
-      const opts: DaemonMessage = {
-        type: "streamLogs",
-        data: { target },
-        mode: "stream"
+      console.log(line);
+    };
+
+    try {
+      if (follow) {
+        await this.pboss.streamLogs(target, (log) => {
+          if (log) renderLog(log);
+        });
+      } else {
+        const logs = await this.pboss.logs(target, lines);
+        for (const log of logs) {
+          renderLog(log);
+        }
       }
-      
-      const callback = (log: LogItem | null) => {
-        if(log) renderLog(log)
-      }
-      
-      await this.getDaemonStream<LogItem>(opts, callback);
-         
-    } else {
-      
-      const res = await this.sendToDaemon({
-        type: "logs",
-        data: { target, lines },
-      });
-  
-      if (!res.success) {
-        console.error(colorize(`Error: ${res.error}`, "red"));
-        process.exit(1);
-      }
-     
-      const logs: LogItem[] = res.data ?? [];
-      
-      for (let log of logs) {
-        renderLog(log)
-      }
-      
+    } catch (err: any) {
+      console.error(colorize(`Error: ${err.message}`, "red"));
+      process.exit(1);
     }
   }
 
   async cmdFlush(args: string[]) {
-    const target = args[0];
-    const res = await this.sendToDaemon({ type: "flush", data: target ? { target } : undefined });
-    if (!res.success) {
-      console.error(colorize(`Error: ${res.error}`, "red"));
+    try {
+      await this.pboss.flush(args[0]);
+      console.log(colorize("✓ Logs flushed", "green"));
+    } catch (err: any) {
+      console.error(colorize(`Error: ${err.message}`, "red"));
       process.exit(1);
     }
-    console.log(colorize("✓ Logs flushed", "green"));
   }
 
   async cmdScale(args: string[]) {
     const target = args[0];
     const count = parseInt(args[1]!);
     if (!target || isNaN(count)) {
-      console.error(colorize("Usage: bm2 scale <name|id> <count>", "red"));
+      console.error(colorize("Usage: pboss scale <name|id> <count>", "red"));
       process.exit(1);
     }
 
-    const res = await this.sendToDaemon({ type: "scale", data: { target, count } });
-    if (!res.success) {
-      console.error(colorize(`Error: ${res.error}`, "red"));
+    try {
+      const states = await this.pboss.scale(target, count);
+      printProcessTable(states);
+    } catch (err: any) {
+      console.error(colorize(`Error: ${err.message}`, "red"));
       process.exit(1);
     }
-    printProcessTable(res.data);
   }
 
   async cmdSave() {
-    const res = await this.sendToDaemon({ type: "save" });
-    if (!res.success) {
-      console.error(colorize(`Error: ${res.error}`, "red"));
+    try {
+      await this.pboss.save();
+      console.log(colorize("✓ Process list saved", "green"));
+    } catch (err: any) {
+      console.error(colorize(`Error: ${err.message}`, "red"));
       process.exit(1);
     }
-    console.log(colorize("✓ Process list saved", "green"));
   }
 
   async cmdResurrect() {
-    const res = await this.sendToDaemon({ type: "resurrect" });
-    if (!res.success) {
-      console.error(colorize(`Error: ${res.error}`, "red"));
+    try {
+      const states = await this.pboss.resurrect();
+      printProcessTable(states);
+    } catch (err: any) {
+      console.error(colorize(`Error: ${err.message}`, "red"));
       process.exit(1);
     }
-    printProcessTable(res.data);
   }
 
   async cmdSignal(args: string[]) {
     const signal = args[0];
     const target = args[1];
     if (!signal || !target) {
-      console.error(colorize("Usage: bm2 sendSignal <signal> <id|name>", "red"));
+      console.error(colorize("Usage: pboss sendSignal <signal> <id|name>", "red"));
       process.exit(1);
     }
 
-    const res = await this.sendToDaemon({ type: "signal", data: { target, signal } });
-    if (!res.success) {
-      console.error(colorize(`Error: ${res.error}`, "red"));
+    try {
+      await this.pboss.sendSignal(target, signal);
+      console.log(colorize(`✓ Signal ${signal} sent to ${target}`, "green"));
+    } catch (err: any) {
+      console.error(colorize(`Error: ${err.message}`, "red"));
       process.exit(1);
     }
-    console.log(colorize(`✓ Signal ${signal} sent to ${target}`, "green"));
   }
 
   async cmdReset(args: string[]) {
     const target = args[0] || "all";
-    const res = await this.sendToDaemon({ type: "reset", data: { target } });
-    if (!res.success) {
-      console.error(colorize(`Error: ${res.error}`, "red"));
+    try {
+      const states = await this.pboss.reset(target);
+      console.log(colorize("✓ Restart counters reset", "green"));
+      printProcessTable(states);
+    } catch (err: any) {
+      console.error(colorize(`Error: ${err.message}`, "red"));
       process.exit(1);
     }
-    console.log(colorize("✓ Restart counters reset", "green"));
-    printProcessTable(res.data);
   }
 
   async cmdMonit() {
-    const res = await this.sendToDaemon({ type: "metrics" });
-    if (!res.success) {
-      console.error(colorize(`Error: ${res.error}`, "red"));
+    try {
+      const snapshot = await this.pboss.metrics();
+      console.log(colorize("\n⚡ ProcBoss Monitor\n", "bold"));
+
+      console.log(colorize("System:", "cyan"));
+      console.log(`  Platform : ${snapshot.system.platform}`);
+      console.log(`  CPUs     : ${snapshot.system.cpuCount}`);
+      console.log(
+        `  Memory   : ${formatBytes(
+          snapshot.system.totalMemory - snapshot.system.freeMemory
+        )} / ${formatBytes(snapshot.system.totalMemory)}`
+      );
+      console.log(`  Load avg : ${snapshot.system.loadAvg.map((l: number) => l.toFixed(2)).join(", ")}`);
+      console.log();
+
+      console.log(colorize("Processes:", "cyan"));
+      for (const p of snapshot.processes) {
+        const statusStr = colorize(padRight(p.status, 14), statusColor(p.status));
+        console.log(
+          `  ${padRight(String(p.id), 4)} ${padRight(p.name, 20)} ${statusStr} CPU: ${padRight(
+            p.cpu.toFixed(1) + "%",
+            8
+          )} MEM: ${padRight(formatBytes(p.memory), 10)} ↺ ${p.restarts}`
+        );
+      }
+      console.log();
+    } catch (err: any) {
+      console.error(colorize(`Error: ${err.message}`, "red"));
       process.exit(1);
     }
-
-    const snapshot = res.data;
-    console.log(colorize("\n⚡ BM2 Monitor\n", "bold"));
-
-    console.log(colorize("System:", "cyan"));
-    console.log(`  Platform : ${snapshot.system.platform}`);
-    console.log(`  CPUs     : ${snapshot.system.cpuCount}`);
-    console.log(
-      `  Memory   : ${formatBytes(
-        snapshot.system.totalMemory - snapshot.system.freeMemory
-      )} / ${formatBytes(snapshot.system.totalMemory)}`
-    );
-    console.log(`  Load avg : ${snapshot.system.loadAvg.map((l: number) => l.toFixed(2)).join(", ")}`);
-    console.log();
-
-    console.log(colorize("Processes:", "cyan"));
-    for (const p of snapshot.processes) {
-      const statusStr = colorize(padRight(p.status, 14), statusColor(p.status));
-      console.log(
-        `  ${padRight(String(p.id), 4)} ${padRight(p.name, 20)} ${statusStr} CPU: ${padRight(
-          p.cpu.toFixed(1) + "%",
-          8
-        )} MEM: ${padRight(formatBytes(p.memory), 10)} ↺ ${p.restarts}`
-      );
-    }
-    console.log();
   }
 
   async cmdDashboard(args: string[]) {
@@ -812,36 +565,34 @@ class BM2CLI {
     const mIdx = args.indexOf("--metrics-port");
     if (mIdx !== -1 && args[mIdx + 1]) metricsPort = parseInt(args[mIdx + 1]!);
 
-    const res = await this.sendToDaemon({ type: "dashboard", data: { port, metricsPort } });
-    if (!res.success) {
-      console.error(colorize(`Error: ${res.error}`, "red"));
+    try {
+      const res = await this.pboss.dashboard(port, metricsPort);
+      console.log(colorize(`✓ Dashboard running at http://localhost:${res.port}`, "green"));
+      console.log(
+        colorize(`  Prometheus metrics at http://localhost:${res.metricsPort}/metrics`, "dim")
+      );
+    } catch (err: any) {
+      console.error(colorize(`Error: ${err.message}`, "red"));
       process.exit(1);
     }
-    console.log(colorize(`✓ Dashboard running at http://localhost:${res.data.port}`, "green"));
-    console.log(
-      colorize(`  Prometheus metrics at http://localhost:${res.data.metricsPort}/metrics`, "dim")
-    );
   }
 
   async cmdDashboardStop() {
-    const res = await this.sendToDaemon({ type: "dashboardStop" });
-    if (!res.success) {
-      console.error(colorize(`Error: ${res.error}`, "red"));
+    try {
+      await this.pboss.dashboardStop();
+      console.log(colorize("✓ Dashboard stopped", "green"));
+    } catch (err: any) {
+      console.error(colorize(`Error: ${err.message}`, "red"));
       process.exit(1);
     }
-    console.log(colorize("✓ Dashboard stopped", "green"));
   }
 
   async cmdPing() {
     try {
-      const res = await this.sendToDaemon({ type: "ping" });
-      if (res.success) {
-        console.log(colorize("✓ Daemon is alive", "green"));
-        console.log(`  PID    : ${res.data.pid}`);
-        console.log(`  Uptime : ${formatUptime(res.data.uptime * 1000)}`);
-      } else {
-        console.log(colorize("✗ Daemon responded with error", "red"));
-      }
+      const res = await this.pboss.ping();
+      console.log(colorize("✓ Daemon is alive", "green"));
+      console.log(`  PID    : ${res.pid}`);
+      console.log(`  Uptime : ${formatUptime(res.uptime * 1000)}`);
     } catch {
       console.log(colorize("✗ Daemon is not running", "red"));
     }
@@ -849,18 +600,8 @@ class BM2CLI {
 
   async cmdKill() {
     try {
-      await this.sendToDaemon({ type: "kill" });
-    } catch {
-      // Expected — daemon exits
-    }
-
-    try {
-      if (existsSync(DAEMON_SOCKET)) unlinkSync(DAEMON_SOCKET);
+      await this.pboss.kill();
     } catch {}
-    try {
-      if (existsSync(DAEMON_PID_FILE)) unlinkSync(DAEMON_PID_FILE);
-    } catch {}
-
     console.log(colorize("✓ Daemon killed", "green"));
   }
 
@@ -869,24 +610,28 @@ class BM2CLI {
     const environment = args[1];
 
     if (!configFile || !environment) {
-      console.error(colorize("Usage: bm2 deploy <config> <environment> [setup]", "red"));
+      console.error(colorize("Usage: pboss deploy <config> <environment> [setup]", "red"));
       process.exit(1);
     }
 
-    const config = await this.loadEcosystemConfig(configFile);
+    try {
+      const config = await loadEcosystemConfig(configFile);
+      if (!config.deploy || !config.deploy[environment]) {
+        console.error(colorize(`Deploy environment "${environment}" not found in config`, "red"));
+        process.exit(1);
+      }
 
-    if (!config.deploy || !config.deploy[environment]) {
-      console.error(colorize(`Deploy environment "${environment}" not found in config`, "red"));
+      const deployConfig = config.deploy[environment]!;
+      const deployer = new DeployManager();
+
+      if (args[2] === "setup") {
+        await deployer.setup(deployConfig);
+      } else {
+        await deployer.deploy(deployConfig, args[2]);
+      }
+    } catch (err: any) {
+      console.error(colorize(`Error: ${err.message}`, "red"));
       process.exit(1);
-    }
-
-    const deployConfig = config.deploy[environment]!;
-    const deployer = new DeployManager();
-
-    if (args[2] === "setup") {
-      await deployer.setup(deployConfig);
-    } else {
-      await deployer.deploy(deployConfig, args[2]);
     }
   }
 
@@ -916,7 +661,7 @@ class BM2CLI {
         const key = args[2];
         const value = args[3];
         if (!name || !key || value === undefined) {
-          console.error(colorize("Usage: bm2 env set <name> <key> <value>", "red"));
+          console.error(colorize("Usage: pboss env set <name> <key> <value>", "red"));
           process.exit(1);
         }
         await envMgr.setEnv(name, key, value);
@@ -926,7 +671,7 @@ class BM2CLI {
       case "get": {
         const name = args[1];
         if (!name) {
-          console.error(colorize("Usage: bm2 env get <name>", "red"));
+          console.error(colorize("Usage: pboss env get <name>", "red"));
           process.exit(1);
         }
         const env = await envMgr.getEnv(name);
@@ -940,7 +685,7 @@ class BM2CLI {
         const name = args[1];
         const key = args[2];
         if (!name) {
-          console.error(colorize("Usage: bm2 env delete <name> [key]", "red"));
+          console.error(colorize("Usage: pboss env delete <name> [key]", "red"));
           process.exit(1);
         }
         await envMgr.deleteEnv(name, key);
@@ -958,7 +703,7 @@ class BM2CLI {
         break;
       }
       default:
-        console.error(colorize("Usage: bm2 env <set|get|delete|list> ...", "red"));
+        console.error(colorize("Usage: pboss env <set|get|delete|list> ...", "red"));
         process.exit(1);
     }
   }
@@ -970,50 +715,53 @@ class BM2CLI {
       case "install": {
         const mod = args[1];
         if (!mod) {
-          console.error(colorize("Usage: bm2 module install <name|url|path>", "red"));
+          console.error(colorize("Usage: pboss module install <name|url|path>", "red"));
           process.exit(1);
         }
-        const res = await this.sendToDaemon({ type: "moduleInstall", data: { module: mod } });
-        if (!res.success) {
-          console.error(colorize(`Error: ${res.error}`, "red"));
+        try {
+          const res = await this.pboss.moduleInstall(mod);
+          console.log(colorize(`✓ Module installed at ${res.path}`, "green"));
+        } catch (err: any) {
+          console.error(colorize(`Error: ${err.message}`, "red"));
           process.exit(1);
         }
-        console.log(colorize(`✓ Module installed at ${res.data.path}`, "green"));
         break;
       }
       case "uninstall":
       case "remove": {
         const mod = args[1];
         if (!mod) {
-          console.error(colorize("Usage: bm2 module uninstall <name>", "red"));
+          console.error(colorize("Usage: pboss module uninstall <name>", "red"));
           process.exit(1);
         }
-        const res = await this.sendToDaemon({ type: "moduleUninstall", data: { module: mod } });
-        if (!res.success) {
-          console.error(colorize(`Error: ${res.error}`, "red"));
+        try {
+          await this.pboss.moduleUninstall(mod);
+          console.log(colorize("✓ Module uninstalled", "green"));
+        } catch (err: any) {
+          console.error(colorize(`Error: ${err.message}`, "red"));
           process.exit(1);
         }
-        console.log(colorize("✓ Module uninstalled", "green"));
         break;
       }
       case "list":
       case "ls": {
-        const res = await this.sendToDaemon({ type: "moduleList" });
-        if (!res.success) {
-          console.error(colorize(`Error: ${res.error}`, "red"));
-          process.exit(1);
-        }
-        if (res.data.length === 0) {
-          console.log(colorize("No modules installed", "dim"));
-        } else {
-          for (const m of res.data) {
-            console.log(`  ${colorize(m.name, "cyan")} @ ${m.version}`);
+        try {
+          const list = await this.pboss.moduleList();
+          if (list.length === 0) {
+            console.log(colorize("No modules installed", "dim"));
+          } else {
+            for (const m of list) {
+              console.log(`  ${colorize(m.name, "cyan")} @ ${m.version}`);
+            }
           }
+        } catch (err: any) {
+          console.error(colorize(`Error: ${err.message}`, "red"));
+          process.exit(1);
         }
         break;
       }
       default:
-        console.error(colorize("Usage: bm2 module <install|uninstall|list> ...", "red"));
+        console.error(colorize("Usage: pboss module <install|uninstall|list> ...", "red"));
         process.exit(1);
     }
   }
@@ -1022,7 +770,7 @@ class BM2CLI {
     const subCmd = args[0];
 
     const daemonStatus = () => {
-      if (this.isDaemonRunning()) {
+      if (this.pboss.isDaemonRunning()) {
         console.log(colorize("running", "green"));
       } else {
         console.error(colorize("stopped", "red"));
@@ -1035,31 +783,31 @@ class BM2CLI {
         daemonStatus();
         break;
       case "start":
-        await this.startDaemon();
+        await this.pboss.startDaemon();
         process.exit(0);
         break;
       case "stop":
-        await this.stopDaemon();
+        await this.pboss.stopDaemon();
         process.exit(0);
         break;
       case "reload":
-        await this.stopDaemon();
-        await this.startDaemon();
+        await this.pboss.daemonReload();
         process.exit(0);
         break;
       default:
-        console.error(colorize("Usage: bm2 daemon <status|start|stop|reload>", "red"));
+        console.error(colorize("Usage: pboss daemon <status|start|stop|reload>", "red"));
         process.exit(1);
     }
   }
 
   async cmdPrometheus() {
-    const res = await this.sendToDaemon({ type: "prometheus" });
-    if (!res.success) {
-      console.error(colorize(`Error: ${res.error}`, "red"));
+    try {
+      const prom = await this.pboss.prometheus();
+      console.log(prom);
+    } catch (err: any) {
+      console.error(colorize(`Error: ${err.message}`, "red"));
       process.exit(1);
     }
-    console.log(res.data);
   }
 
   // -------------------------------------------------------------------------
@@ -1068,9 +816,9 @@ class BM2CLI {
 
   printHelp() {
     console.log(`
-    ${colorize("BM2", "bold")} ${colorize(`v${VERSION}`, "dim")} — Bun Process Manager
+    ${colorize("ProcBoss", "bold")} ${colorize(`v${VERSION}`, "dim")} — Bun Process Manager
     
-    ${colorize("Usage:", "bold")} bm2 <command> [options]
+    ${colorize("Usage:", "bold")} pboss <command> [options]
     
     ${colorize("Process Management:", "cyan")}
     start <script|config> [opts]  Start a process or ecosystem config
@@ -1108,7 +856,7 @@ class BM2CLI {
     env list                      List all env registries
     
     ${colorize("Modules:", "cyan")}
-    module install <name|url>     Install a BM2 module
+    module install <name|url>     Install a pboss module
     module uninstall <name>       Remove a module
     module list                   List installed modules
     
@@ -1147,16 +895,16 @@ class BM2CLI {
     -- <args...>                  Pass arguments to script
     
     ${colorize("Examples:", "dim")}
-    bm2 start app.ts
-    bm2 start server.ts --name api -i 4 --watch
-    bm2 start --no-daemon app.ts
-    bm2 start --name api --no-daemon server.ts
-    bm2 start ecosystem.config.ts
-    bm2 restart api
-    bm2 scale api 8
-    bm2 logs api --lines 100
-    bm2 monit
-    bm2 save && bm2 resurrect
+    pboss start app.ts
+    pboss start server.ts --name api -i 4 --watch
+    pboss start --no-daemon app.ts
+    pboss start --name api --no-daemon server.ts
+    pboss start ecosystem.config.ts
+    pboss restart api
+    pboss scale api 8
+    pboss logs api --lines 100
+    pboss monit
+    pboss save && pboss resurrect
     `);
   }
 
@@ -1169,6 +917,9 @@ class BM2CLI {
     const commandArgs = argv.slice(1);
     
     this.noDaemon = argv.includes("--no-daemon") || argv.includes("-d");
+    if (this.noDaemon) {
+      this.pboss = new PBoss({ noDaemon: true });
+    }
 
     switch (command) {
       case "start":
@@ -1271,7 +1022,7 @@ class BM2CLI {
         break;
       default:
         console.error(colorize(`Unknown command: ${command}`, "red"));
-        console.error(`Run ${colorize("bm2 --help", "cyan")} for usage information.`);
+        console.error(`Run ${colorize("pboss --help", "cyan")} for usage information.`);
         process.exit(1);
     }
   }
@@ -1281,5 +1032,5 @@ class BM2CLI {
 // Entrypoint
 // ---------------------------------------------------------------------------
 
-const cli = new BM2CLI();
+const cli = new PBossCLI();
 await cli.run(process.argv.slice(2));

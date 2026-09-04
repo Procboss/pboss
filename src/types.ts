@@ -1,5 +1,5 @@
 /**
- * BM2 — Bun Process Manager
+ * ProcBoss (pboss) — Bun Process Manager
  * A production-grade process manager for Bun.
  *
  * Features:
@@ -9,7 +9,8 @@
  * - Log management & rotation
  * - Deployment support
  *
- * https://github.com/bun-bm2/bm2
+ * https://procboss.com
+ * https://github.com/procboss/pboss
  * License: GPL-3.0-only
  */
 
@@ -44,7 +45,7 @@ export interface ProcessDescription {
   interpreter?: string;
   interpreterArgs?: string[];
   mergeLogs: boolean;
-  /** Also forward child stdout/stderr to BM2's own stdout/stderr. */
+  /** Also forward child stdout/stderr to pboss's own stdout/stderr. */
   raw: boolean;
   logDateFormat?: string;
   errorFile?: string;
@@ -90,6 +91,18 @@ export interface VersioningConfig {
   maxVersions?: number;
 }
 
+export interface ProcessEnvMeta extends ProcessDescription {
+  status: ProcessStatus;
+  pm_uptime: number;
+  restart_time: number;
+  unstable_restarts: number;
+  created_at: number;
+  pm_id: number;
+  version?: string;
+  axm_monitor?: Record<string, any>;
+  axm_actions?: any[];
+}
+
 export interface ProcessState {
   id: number;
   name: string;
@@ -103,17 +116,8 @@ export interface ProcessState {
     handles?: number;
     eventLoopLatency?: number;
   };
-  bm2_env: ProcessDescription & {
-    status: ProcessStatus;
-    pm_uptime: number;
-    restart_time: number;
-    unstable_restarts: number;
-    created_at: number;
-    pm_id: number;
-    version?: string;
-    axm_monitor?: Record<string, any>;
-    axm_actions?: any[];
-  };
+  pboss_env: ProcessEnvMeta;
+  bm2_env?: ProcessEnvMeta;
 }
 
 export interface StartOptions {
@@ -133,7 +137,7 @@ export interface StartOptions {
   interpreter?: string;
   interpreterArgs?: string[];
   mergeLogs?: boolean;
-  /** Also forward child stdout/stderr to BM2's own stdout/stderr. */
+  /** Also forward child stdout/stderr to pboss's own stdout/stderr. */
   raw?: boolean;
   logDateFormat?: string;
   errorFile?: string;

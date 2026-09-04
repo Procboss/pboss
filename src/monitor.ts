@@ -1,5 +1,5 @@
 /**
- * BM2 — Bun Process Manager
+ * ProcBoss (pboss) — Bun Process Manager
  * A production-grade process manager for Bun.
  *
  * Features:
@@ -9,7 +9,8 @@
  * - Log management & rotation
  * - Deployment support
  *
- * https://github.com/bun-bm2/bm2
+ * https://procboss.com
+ * https://github.com/procboss/pboss
  * License: GPL-3.0-only
  */
  
@@ -77,18 +78,21 @@ export class Monitor {
     const system = getSystemInfo();
     const snapshot: MetricSnapshot = {
       timestamp: Date.now(),
-      processes: processes.map((p) => ({
-        id: p.id,
-        name: p.name,
-        pid: p.pid,
-        cpu: p.monit.cpu,
-        memory: p.monit.memory,
-        eventLoopLatency: p.monit.eventLoopLatency,
-        handles: p.monit.handles,
-        status: p.status,
-        restarts: p.bm2_env.restart_time,
-        uptime: p.bm2_env.status === "online" ? Date.now() - p.bm2_env.pm_uptime : 0,
-      })),
+      processes: processes.map((p) => {
+        const env = p.pboss_env || p.bm2_env;
+        return {
+          id: p.id,
+          name: p.name,
+          pid: p.pid,
+          cpu: p.monit.cpu,
+          memory: p.monit.memory,
+          eventLoopLatency: p.monit.eventLoopLatency,
+          handles: p.monit.handles,
+          status: p.status,
+          restarts: env?.restart_time ?? 0,
+          uptime: (env?.status === "online" && env?.pm_uptime) ? Date.now() - env.pm_uptime : 0,
+        };
+      }),
       system: {
         totalMemory: system.totalMemory,
         freeMemory: system.freeMemory,
@@ -123,53 +127,55 @@ export class Monitor {
   generatePrometheusMetrics(processes: ProcessState[]): string {
     const lines: string[] = [];
 
-    lines.push("# HELP bm2_process_cpu CPU usage percentage");
-    lines.push("# TYPE bm2_process_cpu gauge");
+    lines.push("# HELP pboss_process_cpu CPU usage percentage");
+    lines.push("# TYPE pboss_process_cpu gauge");
     for (const p of processes) {
-      lines.push(`bm2_process_cpu{name="${p.name}",id="${p.pm_id}"} ${p.monit.cpu}`);
+      lines.push(`pboss_process_cpu{name="${p.name}",id="${p.pm_id}"} ${p.monit.cpu}`);
     }
 
-    lines.push("# HELP bm2_process_memory_bytes Memory usage in bytes");
-    lines.push("# TYPE bm2_process_memory_bytes gauge");
+    lines.push("# HELP pboss_process_memory_bytes Memory usage in bytes");
+    lines.push("# TYPE pboss_process_memory_bytes gauge");
     for (const p of processes) {
-      lines.push(`bm2_process_memory_bytes{name="${p.name}",id="${p.pm_id}"} ${p.monit.memory}`);
+      lines.push(`pboss_process_memory_bytes{name="${p.name}",id="${p.pm_id}"} ${p.monit.memory}`);
     }
 
-    lines.push("# HELP bm2_process_restarts_total Total restart count");
-    lines.push("# TYPE bm2_process_restarts_total counter");
+    lines.push("# HELP pboss_process_restarts_total Total restart count");
+    lines.push("# TYPE pboss_process_restarts_total counter");
     for (const p of processes) {
-      lines.push(`bm2_process_restarts_total{name="${p.name}",id="${p.pm_id}"} ${p.bm2_env.restart_time}`);
+      const env = p.pboss_env || p.bm2_env;
+      lines.push(`pboss_process_restarts_total{name="${p.name}",id="${p.pm_id}"} ${env?.restart_time ?? 0}`);
     }
 
-    lines.push("# HELP bm2_process_uptime_seconds Process uptime in seconds");
-    lines.push("# TYPE bm2_process_uptime_seconds gauge");
+    lines.push("# HELP pboss_process_uptime_seconds Process uptime in seconds");
+    lines.push("# TYPE pboss_process_uptime_seconds gauge");
     for (const p of processes) {
-      const uptime = p.bm2_env.status === "online"
-        ? (Date.now() - p.bm2_env.pm_uptime) / 1000
+      const env = p.pboss_env || p.bm2_env;
+      const uptime = (env?.status === "online" && env?.pm_uptime)
+        ? (Date.now() - env.pm_uptime) / 1000
         : 0;
-      lines.push(`bm2_process_uptime_seconds{name="${p.name}",id="${p.pm_id}"} ${uptime.toFixed(0)}`);
+      lines.push(`pboss_process_uptime_seconds{name="${p.name}",id="${p.pm_id}"} ${uptime.toFixed(0)}`);
     }
 
-    lines.push("# HELP bm2_process_status Process status (1=online)");
-    lines.push("# TYPE bm2_process_status gauge");
+    lines.push("# HELP pboss_process_status Process status (1=online)");
+    lines.push("# TYPE pboss_process_status gauge");
     for (const p of processes) {
-      lines.push(`bm2_process_status{name="${p.name}",id="${p.pm_id}",status="${p.status}"} ${p.status === "online" ? 1 : 0}`);
+      lines.push(`pboss_process_status{name="${p.name}",id="${p.pm_id}",status="${p.status}"} ${p.status === "online" ? 1 : 0}`);
     }
 
     const sys = getSystemInfo();
-    lines.push("# HELP bm2_system_memory_total_bytes Total system memory");
-    lines.push("# TYPE bm2_system_memory_total_bytes gauge");
-    lines.push(`bm2_system_memory_total_bytes ${sys.totalMemory}`);
+    lines.push("# HELP pboss_system_memory_total_bytes Total system memory");
+    lines.push("# TYPE pboss_system_memory_total_bytes gauge");
+    lines.push(`pboss_system_memory_total_bytes ${sys.totalMemory}`);
 
-    lines.push("# HELP bm2_system_memory_free_bytes Free system memory");
-    lines.push("# TYPE bm2_system_memory_free_bytes gauge");
-    lines.push(`bm2_system_memory_free_bytes ${sys.freeMemory}`);
+    lines.push("# HELP pboss_system_memory_free_bytes Free system memory");
+    lines.push("# TYPE pboss_system_memory_free_bytes gauge");
+    lines.push(`pboss_system_memory_free_bytes ${sys.freeMemory}`);
 
-    lines.push("# HELP bm2_system_load_average System load average");
-    lines.push("# TYPE bm2_system_load_average gauge");
-    lines.push(`bm2_system_load_average{period="1m"} ${sys.loadAvg[0]}`);
-    lines.push(`bm2_system_load_average{period="5m"} ${sys.loadAvg[1]}`);
-    lines.push(`bm2_system_load_average{period="15m"} ${sys.loadAvg[2]}`);
+    lines.push("# HELP pboss_system_load_average System load average");
+    lines.push("# TYPE pboss_system_load_average gauge");
+    lines.push(`pboss_system_load_average{period="1m"} ${sys.loadAvg[0]}`);
+    lines.push(`pboss_system_load_average{period="5m"} ${sys.loadAvg[1]}`);
+    lines.push(`pboss_system_load_average{period="15m"} ${sys.loadAvg[2]}`);
 
     return lines.join("\n") + "\n";
   }

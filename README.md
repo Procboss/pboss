@@ -1,4 +1,4 @@
-# ⚡ BM2
+# ⚡ ProcBoss (pboss)
 
 **A blazing-fast, full-featured process manager built entirely on Bun native APIs.**
 The modern PM2 replacement — zero Node.js dependencies, pure Bun performance.
@@ -6,16 +6,16 @@ The modern PM2 replacement — zero Node.js dependencies, pure Bun performance.
 ![Runtime](https://img.shields.io/badge/runtime-Bun-f472b6?style=flat-square)
 ![Language](https://img.shields.io/badge/language-TypeScript-3178c6?style=flat-square)
 ![License](https://img.shields.io/badge/license-GPLv3-green?style=flat-square)
-[![Tests](https://github.com/bun-bm2/bm2/actions/workflows/test.yml/badge.svg)](https://github.com/bun-bm2/bm2/actions/workflows/test.yml)
-[![GitHub Sponsors](https://img.shields.io/badge/sponsor-GitHub%20Sponsors-ea4aaa?style=flat-square&logo=github-sponsors)](https://github.com/sponsors/bun-bm2)
+[![Tests](https://github.com/procboss/pboss/actions/workflows/test.yml/badge.svg)](https://github.com/procboss/pboss/actions/workflows/test.yml)
+[![GitHub Sponsors](https://img.shields.io/badge/sponsor-GitHub%20Sponsors-ea4aaa?style=flat-square&logo=github-sponsors)](https://github.com/sponsors/procboss)
 
 ---
 
-### Support BM2
+### Support ProcBoss
 
-BM2 is free and open-source software built for the Bun community. If BM2 saves you time or powers your production services, please consider supporting its development:
+ProcBoss (pboss) is free and open-source software built for the Bun community. If ProcBoss saves you time or powers your production services, please consider supporting its development:
 
-- ⭐ **Star the Repo:** Star us on [GitHub](https://github.com/bun-bm2/bm2) to help more developers discover BM2.
+- ⭐ **Star the Repo:** Star us on [GitHub](https://github.com/procboss/pboss) to help more developers discover ProcBoss.
 - 🐛 **Contribute:** Open issues, suggest features, or submit pull requests.
 
 
@@ -33,8 +33,8 @@ BM2 is free and open-source software built for the Bun community. If BM2 saves y
 
 ## Table of Contents
 
-- [Support & Sponsor](#-support--sponsor-bm2)
-- [Why BM2?](#why-bm2)
+- [Support & Sponsor](#support-procboss)
+- [Why ProcBoss?](#why-procboss)
 - [Features](#features)
 - [Requirements](#requirements)
 - [Installation](#installation)
@@ -90,11 +90,11 @@ BM2 is free and open-source software built for the Bun community. If BM2 saves y
 
 ---
 
-## Why BM2?
+## Why ProcBoss?
 
-PM2 is the de facto process manager for Node.js, but it carries years of legacy baggage, a heavy dependency tree, and is fundamentally built for the Node.js runtime. BM2 is a ground-up reimagining of production process management designed exclusively for the Bun runtime.
+PM2 is the de facto process manager for Node.js, but it carries years of legacy baggage, a heavy dependency tree, and is fundamentally built for the Node.js runtime. ProcBoss (pboss) is a ground-up reimagining of production process management designed exclusively for the Bun runtime.
 
-BM2 replaces PM2's Node.js internals with Bun-native APIs. It uses `Bun.spawn` for process management, `Bun.serve` for the dashboard and IPC, native `WebSocket` for daemon communication, `Bun.file` for high-performance I/O, and `Bun.gzipSync` for log compression. The result is a process manager that starts faster, uses less memory, and leverages Bun's superior performance across the board.
+ProcBoss replaces PM2's Node.js internals with Bun-native APIs. It uses `Bun.spawn` for process management, `Bun.serve` for the dashboard and IPC, native `WebSocket` for daemon communication, `Bun.file` for high-performance I/O, and `Bun.gzipSync` for log compression. The result is a process manager that starts faster, uses less memory, and leverages Bun's superior performance across the board.
 
 ---
 
@@ -106,7 +106,7 @@ BM2 replaces PM2's Node.js internals with Bun-native APIs. It uses `Bun.spawn` f
 
 **Zero-Downtime Reload** — Graceful reload cycles through instances sequentially, starting the new process before stopping the old one, ensuring your application never drops a request.
 
-**Foreground / No-Daemon Mode** — Run BM2 in blocking foreground mode without spawning a background daemon. Designed for containerized environments like Docker, Kubernetes, and any platform that expects PID 1 to remain in the foreground.
+**Foreground / No-Daemon Mode** — Run ProcBoss in blocking foreground mode without spawning a background daemon. Designed for containerized environments like Docker, Kubernetes, and any platform that expects PID 1 to remain in the foreground.
 
 **Real-Time Web Dashboard** — A built-in dark-themed web dashboard with live WebSocket updates, CPU/memory charts, process control buttons, and a log viewer. No external dependencies.
 
@@ -124,11 +124,11 @@ BM2 replaces PM2's Node.js internals with Bun-native APIs. It uses `Bun.spawn` f
 
 **Process Persistence** — Save the current process list and resurrect it after a daemon restart or system reboot. Combined with startup script generation, your applications survive server reboots.
 
-**Startup Script Generation** — Automatically generate and install systemd (Linux), launchd (macOS), or Task Scheduler (Windows) service configurations so the BM2 daemon starts at boot.
+**Startup Script Generation** — Automatically generate and install systemd (Linux), launchd (macOS), or Task Scheduler (Windows) service configurations so the ProcBoss daemon starts at boot.
 
 **Remote Deployment** — A built-in deploy system that handles SSH-based deployment with git pull, release directory management, symlink rotation, and pre/post-deploy hooks.
 
-**Module/Plugin System** — Extend BM2 with custom modules that hook into the process manager lifecycle.
+**Module/Plugin System** — Extend ProcBoss with custom modules that hook into the process manager lifecycle.
 
 **Environment Management** — Store, retrieve, and inject environment variables per process with `.env` file loading support.
 
@@ -160,8 +160,8 @@ powershell -c "irm bun.sh/install.ps1 | iex"
 ### From Source
 
 ```
-git clone https://github.com/bun-bm2/bm2.git
-cd bm2
+git clone https://github.com/procboss/pboss.git
+cd pboss
 bun install
 bun link
 ```
@@ -169,13 +169,13 @@ bun link
 ### Global Install
 
 ```
-bun add -g bm2
+bun add -g pboss
 ```
 
 ### Verify Installation
 
 ```
-bm2 --version
+pboss --version
 ```
 
 ---
@@ -185,25 +185,25 @@ bm2 --version
 ### Start a process
 
 ```
-bm2 start app.ts
+pboss start app.ts
 ```
 
 ### Start with a name and options
 
 ```
-bm2 start app.ts --name my-api --instances 4 --port 3000
+pboss start app.ts --name my-api --instances 4 --port 3000
 ```
 
 ### List all processes
 
 ```
-bm2 list
+pboss list
 ```
 
 ### List processes with live updates
 
 ```
-bm2 list --live
+pboss list --live
 ```
 
 Output:
@@ -222,7 +222,7 @@ Output:
 ### Open the dashboard
 
 ```
-bm2 dashboard
+pboss dashboard
 ```
 
 Output:
@@ -235,8 +235,8 @@ Output:
 ### Save and auto-resurrect on reboot
 
 ```
-bm2 save
-bm2 startup
+pboss save
+pboss startup
 ```
 
 ---
@@ -245,32 +245,32 @@ bm2 startup
 
 ### Process Management
 
-#### bm2 start
+#### pboss start
 
 Start a new process or processes.
 
 ```
-bm2 start server.ts
+pboss start server.ts
 ```
 
 ```
-bm2 start server.ts --name api -- --port 8080 --host 0.0.0.0
+pboss start server.ts --name api -- --port 8080 --host 0.0.0.0
 ```
 
 ```
-bm2 start server.ts --name api --env NODE_ENV=production --env API_KEY=xxx
+pboss start server.ts --name api --env NODE_ENV=production --env API_KEY=xxx
 ```
 
 ```
-bm2 start server.ts --name api --max-memory-restart 512M
+pboss start server.ts --name api --max-memory-restart 512M
 ```
 
 ```
-bm2 start script.py --interpreter python3
+pboss start script.py --interpreter python3
 ```
 
 ```
-bm2 start server.ts --name api --wait-ready --listen-timeout 10000
+pboss start server.ts --name api --wait-ready --listen-timeout 10000
 ```
 
 **Options:**
@@ -301,8 +301,8 @@ bm2 start server.ts --name api --wait-ready --listen-timeout 10000
 | `--source-map-support` | Enable source map support | `false` |
 | `--merge-logs` | Merge all instance logs into one file | `false` |
 | `--log-date-format <fmt>` | Date format prefix for log lines | — |
-| `--output <file>` | Custom stdout log path | `~/.bm2/logs/<name>-<id>-out.log` |
-| `--error <file>` | Custom stderr log path | `~/.bm2/logs/<name>-<id>-error.log` |
+| `--output <file>` | Custom stdout log path | `~/.pboss/logs/<name>-<id>-out.log` |
+| `--error <file>` | Custom stderr log path | `~/.pboss/logs/<name>-<id>-error.log` |
 | `--log-max-size <size>` | Max log file size before rotation | `10M` |
 | `--log-retain <n>` | Number of rotated log files to keep | `5` |
 | `--log-compress` | Gzip rotated log files | `false` |
@@ -315,81 +315,81 @@ bm2 start server.ts --name api --wait-ready --listen-timeout 10000
 
 > **Flags are position-independent.** `--no-daemon` (and all other flags) may appear anywhere relative to the script path:
 > ```
-> bm2 start --no-daemon app.ts
-> bm2 start app.ts --no-daemon
-> bm2 start --name api --no-daemon app.ts --watch
+> pboss start --no-daemon app.ts
+> pboss start app.ts --no-daemon
+> pboss start --name api --no-daemon app.ts --watch
 > ```
 
 ---
 
-#### bm2 stop
+#### pboss stop
 
 Stop a process, all processes with a name, or all processes.
 
 ```
-bm2 stop 0
-bm2 stop my-api
-bm2 stop my-namespace
-bm2 stop all
+pboss stop 0
+pboss stop my-api
+pboss stop my-namespace
+pboss stop all
 ```
 
 ---
 
-#### bm2 restart
+#### pboss restart
 
 Stop and restart a process. The process is fully stopped and then re-spawned.
 
 ```
-bm2 restart my-api
-bm2 restart all
+pboss restart my-api
+pboss restart all
 ```
 
 ---
 
-#### bm2 reload
+#### pboss reload
 
 Graceful zero-downtime reload. New instances start before old ones are killed, ensuring your application always has live workers handling requests.
 
 ```
-bm2 reload my-api
-bm2 reload all
+pboss reload my-api
+pboss reload all
 ```
 
-The reload process works as follows for each instance. First, a new process is spawned. Then BM2 waits for the new process to become stable or emit a ready signal if `--wait-ready` is enabled. Next, the old process receives SIGTERM and is given the kill timeout to shut down gracefully. Finally, the cycle moves to the next instance.
+The reload process works as follows for each instance. First, a new process is spawned. Then ProcBoss waits for the new process to become stable or emit a ready signal if `--wait-ready` is enabled. Next, the old process receives SIGTERM and is given the kill timeout to shut down gracefully. Finally, the cycle moves to the next instance.
 
 ---
 
-#### bm2 delete
+#### pboss delete
 
-Stop and remove a process from BM2's management.
+Stop and remove a process from ProcBoss's management.
 
 ```
-bm2 delete 0
-bm2 delete my-api
-bm2 delete all
+pboss delete 0
+pboss delete my-api
+pboss delete all
 ```
 
 ---
 
-#### bm2 scale
+#### pboss scale
 
 Dynamically scale a process group up or down.
 
 ```
-bm2 scale my-api 8
-bm2 scale my-api 2
+pboss scale my-api 8
+pboss scale my-api 2
 ```
 
 When scaling up, new instances inherit the configuration of the existing instances. When scaling down, the highest-numbered instances are stopped and removed first.
 
 ---
 
-#### bm2 describe
+#### pboss describe
 
 Show detailed information about a process.
 
 ```
-bm2 describe my-api
+pboss describe my-api
 ```
 
 Output:
@@ -417,20 +417,20 @@ Output:
 │ Cron Restart        │ disabled                                 │
 │ Namespace           │ production                               │
 │ Created             │ 2025-02-11T10:30:00.000Z                 │
-│ Out Log             │ /home/user/.bm2/logs/my-api-0-out.log    │
-│ Error Log           │ /home/user/.bm2/logs/my-api-0-error.log  │
+│ Out Log             │ /home/user/.pboss/logs/my-api-0-out.log    │
+│ Error Log           │ /home/user/.pboss/logs/my-api-0-error.log  │
 └─────────────────────┴──────────────────────────────────────────┘
 ```
 
 ---
 
-#### bm2 list
+#### pboss list
 
 List all managed processes with their status, resource usage, and uptime.  
 Supports a **live mode** with auto-refresh and interactive keyboard shortcuts.
 
 ```bash
-bm2 list
+pboss list
 ```
 
 ## Live Mode Keyboard Shortcuts
@@ -447,10 +447,10 @@ Q : Quit live mode
 
 ```bash
 # List all processes once
-bm2 list
+pboss list
 
 # List processes with live updates
-bm2 list --live
+pboss list --live
 ```
 
 ## Notes
@@ -461,23 +461,23 @@ bm2 list --live
 
 ---
 
-#### bm2 signal
+#### pboss signal
 
 Send an OS signal to a process.
 
 ```
-bm2 signal my-api SIGUSR2
+pboss signal my-api SIGUSR2
 ```
 
 ---
 
-#### bm2 reset
+#### pboss reset
 
 Reset the restart counter for a process.
 
 ```
-bm2 reset my-api
-bm2 reset all
+pboss reset my-api
+pboss reset all
 ```
 
 ---
@@ -487,25 +487,25 @@ bm2 reset all
 Cluster mode spawns multiple instances of your application, each running in its own process. This is ideal for CPU-bound workloads and for taking full advantage of multi-core servers.
 
 ```bash
-bm2 start server.ts --name api --instances max
+pboss start server.ts --name api --instances max
 ```
 
 ```bash
-bm2 start server.ts --name api --instances 4
+pboss start server.ts --name api --instances 4
 ```
 
 ```bash
-bm2 start server.ts --name api --instances 4 --port 3000
+pboss start server.ts --name api --instances 4 --port 3000
 ```
 
 #### ⚠️ Current Status & Limitations
 
-While `bm2` provides the orchestration for clustering, please note that **Bun's native cluster implementation is currently limited by the underlying OS:**
+While `pboss` provides the orchestration for clustering, please note that **Bun's native cluster implementation is currently limited by the underlying OS:**
 
 * **Linux Only:** Port sharing via `reusePort` is only fully supported on **Linux**.
 * **macOS & Windows:** Due to OS-level limitations with `SO_REUSEPORT`, these platforms ignore the `reusePort` option. On these systems, clustering may result in "Address already in use" errors if attempting to bind multiple workers to the same port.
 
-`bm2` leverages the native [Bun.serve cluster logic](https://bun.sh/docs/api/http#cluster) to ensure maximum performance, but it remains subject to the runtime's maturity.
+`pboss` leverages the native [Bun.serve cluster logic](https://bun.sh/docs/api/http#cluster) to ensure maximum performance, but it remains subject to the runtime's maturity.
 
 
 #### Environment Variables
@@ -514,10 +514,10 @@ Each cluster worker receives the following environment variables:
 
 | Variable | Description |
 | --- | --- |
-| `BM2_CLUSTER` | Set to `"true"` in cluster mode |
-| `BM2_WORKER_ID` | Zero-indexed worker ID |
-| `BM2_INSTANCES` | Total number of instances |
-| `NODE_APP_INSTANCE` | Same as `BM2_WORKER_ID` (PM2 compatibility) |
+| `PBOSS_CLUSTER` | Set to `"true"` in cluster mode |
+| `PBOSS_WORKER_ID` | Zero-indexed worker ID |
+| `PBOSS_INSTANCES` | Total number of instances |
+| `NODE_APP_INSTANCE` | Same as `PBOSS_WORKER_ID` (PM2 compatibility) |
 | `PORT` | `basePort + workerIndex` (if `--port` is specified) |
 
 ---
@@ -528,7 +528,7 @@ To enable clustering in Bun, you must explicitly set `reusePort: true`. This all
 
 ```typescript
 // server.ts
-const workerId = parseInt(process.env.BM2_WORKER_ID || "0");
+const workerId = parseInt(process.env.PBOSS_WORKER_ID || "0");
 const port = parseInt(process.env.PORT || "3000");
 
 Bun.serve({
@@ -548,37 +548,37 @@ console.log(`Worker ${workerId} listening on :${port}`);
 
 ### Log Management
 
-#### bm2 logs
+#### pboss logs
 
 Display recent logs for a process.
 
 ```
-bm2 logs
+pboss logs
 ```
 
 ```
-bm2 logs my-api --lines 100
+pboss logs my-api --lines 100
 ```
 
 ```
-bm2 logs my-api --err
+pboss logs my-api --err
 ```
 
 ```
-bm2 logs my-api --follow
-bm2 logs my-api -f
-bm2 logs -f
+pboss logs my-api --follow
+pboss logs my-api -f
+pboss logs -f
 ```
 
 ---
 
-#### bm2 flush
+#### pboss flush
 
 Clear log files.
 
 ```
-bm2 flush my-api
-bm2 flush
+pboss flush my-api
+pboss flush
 ```
 
 ---
@@ -588,7 +588,7 @@ bm2 flush
 Log rotation runs automatically in the background. It checks log file sizes once per minute and rotates when the configured threshold is exceeded.
 
 ```
-bm2 start server.ts --log-max-size 50M --log-retain 10 --log-compress
+pboss start server.ts --log-max-size 50M --log-retain 10 --log-compress
 ```
 
 Rotation behavior: When a log file exceeds `--log-max-size`, it is renamed with a numeric suffix. Existing rotated files are shifted up by one number. Files beyond the `--log-retain` count are deleted. If `--log-compress` is enabled, rotated files are gzip-compressed using Bun's native `Bun.gzipSync`.
@@ -605,22 +605,22 @@ Default values:
 
 ### Monitoring and Metrics
 
-#### bm2 monit
+#### pboss monit
 
 Open an interactive terminal monitor showing real-time CPU, memory, and event loop data for all processes.
 
 ```
-bm2 monit
+pboss monit
 ```
 
 ---
 
-#### bm2 metrics
+#### pboss metrics
 
 Dump a current metrics snapshot as JSON.
 
 ```
-bm2 metrics
+pboss metrics
 ```
 
 Output:
@@ -653,77 +653,77 @@ Output:
 
 ---
 
-#### bm2 metrics --history
+#### pboss metrics --history
 
-Retrieve historical metrics. BM2 retains up to 1 hour of per-second snapshots in memory.
+Retrieve historical metrics. ProcBoss retains up to 1 hour of per-second snapshots in memory.
 
 ```
-bm2 metrics --history 600
+pboss metrics --history 600
 ```
 
 ---
 
-#### bm2 prometheus
+#### pboss prometheus
 
 Output current metrics in Prometheus exposition format.
 
 ```
-bm2 prometheus
+pboss prometheus
 ```
 
 Output:
 
 ```
-# HELP bm2_process_cpu CPU usage percentage
-# TYPE bm2_process_cpu gauge
-bm2_process_cpu{name="my-api-0",id="0"} 0.3
-# HELP bm2_process_memory_bytes Memory usage in bytes
-# TYPE bm2_process_memory_bytes gauge
-bm2_process_memory_bytes{name="my-api-0",id="0"} 44150784
-# HELP bm2_process_restarts_total Total restart count
-# TYPE bm2_process_restarts_total counter
-bm2_process_restarts_total{name="my-api-0",id="0"} 0
-# HELP bm2_process_uptime_seconds Process uptime in seconds
-# TYPE bm2_process_uptime_seconds gauge
-bm2_process_uptime_seconds{name="my-api-0",id="0"} 8100
-# HELP bm2_process_status Process status (1=online)
-# TYPE bm2_process_status gauge
-bm2_process_status{name="my-api-0",id="0",status="online"} 1
-# HELP bm2_system_memory_total_bytes Total system memory
-# TYPE bm2_system_memory_total_bytes gauge
-bm2_system_memory_total_bytes 17179869184
-# HELP bm2_system_memory_free_bytes Free system memory
-# TYPE bm2_system_memory_free_bytes gauge
-bm2_system_memory_free_bytes 8589934592
-# HELP bm2_system_load_average System load average
-# TYPE bm2_system_load_average gauge
-bm2_system_load_average{period="1m"} 1.23
-bm2_system_load_average{period="5m"} 1.45
-bm2_system_load_average{period="15m"} 1.67
+# HELP pboss_process_cpu CPU usage percentage
+# TYPE pboss_process_cpu gauge
+pboss_process_cpu{name="my-api-0",id="0"} 0.3
+# HELP pboss_process_memory_bytes Memory usage in bytes
+# TYPE pboss_process_memory_bytes gauge
+pboss_process_memory_bytes{name="my-api-0",id="0"} 44150784
+# HELP pboss_process_restarts_total Total restart count
+# TYPE pboss_process_restarts_total counter
+pboss_process_restarts_total{name="my-api-0",id="0"} 0
+# HELP pboss_process_uptime_seconds Process uptime in seconds
+# TYPE pboss_process_uptime_seconds gauge
+pboss_process_uptime_seconds{name="my-api-0",id="0"} 8100
+# HELP pboss_process_status Process status (1=online)
+# TYPE pboss_process_status gauge
+pboss_process_status{name="my-api-0",id="0",status="online"} 1
+# HELP pboss_system_memory_total_bytes Total system memory
+# TYPE pboss_system_memory_total_bytes gauge
+pboss_system_memory_total_bytes 17179869184
+# HELP pboss_system_memory_free_bytes Free system memory
+# TYPE pboss_system_memory_free_bytes gauge
+pboss_system_memory_free_bytes 8589934592
+# HELP pboss_system_load_average System load average
+# TYPE pboss_system_load_average gauge
+pboss_system_load_average{period="1m"} 1.23
+pboss_system_load_average{period="5m"} 1.45
+pboss_system_load_average{period="15m"} 1.67
 ```
 
 ---
 
 ### Dashboard
 
-#### bm2 dashboard
+#### pboss dashboard
 
 Launch the built-in web dashboard.
 
 ```
-bm2 dashboard
+pboss dashboard
 ```
 
 ```
-bm2 dashboard --port 8080 --metrics-port 8081
+pboss dashboard --port 8080 --metrics-port 8081
 ```
 
-#### bm2 dashboard stop
+#### pboss dashboard stop
 
 Stop the web dashboard.
 
 ```
-bm2 dashboard stop
+pboss dashboard stop
 ```
 
 See the Web Dashboard section below for a detailed description of dashboard capabilities.
@@ -732,14 +732,14 @@ See the Web Dashboard section below for a detailed description of dashboard capa
 
 ### Ecosystem Files
 
-An ecosystem file defines your entire application topology in a single configuration. BM2 supports JSON and TypeScript ecosystem files.
+An ecosystem file defines your entire application topology in a single configuration. ProcBoss supports JSON and TypeScript ecosystem files.
 
 ```
-bm2 start ecosystem.config.json
+pboss start ecosystem.config.json
 ```
 
 ```
-bm2 start ecosystem.config.ts
+pboss start ecosystem.config.ts
 ```
 
 Example `ecosystem.config.json`:
@@ -791,7 +791,7 @@ Example `ecosystem.config.json`:
       "repo": "git@github.com:your-org/your-app.git",
       "path": "/var/www/app",
       "preDeploy": "bun test",
-      "postDeploy": "bun install && bm2 reload ecosystem.config.json --env production"
+      "postDeploy": "bun install && pboss reload ecosystem.config.json --env production"
     }
   }
 }
@@ -801,7 +801,7 @@ Example `ecosystem.config.ts`:
 
 ```
 // ecosystem.config.ts
-import type { EcosystemConfig } from "bm2/types";
+import type { EcosystemConfig } from "pboss/types";
 
 const config: EcosystemConfig = {
   apps: [
@@ -827,51 +827,51 @@ export default config;
 
 ### Environment Management
 
-#### bm2 env set
+#### pboss env set
 
 Set an environment variable for a process.
 
 ```
-bm2 env set my-api DATABASE_URL postgres://localhost/mydb
+pboss env set my-api DATABASE_URL postgres://localhost/mydb
 ```
 
-#### bm2 env get
+#### pboss env get
 
 List all stored environment variables for a process.
 
 ```
-bm2 env get my-api
+pboss env get my-api
 ```
 
-#### bm2 env delete
+#### pboss env delete
 
 Remove an environment variable or all environment variables.
 
 ```
-bm2 env delete my-api DATABASE_URL
-bm2 env delete my-api
+pboss env delete my-api DATABASE_URL
+pboss env delete my-api
 ```
 
 #### .env File Support
 
-BM2 can load environment variables from `.env` files:
+ProcBoss can load environment variables from `.env` files:
 
 ```
-bm2 start server.ts --env-file .env.production
+pboss start server.ts --env-file .env.production
 ```
 
 ---
 
 ### Deployment
 
-BM2 includes a built-in deployment system for SSH-based deployments with release management.
+ProcBoss includes a built-in deployment system for SSH-based deployments with release management.
 
-#### bm2 deploy setup
+#### pboss deploy setup
 
 Initial setup of the remote server. Creates the directory structure and clones the repository.
 
 ```
-bm2 deploy ecosystem.config.json production setup
+pboss deploy ecosystem.config.json production setup
 ```
 
 This creates the following remote directory structure:
@@ -886,12 +886,12 @@ This creates the following remote directory structure:
 └── shared/
 ```
 
-#### bm2 deploy
+#### pboss deploy
 
 Deploy a new release.
 
 ```
-bm2 deploy ecosystem.config.json production
+pboss deploy ecosystem.config.json production
 ```
 
 The deploy process works as follows. It runs the `preDeploy` hook locally such as running tests. It connects via SSH to each configured host. It pulls the latest code from the configured ref. It creates a new timestamped release directory. It updates the current symlink to the new release. It runs the `postDeploy` hook remotely such as installing dependencies and reloading processes. It cleans up old releases, keeping only the 5 most recent.
@@ -908,109 +908,109 @@ Multi-host deployment is supported. Specify an array of hosts to deploy to all o
 
 ### Startup Scripts
 
-#### bm2 startup
+#### pboss startup
 
 Generate and display a startup script for your operating system:
-- **Linux:** Generates a `systemd` service unit file (`/etc/systemd/system/bm2.service`).
-- **macOS:** Generates a `launchd` plist (`~/Library/LaunchAgents/com.bm2.daemon.plist`).
+- **Linux:** Generates a `systemd` service unit file (`/etc/systemd/system/pboss.service`).
+- **macOS:** Generates a `launchd` plist (`~/Library/LaunchAgents/com.pboss.daemon.plist`).
 - **Windows:** Generates a Windows Task Scheduler command (`schtasks`) and PowerShell task configuration.
 
 ```bash
-bm2 startup
+pboss startup
 ```
 
 On Windows, you can also specify the platform explicitly:
 ```powershell
-bm2 startup win32
+pboss startup win32
 ```
 
-#### bm2 startup install
+#### pboss startup install
 
-Automatically install the startup script so the BM2 daemon starts at boot / logon:
+Automatically install the startup script so the ProcBoss daemon starts at boot / logon:
 
 ```bash
 # Linux (sudo) / macOS
-bm2 startup install
+pboss startup install
 
 # Windows (Command Prompt / PowerShell as Administrator)
-bm2 startup install
+pboss startup install
 ```
 
-On Windows, this registers a Scheduled Task (`BM2_Daemon`) configured to start automatically on user logon with highest privileges.
+On Windows, this registers a Scheduled Task (`PBOSS_Daemon`) configured to start automatically on user logon with highest privileges.
 
-#### bm2 startup uninstall
+#### pboss startup uninstall
 
 Remove the startup service / scheduled task:
 
 ```bash
-bm2 startup uninstall
+pboss startup uninstall
 ```
 
-#### bm2 save
+#### pboss save
 
 Save the current process list so it can be restored on daemon startup.
 
 ```
-bm2 save
+pboss save
 ```
 
-#### bm2 resurrect
+#### pboss resurrect
 
 Restore previously saved processes.
 
 ```
-bm2 resurrect
+pboss resurrect
 ```
 
 Recommended boot setup:
 
 ```
-bm2 start ecosystem.config.json
-bm2 save
-bm2 startup install
+pboss start ecosystem.config.json
+pboss save
+pboss startup install
 ```
 
-On reboot, systemd, launchd, or Task Scheduler starts the BM2 daemon, and the daemon automatically runs resurrect to restore your processes.
+On reboot, systemd, launchd, or Task Scheduler starts the ProcBoss daemon, and the daemon automatically runs resurrect to restore your processes.
 
 ---
 
 ### Modules
 
-BM2 supports a plugin system for extending functionality.
+ProcBoss supports a plugin system for extending functionality.
 
-#### bm2 module install
+#### pboss module install
 
 Install a module from a git URL, local path, or npm package name.
 
 ```
-bm2 module install https://github.com/user/bm2-logrotate.git
-bm2 module install ./my-bm2-module
-bm2 module install bm2-prometheus-pushgateway
+pboss module install https://github.com/user/pboss-logrotate.git
+pboss module install ./my-pboss-module
+pboss module install pboss-prometheus-pushgateway
 ```
 
-#### bm2 module list
+#### pboss module list
 
 List installed modules.
 
 ```
-bm2 module list
+pboss module list
 ```
 
-#### bm2 module uninstall
+#### pboss module uninstall
 
 Remove an installed module.
 
 ```
-bm2 module uninstall bm2-prometheus-pushgateway
+pboss module uninstall pboss-prometheus-pushgateway
 ```
 
-#### Writing a BM2 Module
+#### Writing a ProcBoss Module
 
-A BM2 module is a package with a default export implementing the BM2Module interface:
+A ProcBoss module is a package with a default export implementing the PBossModule interface:
 
 ```
 // my-module/index.ts
-import type { ProcessManager } from "bm2/process-manager";
+import type { ProcessManager } from "pboss";
 
 export default {
   name: "my-module",
@@ -1030,32 +1030,32 @@ export default {
 
 ### Daemon Control
 
-#### bm2 ping
+#### pboss ping
 
 Check if the daemon is running.
 
 ```
-bm2 ping
+pboss ping
 ```
 
-#### bm2 kill
+#### pboss kill
 
 Stop all processes and kill the daemon.
 
 ```
-bm2 kill
+pboss kill
 ```
 
 ---
 
 ## Foreground Mode (Docker & Containers)
 
-By default, BM2 spawns a background daemon process and returns immediately — ideal for long-running servers. However, containerized environments like **Docker**, **Kubernetes**, and **Railway** expect the entrypoint process to stay in the **foreground**. If BM2 daemonizes and exits, the container stops.
+By default, ProcBoss spawns a background daemon process and returns immediately — ideal for long-running servers. However, containerized environments like **Docker**, **Kubernetes**, and **Railway** expect the entrypoint process to stay in the **foreground**. If ProcBoss daemonizes and exits, the container stops.
 
-Use `--no-daemon` (alias `-d`) to run BM2 in **foreground / blocking mode**. In this mode:
+Use `--no-daemon` (alias `-d`) to run ProcBoss in **foreground / blocking mode**. In this mode:
 
 - No background daemon is spawned.
-- The `bm2 start` process itself stays alive, blocking the terminal (or container).
+- The `pboss start` process itself stays alive, blocking the terminal (or container).
 - All managed child processes are supervised in-process.
 - Auto-restart and crash recovery still work normally.
 - The process exits only when all child processes stop or a signal (e.g. `SIGTERM`) is received.
@@ -1070,17 +1070,17 @@ Use `--no-daemon` (alias `-d`) to run BM2 in **foreground / blocking mode**. In 
 
 ```bash
 # Foreground — blocks until the process exits
-bm2 start --no-daemon server.ts
+pboss start --no-daemon server.ts
 
 # Flag order is flexible — these are all equivalent
-bm2 start server.ts --no-daemon
-bm2 start --no-daemon server.ts --name api
-bm2 start --name api --no-daemon server.ts
+pboss start server.ts --no-daemon
+pboss start --no-daemon server.ts --name api
+pboss start --name api --no-daemon server.ts
 ```
 
 ### Docker
 
-This is the recommended pattern for running BM2 inside a Docker container. The `CMD` instruction should use `--no-daemon` so BM2 stays as PID 1 (or the foreground entrypoint) and Docker can track its lifecycle correctly.
+This is the recommended pattern for running ProcBoss inside a Docker container. The `CMD` instruction should use `--no-daemon` so ProcBoss stays as PID 1 (or the foreground entrypoint) and Docker can track its lifecycle correctly.
 
 **Dockerfile**
 
@@ -1094,35 +1094,35 @@ RUN bun install --frozen-lockfile
 
 COPY . .
 
-# Install BM2 globally
-RUN bun add -g bm2
+# Install ProcBoss globally
+RUN bun add -g pboss
 
-# Use --no-daemon so BM2 stays in the foreground
-CMD ["bm2", "start", "--no-daemon", "./server.ts"]
+# Use --no-daemon so ProcBoss stays in the foreground
+CMD ["pboss", "start", "--no-daemon", "./server.ts"]
 ```
 
 ### Docker logs and log files
 
-Use `--raw` with `--no-daemon` to keep BM2 log files while also exposing the
+Use `--raw` with `--no-daemon` to keep ProcBoss log files while also exposing the
 managed process output to the container runtime:
 
 ```dockerfile
-CMD ["bm2", "start", "--no-daemon", "--raw", "ecosystem.config.cjs"]
+CMD ["pboss", "start", "--no-daemon", "--raw", "ecosystem.config.cjs"]
 ```
 
-`--raw` mirrors child stdout to BM2 stdout and child stderr to BM2 stderr. It
+`--raw` mirrors child stdout to ProcBoss stdout and child stderr to ProcBoss stderr. It
 does not disable `outFile` or `errorFile`.
 
 **With additional options**
 
 ```dockerfile
-CMD ["bm2", "start", "--no-daemon", "--name", "api", "--instances", "2", "./server.ts"]
+CMD ["pboss", "start", "--no-daemon", "--name", "api", "--instances", "2", "./server.ts"]
 ```
 
 **With an ecosystem file**
 
 ```dockerfile
-CMD ["bm2", "start", "--no-daemon", "ecosystem.config.json"]
+CMD ["pboss", "start", "--no-daemon", "ecosystem.config.json"]
 ```
 
 > **Note:** Ecosystem file support with `--no-daemon` behaves identically to normal mode — all `apps` entries are started and supervised in-process.
@@ -1135,7 +1135,7 @@ services:
     build: .
     ports:
       - "3000:3000"
-    command: ["bm2", "start", "--no-daemon", "./server.ts"]
+    command: ["pboss", "start", "--no-daemon", "./server.ts"]
     restart: unless-stopped
 ```
 
@@ -1145,7 +1145,7 @@ services:
 containers:
   - name: api
     image: your-org/api:latest
-    command: ["bm2", "start", "--no-daemon", "./server.ts"]
+    command: ["pboss", "start", "--no-daemon", "./server.ts"]
 ```
 
 ### Behaviour Differences vs. Daemon Mode
@@ -1156,7 +1156,7 @@ containers:
 | Background daemon spawned | ✅ | ❌ |
 | Unix socket IPC | ✅ | ❌ |
 | Auto-restart on crash | ✅ | ✅ |
-| `bm2 list` / `bm2 logs` from another shell | ✅ | ❌ — no daemon to query |
+| `pboss list` / `pboss logs` from another shell | ✅ | ❌ — no daemon to query |
 | Suitable for Docker / containers | ❌ | ✅ |
 | Suitable for long-running servers | ✅ | ✅ |
 
@@ -1221,10 +1221,10 @@ The complete set of options available for each entry in the apps array:
 
 | Option | Type | Default | Description |
 |---|---|---|---|
-| `outFile` | `string` | `~/.bm2/logs/<name>-<id>-out.log` | Custom stdout log path |
-| `errorFile` | `string` | `~/.bm2/logs/<name>-<id>-error.log` | Custom stderr log path |
+| `outFile` | `string` | `~/.pboss/logs/<name>-<id>-out.log` | Custom stdout log path |
+| `errorFile` | `string` | `~/.pboss/logs/<name>-<id>-error.log` | Custom stderr log path |
 | `mergeLogs` | `boolean` | `false` | Merge all instance logs into one file |
-| `raw` | `boolean` | `false` | Mirror child stdout and stderr to BM2 stdout and stderr |
+| `raw` | `boolean` | `false` | Mirror child stdout and stderr to ProcBoss stdout and stderr |
 | `logDateFormat` | `string` | — | Date format for log line prefixes |
 | `logMaxSize` | `string` or `number` | `"10M"` | Max log file size before rotation |
 | `logRetain` | `number` | `5` | Number of rotated files to keep |
@@ -1248,7 +1248,7 @@ The complete set of options available for each entry in the apps array:
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `watch` | `boolean` or `string[]` | `false` | Enable file watching |
-| `ignoreWatch` | `string[]` | `["node_modules", ".git", ".bm2"]` | Patterns to ignore |
+| `ignoreWatch` | `string[]` | `["node_modules", ".git", ".pboss"]` | Patterns to ignore |
 
 ---
 
@@ -1272,7 +1272,7 @@ The complete set of options available for each entry in the apps array:
 
 ## Web Dashboard
 
-The BM2 dashboard is a self-contained web application served directly by the daemon. It requires no external dependencies. The HTML, CSS, JavaScript, and WebSocket server are all built in.
+The ProcBoss dashboard is a self-contained web application served directly by the daemon. It requires no external dependencies. The HTML, CSS, JavaScript, and WebSocket server are all built in.
 
 ### Dashboard Features
 
@@ -1393,7 +1393,7 @@ Server to client messages:
 
 ## Prometheus and Grafana Integration
 
-BM2 runs a dedicated Prometheus metrics server on default port 9616 separately from the dashboard, following best practices for metrics collection.
+ProcBoss runs a dedicated Prometheus metrics server on default port 9616 separately from the dashboard, following best practices for metrics collection.
 
 ### Prometheus Configuration
 
@@ -1401,7 +1401,7 @@ Add the following to your `prometheus.yml`:
 
 ```
 scrape_configs:
-  - job_name: "bm2"
+  - job_name: "pboss"
     scrape_interval: 5s
     static_configs:
       - targets: ["localhost:9616"]
@@ -1411,27 +1411,27 @@ scrape_configs:
 
 | Metric | Type | Labels | Description |
 |---|---|---|---|
-| `bm2_process_cpu` | gauge | `name`, `id` | CPU usage percentage |
-| `bm2_process_memory_bytes` | gauge | `name`, `id` | Memory usage in bytes |
-| `bm2_process_restarts_total` | counter | `name`, `id` | Total restart count |
-| `bm2_process_uptime_seconds` | gauge | `name`, `id` | Uptime in seconds |
-| `bm2_process_status` | gauge | `name`, `id`, `status` | 1 if online, 0 otherwise |
-| `bm2_system_memory_total_bytes` | gauge | — | Total system memory |
-| `bm2_system_memory_free_bytes` | gauge | — | Free system memory |
-| `bm2_system_load_average` | gauge | `period` | Load average (1m, 5m, 15m) |
+| `pboss_process_cpu` | gauge | `name`, `id` | CPU usage percentage |
+| `pboss_process_memory_bytes` | gauge | `name`, `id` | Memory usage in bytes |
+| `pboss_process_restarts_total` | counter | `name`, `id` | Total restart count |
+| `pboss_process_uptime_seconds` | gauge | `name`, `id` | Uptime in seconds |
+| `pboss_process_status` | gauge | `name`, `id`, `status` | 1 if online, 0 otherwise |
+| `pboss_system_memory_total_bytes` | gauge | — | Total system memory |
+| `pboss_system_memory_free_bytes` | gauge | — | Free system memory |
+| `pboss_system_load_average` | gauge | `period` | Load average (1m, 5m, 15m) |
 
 ### Grafana Dashboard
 
-Import a dashboard with the following panels for comprehensive monitoring: Process Status Overview as a stat panel colored by status, CPU Usage per Process as a time series with `bm2_process_cpu` grouped by name, Memory Usage per Process as a time series with `bm2_process_memory_bytes` grouped by name, Restart Rate as a graph of `rate(bm2_process_restarts_total[5m])` to detect instability, System Load as a time series of `bm2_system_load_average` across all periods, and Memory Pressure as a gauge computing `1 - (bm2_system_memory_free_bytes / bm2_system_memory_total_bytes)`.
+Import a dashboard with the following panels for comprehensive monitoring: Process Status Overview as a stat panel colored by status, CPU Usage per Process as a time series with `pboss_process_cpu` grouped by name, Memory Usage per Process as a time series with `pboss_process_memory_bytes` grouped by name, Restart Rate as a graph of `rate(pboss_process_restarts_total[5m])` to detect instability, System Load as a time series of `pboss_system_load_average` across all periods, and Memory Pressure as a gauge computing `1 - (pboss_system_memory_free_bytes / pboss_system_memory_total_bytes)`.
 
 ### Alert Rules Example
 
 ```
 groups:
-  - name: bm2
+  - name: pboss
     rules:
       - alert: ProcessDown
-        expr: bm2_process_status == 0
+        expr: pboss_process_status == 0
         for: 1m
         labels:
           severity: critical
@@ -1439,7 +1439,7 @@ groups:
           summary: "Process {{ $labels.name }} is down"
 
       - alert: HighRestartRate
-        expr: rate(bm2_process_restarts_total[5m]) > 0.1
+        expr: rate(pboss_process_restarts_total[5m]) > 0.1
         for: 5m
         labels:
           severity: warning
@@ -1447,7 +1447,7 @@ groups:
           summary: "Process {{ $labels.name }} is restarting frequently"
 
       - alert: HighMemoryUsage
-        expr: bm2_process_memory_bytes > 1e9
+        expr: pboss_process_memory_bytes > 1e9
         for: 5m
         labels:
           severity: warning
@@ -1459,18 +1459,18 @@ groups:
 
 ## Programmatic API
 
-BM2 exposes two levels of programmatic access. The `BM2` client class communicates with the daemon over its Unix socket, giving you the same capabilities as the CLI from within any Bun application. For in-process usage without a daemon, you can use the `ProcessManager` class directly.
+ProcBoss exposes two levels of programmatic access. The `PBoss` client class communicates with the daemon over its Unix socket, giving you the same capabilities as the CLI from within any Bun application. For in-process usage without a daemon, you can use the `ProcessManager` class directly.
 
 ### Programmatic Quick Start
 
 ```ts
-import BM2 from "bm2";
+import PBoss from "pboss";
 
-const bm2 = new BM2();
-await bm2.connect();
+const pboss = new PBoss();
+await pboss.connect();
 
 // Start a clustered application
-await bm2.start({
+await pboss.start({
   script: "./server.ts",
   name: "api",
   instances: 4,
@@ -1480,48 +1480,48 @@ await bm2.start({
 });
 
 // List all processes
-const processes = await bm2.list();
+const processes = await pboss.list();
 console.log(processes);
 
 // Stream metrics every 2 seconds
-bm2.on("metrics", (snapshot) => {
+pboss.on("metrics", (snapshot) => {
   console.log(`CPU: ${snapshot.system.cpu}%  Memory: ${snapshot.system.memory}%`);
 });
-bm2.startPolling(2000);
+pboss.startPolling(2000);
 
 // Graceful shutdown
-bm2.stopPolling();
-await bm2.disconnect();
+pboss.stopPolling();
+await pboss.disconnect();
 ```
 
 ---
 
 ### Connection Lifecycle
 
-#### `bm2.connect(): Promise<BM2>`
+#### `pboss.connect(): Promise<PBoss>`
 
-Connect to the BM2 daemon. If the daemon is not running, it is spawned automatically and the method waits up to 5 seconds for it to become responsive. Returns the `BM2` instance for chaining.
+Connect to the ProcBoss daemon. If the daemon is not running, it is spawned automatically and the method waits up to 5 seconds for it to become responsive. Returns the `PBoss` instance for chaining.
 
 ```ts
-const bm2 = new BM2();
-await bm2.connect();
-console.log(`Connected to daemon PID ${bm2.daemonPid}`);
+const pboss = new PBoss();
+await pboss.connect();
+console.log(`Connected to daemon PID ${pboss.daemonPid}`);
 ```
 
-#### `bm2.disconnect(): Promise<void>`
+#### `pboss.disconnect(): Promise<void>`
 
 Disconnect from the daemon. This stops any internal polling timers but does not kill the daemon — all managed processes continue running.
 
 ```ts
-await bm2.disconnect();
-console.log(bm2.connected); // false
+await pboss.disconnect();
+console.log(pboss.connected); // false
 ```
 
-#### `bm2.connected: boolean`
+#### `pboss.connected: boolean`
 
 Read-only property indicating whether the client believes the daemon is reachable.
 
-#### `bm2.daemonPid: number | null`
+#### `pboss.daemonPid: number | null`
 
 Read-only property containing the PID of the daemon process, or `null` if unknown.
 
@@ -1529,12 +1529,12 @@ Read-only property containing the PID of the daemon process, or `null` if unknow
 
 ### Programmatic Process Management
 
-#### `bm2.start(options: StartOptions): Promise<ProcessState[]>`
+#### `pboss.start(options: StartOptions): Promise<ProcessState[]>`
 
 Start a new process or process group. The `script` path is automatically resolved to an absolute path. Returns the array of `ProcessState` objects for the started instances.
 
 ```ts
-const procs = await bm2.start({
+const procs = await pboss.start({
   script: "./worker.ts",
   name: "worker",
   instances: 2,
@@ -1546,12 +1546,12 @@ console.log(`Started ${procs.length} instances`);
 
 The `StartOptions` object accepts all the same fields documented in the [Process Options](#process-options) configuration reference.
 
-#### `bm2.startEcosystem(config: EcosystemConfig): Promise<ProcessState[]>`
+#### `pboss.startEcosystem(config: EcosystemConfig): Promise<ProcessState[]>`
 
 Start an entire ecosystem configuration. All script paths within the config are resolved to absolute paths before being sent to the daemon.
 
 ```ts
-const procs = await bm2.startEcosystem({
+const procs = await pboss.startEcosystem({
   apps: [
     { script: "./api.ts", name: "api", instances: 4, port: 3000 },
     { script: "./worker.ts", name: "worker", instances: 2 },
@@ -1559,91 +1559,91 @@ const procs = await bm2.startEcosystem({
 });
 ```
 
-#### `bm2.stop(target?: string | number): Promise<ProcessState[]>`
+#### `pboss.stop(target?: string | number): Promise<ProcessState[]>`
 
 Stop one or more processes. The `target` can be a process name, numeric ID, namespace, or `"all"`. Defaults to `"all"` when omitted.
 
 ```ts
-await bm2.stop("api");       // Stop by name
-await bm2.stop(0);           // Stop by ID
-await bm2.stop();            // Stop all
+await pboss.stop("api");       // Stop by name
+await pboss.stop(0);           // Stop by ID
+await pboss.stop();            // Stop all
 ```
 
-#### `bm2.restart(target?: string | number): Promise<ProcessState[]>`
+#### `pboss.restart(target?: string | number): Promise<ProcessState[]>`
 
 Hard restart one or more processes. The process is fully stopped and then re-spawned.
 
 ```ts
-await bm2.restart("api");
-await bm2.restart();          // Restart all
+await pboss.restart("api");
+await pboss.restart();          // Restart all
 ```
 
-#### `bm2.reload(target?: string | number): Promise<ProcessState[]>`
+#### `pboss.reload(target?: string | number): Promise<ProcessState[]>`
 
 Graceful zero-downtime reload. New instances are started before old ones are stopped, ensuring no dropped requests. Ideal for deploying new code.
 
 ```ts
-await bm2.reload("api");
-await bm2.reload();           // Reload all
+await pboss.reload("api");
+await pboss.reload();           // Reload all
 ```
 
-#### `bm2.delete(target?: string | number): Promise<ProcessState[]>`
+#### `pboss.delete(target?: string | number): Promise<ProcessState[]>`
 
-Stop and remove one or more processes from BM2's management entirely.
+Stop and remove one or more processes from ProcBoss's management entirely.
 
 ```ts
-await bm2.delete("api");
-await bm2.delete();           // Delete all
+await pboss.delete("api");
+await pboss.delete();           // Delete all
 ```
 
-#### `bm2.scale(target: string | number, count: number): Promise<ProcessState[]>`
+#### `pboss.scale(target: string | number, count: number): Promise<ProcessState[]>`
 
 Scale a process group to the specified number of instances. When scaling up, new instances inherit the configuration of existing ones. When scaling down, the highest-numbered instances are removed first.
 
 ```ts
-await bm2.scale("api", 8);   // Scale up to 8 instances
-await bm2.scale("api", 2);   // Scale down to 2 instances
+await pboss.scale("api", 8);   // Scale up to 8 instances
+await pboss.scale("api", 2);   // Scale down to 2 instances
 ```
 
-#### `bm2.sendSignal(target: string | number, signal: string): Promise<void>`
+#### `pboss.sendSignal(target: string | number, signal: string): Promise<void>`
 
 Send an OS signal to a managed process.
 
 ```ts
-await bm2.sendSignal("api", "SIGUSR2");
-await bm2.sendSignal(0, "SIGHUP");
+await pboss.sendSignal("api", "SIGUSR2");
+await pboss.sendSignal(0, "SIGHUP");
 ```
 
-#### `bm2.reset(target?: string | number): Promise<ProcessState[]>`
+#### `pboss.reset(target?: string | number): Promise<ProcessState[]>`
 
 Reset the restart counter for one or more processes. Defaults to `"all"`.
 
 ```ts
-await bm2.reset("api");
-await bm2.reset();            // Reset all
+await pboss.reset("api");
+await pboss.reset();            // Reset all
 ```
 
 ---
 
 ### Introspection
 
-#### `bm2.list(): Promise<ProcessState[]>`
+#### `pboss.list(): Promise<ProcessState[]>`
 
 List all managed processes with their current state.
 
 ```ts
-const processes = await bm2.list();
+const processes = await pboss.list();
 for (const proc of processes) {
   console.log(`${proc.name} [${proc.status}] PID=${proc.pid} CPU=${proc.cpu}%`);
 }
 ```
 
-#### `bm2.describe(target: string | number): Promise<ProcessState[]>`
+#### `pboss.describe(target: string | number): Promise<ProcessState[]>`
 
 Get detailed information about a specific process or process group.
 
 ```ts
-const details = await bm2.describe("api");
+const details = await pboss.describe("api");
 console.log(details[0]);
 ```
 
@@ -1651,102 +1651,102 @@ console.log(details[0]);
 
 ### Logs
 
-#### `bm2.logs(target?: string | number, lines?: number): Promise<Array<{ name: string; id: number; out: string; err: string }>>`
+#### `pboss.logs(target?: string | number, lines?: number): Promise<Array<{ name: string; id: number; out: string; err: string }>>`
 
 Retrieve recent log lines for one or all processes. Defaults to `"all"` with `20` lines.
 
 ```ts
-const logs = await bm2.logs("api", 100);
+const logs = await pboss.logs("api", 100);
 for (const entry of logs) {
   console.log(`[${entry.name}] stdout:\n${entry.out}`);
   if (entry.err) console.error(`[${entry.name}] stderr:\n${entry.err}`);
 }
 ```
 
-#### `bm2.flush(target?: string | number): Promise<void>`
+#### `pboss.flush(target?: string | number): Promise<void>`
 
 Truncate log files for one or all processes.
 
 ```ts
-await bm2.flush("api");      // Flush logs for "api"
-await bm2.flush();            // Flush all logs
+await pboss.flush("api");      // Flush logs for "api"
+await pboss.flush();            // Flush all logs
 ```
 
 ---
 
 ### Programmatic Monitoring and Metrics
 
-#### `bm2.metrics(): Promise<MetricSnapshot>`
+#### `pboss.metrics(): Promise<MetricSnapshot>`
 
 Take a single metrics snapshot containing process-level and system-level telemetry.
 
 ```ts
-const snapshot = await bm2.metrics();
+const snapshot = await pboss.metrics();
 console.log(`System CPU: ${snapshot.system.cpu}%`);
 for (const proc of snapshot.processes) {
   console.log(`  ${proc.name}: ${proc.memory} bytes, ${proc.cpu}% CPU`);
 }
 ```
 
-#### `bm2.metricsHistory(seconds?: number): Promise<MetricSnapshot[]>`
+#### `pboss.metricsHistory(seconds?: number): Promise<MetricSnapshot[]>`
 
 Retrieve historical metric snapshots from the daemon's in-memory ring buffer. The `seconds` parameter controls the look-back window and defaults to `300` (5 minutes). The daemon retains up to 1 hour of per-second snapshots.
 
 ```ts
-const history = await bm2.metricsHistory(600);   // Last 10 minutes
+const history = await pboss.metricsHistory(600);   // Last 10 minutes
 console.log(`Got ${history.length} snapshots`);
 ```
 
-#### `bm2.prometheus(): Promise<string>`
+#### `pboss.prometheus(): Promise<string>`
 
 Get the current metrics formatted as a Prometheus exposition text string.
 
 ```ts
-const text = await bm2.prometheus();
+const text = await pboss.prometheus();
 console.log(text);
-// # HELP bm2_process_cpu CPU usage percentage
-// # TYPE bm2_process_cpu gauge
-// bm2_process_cpu{name="api-0",id="0"} 1.2
+// # HELP pboss_process_cpu CPU usage percentage
+// # TYPE pboss_process_cpu gauge
+// pboss_process_cpu{name="api-0",id="0"} 1.2
 // ...
 ```
 
-#### `bm2.startPolling(intervalMs?: number): void`
+#### `pboss.startPolling(intervalMs?: number): void`
 
 Start polling the daemon for metrics at a fixed interval and emitting `"metrics"` events. Defaults to `2000` ms. Calling this again replaces the existing polling timer.
 
 ```ts
-bm2.on("metrics", (snapshot) => {
+pboss.on("metrics", (snapshot) => {
   console.log(`${snapshot.processes.length} processes running`);
 });
-bm2.startPolling(1000);       // Poll every second
+pboss.startPolling(1000);       // Poll every second
 ```
 
-#### `bm2.stopPolling(): void`
+#### `pboss.stopPolling(): void`
 
 Stop the metrics polling loop.
 
 ```ts
-bm2.stopPolling();
+pboss.stopPolling();
 ```
 
 ---
 
 ### Persistence
 
-#### `bm2.save(): Promise<void>`
+#### `pboss.save(): Promise<void>`
 
-Persist the current process list to `~/.bm2/dump.json` so it can be restored later.
+Persist the current process list to `~/.pboss/dump.json` so it can be restored later.
 
 ```ts
-await bm2.save();
+await pboss.save();
 ```
 
-#### `bm2.resurrect(): Promise<ProcessState[]>`
+#### `pboss.resurrect(): Promise<ProcessState[]>`
 
-Restore previously saved processes from `~/.bm2/dump.json`.
+Restore previously saved processes from `~/.pboss/dump.json`.
 
 ```ts
-const restored = await bm2.resurrect();
+const restored = await pboss.resurrect();
 console.log(`Restored ${restored.length} processes`);
 ```
 
@@ -1754,51 +1754,51 @@ console.log(`Restored ${restored.length} processes`);
 
 ### Dashboard Control
 
-#### `bm2.dashboard(port?: number, metricsPort?: number): Promise<{ port: number; metricsPort: number }>`
+#### `pboss.dashboard(port?: number, metricsPort?: number): Promise<{ port: number; metricsPort: number }>`
 
 Start the web dashboard. Defaults to port `9615` for the dashboard and `9616` for the Prometheus metrics endpoint.
 
 ```ts
-const { port, metricsPort } = await bm2.dashboard(8080, 8081);
+const { port, metricsPort } = await pboss.dashboard(8080, 8081);
 console.log(`Dashboard: http://localhost:${port}`);
 console.log(`Metrics:   http://localhost:${metricsPort}/metrics`);
 ```
 
-#### `bm2.dashboardStop(): Promise<void>`
+#### `pboss.dashboardStop(): Promise<void>`
 
 Stop the web dashboard.
 
 ```ts
-await bm2.dashboardStop();
+await pboss.dashboardStop();
 ```
 
 ---
 
 ### Module Management
 
-#### `bm2.moduleInstall(nameOrPath: string): Promise<{ path: string }>`
+#### `pboss.moduleInstall(nameOrPath: string): Promise<{ path: string }>`
 
-Install a BM2 module from a git URL, local path, or npm package name.
+Install a ProcBoss module from a git URL, local path, or npm package name.
 
 ```ts
-const result = await bm2.moduleInstall("bm2-prometheus-pushgateway");
+const result = await pboss.moduleInstall("pboss-prometheus-pushgateway");
 console.log(`Installed to ${result.path}`);
 ```
 
-#### `bm2.moduleUninstall(name: string): Promise<void>`
+#### `pboss.moduleUninstall(name: string): Promise<void>`
 
-Uninstall a BM2 module.
+Uninstall a ProcBoss module.
 
 ```ts
-await bm2.moduleUninstall("bm2-prometheus-pushgateway");
+await pboss.moduleUninstall("pboss-prometheus-pushgateway");
 ```
 
-#### `bm2.moduleList(): Promise<Array<{ name: string; version: string }>>`
+#### `pboss.moduleList(): Promise<Array<{ name: string; version: string }>>`
 
 List all installed modules.
 
 ```ts
-const modules = await bm2.moduleList();
+const modules = await pboss.moduleList();
 for (const mod of modules) {
   console.log(`${mod.name}@${mod.version}`);
 }
@@ -1808,30 +1808,30 @@ for (const mod of modules) {
 
 ### Daemon Lifecycle
 
-#### `bm2.ping(): Promise<{ pid: number; uptime: number }>`
+#### `pboss.ping(): Promise<{ pid: number; uptime: number }>`
 
 Ping the daemon and return its PID and uptime in milliseconds.
 
 ```ts
-const info = await bm2.ping();
+const info = await pboss.ping();
 console.log(`Daemon PID ${info.pid}, up for ${Math.round(info.uptime / 1000)}s`);
 ```
 
-#### `bm2.kill(): Promise<void>`
+#### `pboss.kill(): Promise<void>`
 
 Kill the daemon and all managed processes. Cleans up the socket and PID files. The daemon connection will not respond after this call, which is expected.
 
 ```ts
-await bm2.kill();
-console.log(bm2.connected); // false
+await pboss.kill();
+console.log(pboss.connected); // false
 ```
 
-#### `bm2.daemonReload(): Promise<string>`
+#### `pboss.daemonReload(): Promise<string>`
 
 Reload the daemon server itself without killing managed processes.
 
 ```ts
-const result = await bm2.daemonReload();
+const result = await pboss.daemonReload();
 console.log(result);
 ```
 
@@ -1839,12 +1839,12 @@ console.log(result);
 
 ### Low-Level Transport
 
-#### `bm2.send(message: DaemonMessage): Promise<DaemonResponse>`
+#### `pboss.send(message: DaemonMessage): Promise<DaemonResponse>`
 
 Send an arbitrary message to the daemon over the Unix socket and return the raw response. This is useful for custom command types, future extensions, or direct daemon interaction.
 
 ```ts
-const response = await bm2.send({ type: "ping" });
+const response = await pboss.send({ type: "ping" });
 console.log(response);
 // { success: true, data: { pid: 12345, uptime: 60000 }, id: "abc123" }
 ```
@@ -1855,7 +1855,7 @@ Messages are JSON objects with a `type` field for routing and an optional `id` f
 
 ### Events
 
-The `BM2` class extends `EventEmitter` and emits the following typed events:
+The `PBoss` class extends `EventEmitter` and emits the following typed events:
 
 | Event | Payload | Description |
 |---|---|---|
@@ -1874,37 +1874,39 @@ The `BM2` class extends `EventEmitter` and emits the following typed events:
 | `log:data` | `logs: Array<{ name, id, out, err }>` | Log data retrieved |
 
 ```ts
-const bm2 = new BM2();
+import PBoss from "pboss";
 
-bm2.on("daemon:connected", () => console.log("Connected!"));
-bm2.on("daemon:disconnected", () => console.log("Disconnected"));
-bm2.on("process:start", (procs) => {
+const pboss = new PBoss();
+
+pboss.on("daemon:connected", () => console.log("Connected!"));
+pboss.on("daemon:disconnected", () => console.log("Disconnected"));
+pboss.on("process:start", (procs) => {
   console.log("Started:", procs.map((p) => p.name).join(", "));
 });
-bm2.on("process:stop", (procs) => {
+pboss.on("process:stop", (procs) => {
   console.log("Stopped:", procs.map((p) => p.name).join(", "));
 });
-bm2.on("error", (err) => console.error("BM2 error:", err.message));
-bm2.on("metrics", (snapshot) => {
+pboss.on("error", (err) => console.error("ProcBoss error:", err.message));
+pboss.on("metrics", (snapshot) => {
   console.log(`${snapshot.processes.length} processes, system CPU ${snapshot.system.cpu}%`);
 });
 
-await bm2.connect();
+await pboss.connect();
 ```
 
 ---
 
 ### Error Handling
 
-All methods that communicate with the daemon throw a `BM2Error` when the daemon returns a failure response. The error includes the command that failed and the full daemon response for inspection.
+All methods that communicate with the daemon throw a `PBossError` when the daemon returns a failure response. The error includes the command that failed and the full daemon response for inspection.
 
 ```ts
-import { BM2Error } from "bm2";
+import { PBossError } from "pboss";
 
 try {
-  await bm2.describe("nonexistent");
+  await pboss.describe("nonexistent");
 } catch (err) {
-  if (err instanceof BM2Error) {
+  if (err instanceof PBossError) {
     console.error(`Command "${err.command}" failed: ${err.message}`);
     console.error("Full response:", err.response);
   }
@@ -1913,7 +1915,7 @@ try {
 
 Transport-level errors (daemon unreachable, socket closed) throw standard `Error` instances.
 
-#### `BM2Error` Properties
+#### `PBossError` Properties
 
 | Property | Type | Description |
 |---|---|---|
@@ -1925,11 +1927,11 @@ Transport-level errors (daemon unreachable, socket closed) throw standard `Error
 
 ### Direct ProcessManager Usage
 
-For in-process usage without a running daemon, you can use the `ProcessManager` class directly. This is useful for embedding BM2 into your own application or for custom tooling.
+For in-process usage without a running daemon, you can use the `ProcessManager` class directly. This is useful for embedding ProcBoss into your own application or for custom tooling.
 
 ```ts
-import { ProcessManager } from "bm2/process-manager";
-import { Dashboard } from "bm2/dashboard";
+import { ProcessManager } from "pboss";
+import { Dashboard } from "pboss";
 
 const pm = new ProcessManager();
 
@@ -1974,7 +1976,7 @@ await pm.resurrect();
 await pm.stopAll();
 ```
 
-The `ProcessManager` provides the same process management capabilities but runs in-process rather than communicating with a daemon. Use the `BM2` client class for the standard daemon-based workflow, and `ProcessManager` when you need direct, embedded control.
+The `ProcessManager` provides the same process management capabilities but runs in-process rather than communicating with a daemon. Use the `PBoss` client class for the standard daemon-based workflow, and `ProcessManager` when you need direct, embedded control.
 
 ---
 
@@ -1982,14 +1984,14 @@ The `ProcessManager` provides the same process management capabilities but runs 
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│                      BM2 CLI                            │
-│  (bm2 start, bm2 list, bm2 restart, bm2 dashboard)    │
+│                      ProcBoss (pboss) CLI                            │
+│  (pboss start, pboss list, pboss restart, pboss dashboard)    │
 └────────────────────────┬────────────────────────────────┘
                          │ Unix Socket (WebSocket)
-                         │ ~/.bm2/daemon.sock
+                         │ ~/.pboss/daemon.sock
                          ▼
 ┌─────────────────────────────────────────────────────────┐
-│                    BM2 Daemon                           │
+│                    ProcBoss Daemon                           │
 │                                                         │
 │  ┌─────────────────┐  ┌──────────────┐  ┌───────────┐  │
 │  │ Process Manager  │  │   Dashboard  │  │  Modules  │  │
@@ -2015,7 +2017,7 @@ The `ProcessManager` provides the same process management capabilities but runs 
 └─────────────────────────────────────────────────────────┘
 ```
 
-**Daemon Process** — The daemon is a long-running Bun process that manages all child processes. It listens on a Unix domain socket at `~/.bm2/daemon.sock` for commands from the CLI. The daemon is automatically started when you first run a BM2 command and can be explicitly killed with `bm2 kill`.
+**Daemon Process** — The daemon is a long-running Bun process that manages all child processes. It listens on a Unix domain socket at `~/.pboss/daemon.sock` for commands from the CLI. The daemon is automatically started when you first run a ProcBoss command and can be explicitly killed with `pboss kill`.
 
 **Process Container** — Each managed process is wrapped in a ProcessContainer that handles spawning via `Bun.spawn`, log piping, monitoring, restart logic, health checking, watch mode, and signal handling.
 
@@ -2029,7 +2031,7 @@ The `ProcessManager` provides the same process management capabilities but runs 
 
 ## Comparison with PM2
 
-| Feature | PM2 | BM2 |
+| Feature | PM2 | ProcBoss (pboss) |
 |---|---|---|
 | Runtime | Node.js | Bun |
 | Language | JavaScript | TypeScript |
@@ -2045,7 +2047,7 @@ The `ProcessManager` provides the same process management capabilities but runs 
 | Cluster Mode | `cluster` module | `Bun.spawn` with env-based routing |
 | Ecosystem Files | JSON, JS, YAML | JSON, TypeScript |
 | Deploy System | Built-in | Built-in |
-| Module System | `pm2 install` | `bm2 module install` |
+| Module System | `pm2 install` | `pboss module install` |
 | TypeScript | Requires compilation | Native support |
 | File Watching | `chokidar` | Native `fs.watch` |
 | Docker / Foreground Mode | `--no-daemon` flag | `--no-daemon` / `-d` flag |
@@ -2057,13 +2059,13 @@ The `ProcessManager` provides the same process management capabilities but runs 
 ### Basic HTTP Server
 
 ```
-bm2 start server.ts --name api
+pboss start server.ts --name api
 ```
 
 ### Production API with Clustering and Health Checks
 
 ```
-bm2 start server.ts \
+pboss start server.ts \
   --name api \
   --instances max \
   --port 3000 \
@@ -2078,19 +2080,19 @@ bm2 start server.ts \
 ### Development Mode with Watch
 
 ```
-bm2 start server.ts --name dev-api --watch --ignore-watch node_modules,.git,dist
+pboss start server.ts --name dev-api --watch --ignore-watch node_modules,.git,dist
 ```
 
 ### Python Script
 
 ```
-bm2 start worker.py --name py-worker --interpreter python3
+pboss start worker.py --name py-worker --interpreter python3
 ```
 
 ### Scheduled Restart (Daily at 3 AM)
 
 ```
-bm2 start server.ts --name api --cron "0 3 * * *"
+pboss start server.ts --name api --cron "0 3 * * *"
 ```
 
 ### Multiple Environments via Ecosystem
@@ -2120,24 +2122,24 @@ WORKDIR /app
 COPY package.json bun.lockb ./
 RUN bun install --frozen-lockfile
 COPY . .
-RUN bun add -g bm2
-CMD ["bm2", "start", "--no-daemon", "./server.ts"]
+RUN bun add -g pboss
+CMD ["pboss", "start", "--no-daemon", "./server.ts"]
 ```
 
 ### Full Production Setup
 
 ```
-bm2 start ecosystem.config.json
-bm2 save
-bm2 startup install
-bm2 dashboard
-bm2 list
+pboss start ecosystem.config.json
+pboss save
+pboss startup install
+pboss dashboard
+pboss list
 ```
 
 ### Monitoring with Prometheus and Grafana
 
 ```
-bm2 dashboard --metrics-port 9616
+pboss dashboard --metrics-port 9616
 curl http://localhost:9616/metrics
 ```
 
@@ -2146,7 +2148,7 @@ Then add the target to your `prometheus.yml` and import the Grafana dashboard.
 ### Zero-Downtime Deploy
 
 ```
-bm2 deploy ecosystem.config.json production
+pboss deploy ecosystem.config.json production
 ```
 
 Or manually:
@@ -2154,19 +2156,19 @@ Or manually:
 ```
 git pull origin main
 bun install
-bm2 reload all
+pboss reload all
 ```
 
 ### Programmatic Monitoring Service
 
 ```ts
-import BM2 from "bm2";
+import PBoss from "pboss";
 
-const bm2 = new BM2();
-await bm2.connect();
+const pboss = new PBoss();
+await pboss.connect();
 
 // Alert when any process uses more than 512 MB
-bm2.on("metrics", (snapshot) => {
+pboss.on("metrics", (snapshot) => {
   for (const proc of snapshot.processes) {
     if (proc.memory > 512 * 1024 * 1024) {
       console.warn(`⚠️  ${proc.name} using ${Math.round(proc.memory / 1024 / 1024)} MB`);
@@ -2174,12 +2176,12 @@ bm2.on("metrics", (snapshot) => {
   }
 });
 
-bm2.startPolling(5000);
+pboss.startPolling(5000);
 
 // Keep running
 process.on("SIGINT", async () => {
-  bm2.stopPolling();
-  await bm2.disconnect();
+  pboss.stopPolling();
+  await pboss.disconnect();
   process.exit(0);
 });
 ```
@@ -2187,23 +2189,23 @@ process.on("SIGINT", async () => {
 ### Programmatic Deploy Pipeline
 
 ```ts
-import BM2 from "bm2";
+import PBoss from "pboss";
 
-const bm2 = new BM2();
-await bm2.connect();
+const pboss = new PBoss();
+await pboss.connect();
 
 // Deploy new code, then reload
 console.log("Reloading all processes...");
-const reloaded = await bm2.reload("all");
+const reloaded = await pboss.reload("all");
 console.log(`Reloaded ${reloaded.length} processes`);
 
 // Verify everything is healthy
-const processes = await bm2.list();
+const processes = await pboss.list();
 const allOnline = processes.every((p) => p.status === "online");
 
 if (allOnline) {
   console.log("✅ All processes online");
-  await bm2.save();
+  await pboss.save();
 } else {
   console.error("❌ Some processes failed to come online");
   const failed = processes.filter((p) => p.status !== "online");
@@ -2212,7 +2214,7 @@ if (allOnline) {
   }
 }
 
-await bm2.disconnect();
+await pboss.disconnect();
 ```
 
 ---
@@ -2221,11 +2223,11 @@ await bm2.disconnect();
 
 ### Daemon won't start
 
-If BM2 commands hang or return connection errors, the daemon may have died without cleanup.
+If ProcBoss commands hang or return connection errors, the daemon may have died without cleanup.
 
 ```
-rm -f ~/.bm2/daemon.sock ~/.bm2/daemon.pid
-bm2 list
+rm -f ~/.pboss/daemon.sock ~/.pboss/daemon.pid
+pboss list
 ```
 
 ### Process keeps restarting
@@ -2233,27 +2235,27 @@ bm2 list
 Check the error logs for crash information:
 
 ```
-bm2 logs my-app --err --lines 100
+pboss logs my-app --err --lines 100
 ```
 
 If the process exits too quickly, it may hit the max restart limit. Check `minUptime` and `maxRestarts` settings:
 
 ```
-bm2 describe my-app
+pboss describe my-app
 ```
 
 Reset the counter if needed:
 
 ```
-bm2 reset my-app
+pboss reset my-app
 ```
 
 ### High memory usage
 
-If a process is using excessive memory and you have `maxMemoryRestart` configured, BM2 will restart it automatically. You can also check the metrics history:
+If a process is using excessive memory and you have `maxMemoryRestart` configured, ProcBoss will restart it automatically. You can also check the metrics history:
 
 ```
-bm2 metrics --history 3600
+pboss metrics --history 3600
 ```
 
 ### Port conflicts
@@ -2269,13 +2271,13 @@ lsof -i :3000-3007
 Enable log rotation:
 
 ```
-bm2 start server.ts --log-max-size 50M --log-retain 5 --log-compress
+pboss start server.ts --log-max-size 50M --log-retain 5 --log-compress
 ```
 
 Or flush existing logs:
 
 ```
-bm2 flush my-app
+pboss flush my-app
 ```
 
 ### Dashboard not accessible
@@ -2283,7 +2285,7 @@ bm2 flush my-app
 Ensure the dashboard is started and check the port:
 
 ```
-bm2 dashboard --port 9615
+pboss dashboard --port 9615
 curl http://localhost:9615
 ```
 
@@ -2292,34 +2294,34 @@ If running behind a firewall, ensure port 9615 (dashboard) and 9616 (metrics) ar
 ### Checking daemon health
 
 ```
-bm2 ping
+pboss ping
 ```
 
 This returns the daemon PID and uptime. If it doesn't respond, the daemon needs to be restarted.
 
 ### Container exits immediately
 
-If your Docker container exits right after starting, you are likely missing `--no-daemon`. Without it, BM2 daemonizes and the foreground process exits, causing Docker to stop the container.
+If your Docker container exits right after starting, you are likely missing `--no-daemon`. Without it, ProcBoss daemonizes and the foreground process exits, causing Docker to stop the container.
 
 ```dockerfile
-# ❌ Wrong — BM2 daemonizes and the container exits
-CMD ["bm2", "start", "./server.ts"]
+# ❌ Wrong — ProcBoss daemonizes and the container exits
+CMD ["pboss", "start", "./server.ts"]
 
-# ✅ Correct — BM2 stays in the foreground
-CMD ["bm2", "start", "--no-daemon", "./server.ts"]
+# ✅ Correct — ProcBoss stays in the foreground
+CMD ["pboss", "start", "--no-daemon", "./server.ts"]
 ```
 
 ---
 
 ## File Structure
 
-BM2 stores all data in `~/.bm2/`:
+ProcBoss stores all data in `~/.pboss/`:
 
 ```
-~/.bm2/
+~/.pboss/
 ├── daemon.sock          # Unix domain socket for IPC
 ├── daemon.pid           # Daemon process ID
-├── dump.json            # Saved process list (bm2 save)
+├── dump.json            # Saved process list (pboss save)
 ├── config.json          # Global configuration
 ├── env-registry.json    # Stored environment variables
 ├── logs/                # Process log files
@@ -2330,7 +2332,7 @@ BM2 stores all data in `~/.bm2/`:
 ├── pids/                # PID files
 │   └── my-api-0.pid
 ├── metrics/             # Persisted metric snapshots
-└── modules/             # Installed BM2 modules
+└── modules/             # Installed ProcBoss modules
 ```
 
 ---
@@ -2348,8 +2350,8 @@ Contributions are welcome. Please follow these guidelines:
 ### Development Setup
 
 ```
-git clone https://github.com/bun-bm2/bm2.git
-cd bm2
+git clone https://github.com/procboss/pboss.git
+cd pboss
 bun install
 bun run src/index.ts list
 bun test
@@ -2361,7 +2363,7 @@ bun test
 
 GPL-3.0-only
 
-Copyright (c) 2025 bun-bm2
+Copyright (c) 2025 procboss.com
 
 Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
 

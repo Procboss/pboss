@@ -1,5 +1,5 @@
 /**
- * BM2 — Bun Process Manager
+ * ProcBoss (pboss) — Bun Process Manager
  * A production-grade process manager for Bun.
  *
  * Features:
@@ -9,7 +9,8 @@
  * - Log management & rotation
  * - Deployment support
  *
- * https://github.com/bun-bm2/bm2
+ * https://procboss.com
+ * https://github.com/procboss/pboss
  * License: GPL-3.0-only
  */
 
@@ -97,7 +98,7 @@ export class LogManager {
       // appendFile seeks to EOF at the kernel level and writes only new bytes.
       await appendFile(filePath, content, { encoding: "utf8" });
     } catch (err) {
-      console.error(`[bm2] Failed to write log: ${filePath}`, err);
+      console.error(`[pboss] Failed to write log: ${filePath}`, err);
     }
   }
 

@@ -1,5 +1,5 @@
 /**
- * BM2 — Bun Process Manager
+ * ProcBoss (pboss) — Bun Process Manager
  * A production-grade process manager for Bun.
  *
  * Features:
@@ -9,7 +9,8 @@
  * - Log management & rotation
  * - Deployment support
  *
- * https://github.com/bun-bm2/bm2
+ * https://procboss.com
+ * https://github.com/procboss/pboss
  * License: GPL-3.0-only
  */
  import type { DeployConfig } from "./types";
@@ -21,7 +22,7 @@
  
      for (const host of hosts) {
        const target = `${config.user}@${host}`;
-       console.log(`\n[bm2] Deploying to ${target}...`);
+       console.log(`\n[pboss] Deploying to ${target}...`);
  
        const remotePath = config.path;
        const currentPath = `${remotePath}/current`;
@@ -29,7 +30,7 @@
  
        // Pre-deploy hook
        if (config.preDeploy) {
-         console.log(`[bm2] Running pre-deploy: ${config.preDeploy}`);
+         console.log(`[pboss] Running pre-deploy: ${config.preDeploy}`);
          await this.localExec(config.preDeploy);
        }
  
@@ -80,7 +81,7 @@
  
        // Post-deploy hook
        if (config.postDeploy) {
-         console.log(`[bm2] Running post-deploy: ${config.postDeploy}`);
+         console.log(`[pboss] Running post-deploy: ${config.postDeploy}`);
          const envStr = config.env
            ? Object.entries(config.env)
                .map(([k, v]) => `${k}=${v}`)
@@ -100,7 +101,7 @@
          sshOpts
        );
  
-       console.log(`[bm2] ✓ Deploy to ${target} complete`);
+       console.log(`[pboss] ✓ Deploy to ${target} complete`);
      }
    }
  
@@ -110,7 +111,7 @@
  
      for (const host of hosts) {
        const target = `${config.user}@${host}`;
-       console.log(`[bm2] Setting up ${target}...`);
+       console.log(`[pboss] Setting up ${target}...`);
  
        await this.remoteExec(
          target,
@@ -137,7 +138,7 @@
          );
        }
  
-       console.log(`[bm2] ✓ Setup complete for ${target}`);
+       console.log(`[pboss] ✓ Setup complete for ${target}`);
      }
    }
  
@@ -156,7 +157,7 @@
      const exitCode = await proc.exited;
  
      if (exitCode !== 0 && stderr) {
-       console.error(`[bm2] Remote error: ${stderr}`);
+       console.error(`[pboss] Remote error: ${stderr}`);
      }
      if (stdout.trim()) {
        console.log(stdout.trim());
@@ -178,7 +179,7 @@
      const exitCode = await proc.exited;
  
      if (exitCode !== 0 && stderr) {
-       console.error(`[bm2] Local error: ${stderr}`);
+       console.error(`[pboss] Local error: ${stderr}`);
      }
      if (stdout.trim()) {
        console.log(stdout.trim());

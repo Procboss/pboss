@@ -3,7 +3,7 @@ import { mkdir, rm, writeFile, readFile } from "fs/promises";
 import { join } from "path";
 import { tmpdir } from "os";
 
-const TEST_DIR = join(tmpdir(), `bm2-test-config-${Date.now()}`);
+const TEST_DIR = join(tmpdir(), `pboss-test-config-${Date.now()}`);
 const CONFIG_FILE = join(TEST_DIR, "ecosystem.config.ts");
 
 beforeEach(async () => {

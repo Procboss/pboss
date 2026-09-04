@@ -1,5 +1,5 @@
 {
-	"name": "bm2",
+	"name": "pboss",
 	"version": "1.1.0",
 	"description": "A blazing-fast, full-featured process manager built entirely on Bun native APIs. The modern PM2 replacement — zero Node.js dependencies, pure Bun performance.",
 	"main": "src/api.ts",
@@ -11,7 +11,7 @@
 		"./types": "./src/types.ts"
 	},
 	"bin": {
-		"bm2": "./src/index.ts"
+		"pboss": "./src/index.ts"
 	},
 	"files": [
 		"src/",
@@ -40,18 +40,19 @@
 		"reload",
 		"log-management",
 		"health-check",
-		"bm2"
+		"pboss",
+		"procboss"
 	],
-	"author": "bun-bm2",
+	"author": "procboss.com",
 	"license": "GPL-3.0",
 	"repository": {
 		"type": "git",
-		"url": "git+https://github.com/bun-bm2/bm2.git"
+		"url": "git+https://github.com/procboss/pboss.git"
 	},
 	"bugs": {
-		"url": "https://github.com/bun-bm2/bm2/issues"
+		"url": "https://github.com/procboss/pboss/issues"
 	},
-	"homepage": "https://github.com/bun-bm2/bm2#readme",
+	"homepage": "https://procboss.com",
 	"engines": {
 		"bun": ">=1.0.0"
 	},

@@ -3,7 +3,7 @@ import { mkdir, rm, writeFile, readFile, exists, readdir } from "fs/promises";
 import { join } from "path";
 import { tmpdir } from "os";
 
-const TEST_DIR = join(tmpdir(), `bm2-test-logs-${Date.now()}`);
+const TEST_DIR = join(tmpdir(), `pboss-test-logs-${Date.now()}`);
 const LOG_DIR = join(TEST_DIR, "logs");
 
 beforeEach(async () => {

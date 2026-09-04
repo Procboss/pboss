@@ -1,5 +1,5 @@
 /**
- * BM2 — Bun Process Manager
+ * ProcBoss (pboss) — Bun Process Manager
  * A production-grade process manager for Bun.
  *
  * Features:
@@ -9,7 +9,8 @@
  * - Log management & rotation
  * - Deployment support
  *
- * https://github.com/bun-bm2/bm2
+ * https://procboss.com
+ * https://github.com/procboss/pboss
  * License: GPL-3.0-only
  */
 import type { Subprocess } from "bun";
@@ -18,6 +19,7 @@ import type {
   ProcessState,
   ProcessStatus,
   LogRotateOptions,
+  ProcessEnvMeta,
 } from "./types";
 import { LogManager } from "./log-manager";
 import { ClusterManager } from "./cluster-manager";
@@ -137,7 +139,7 @@ export class ProcessContainer {
             maxFails: this.config.healthCheckMaxFails || 3,
           },
           (_id, reason) => {
-            console.log(`[bm2] Health check failed for ${this.name}: ${reason}`);
+            console.log(`[pboss] Health check failed for ${this.name}: ${reason}`);
             this.restart();
           }
         );
@@ -146,14 +148,14 @@ export class ProcessContainer {
       // Setup cron restart
       if (this.config.cronRestart) {
         this.cronManager.schedule(this.id, this.config.cronRestart, () => {
-          console.log(`[bm2] Cron restart triggered for ${this.name}`);
+          console.log(`[pboss] Cron restart triggered for ${this.name}`);
           this.restart();
         });
       }
     } catch (err: any) {
       this.status = "errored";
  
-      await this.logManager.appendJSONLog(logPaths.errFile, `[bm2] Failed to start: ${err.message}`);
+      await this.logManager.appendJSONLog(logPaths.errFile, `[pboss] Failed to start: ${err.message}`);
       
       throw err;
     }
@@ -164,6 +166,9 @@ export class ProcessContainer {
     const env: Record<string, string> = {
       ...(process.env as Record<string, string>),
       ...this.config.env,
+      PBOSS_ID: String(this.id),
+      PBOSS_NAME: this.name,
+      PBOSS_EXEC_MODE: "fork",
       BM2_ID: String(this.id),
       BM2_NAME: this.name,
       BM2_EXEC_MODE: "fork",
@@ -188,7 +193,7 @@ export class ProcessContainer {
   }
 
   private async startCluster(logPaths: { outFile: string; errFile: string }) {
-    const workerId = parseInt(this.config.env?.BM2_INSTANCE_ID || this.config.env?.NODE_APP_INSTANCE || "0") || 0;
+    const workerId = parseInt(this.config.env?.PBOSS_INSTANCE_ID || this.config.env?.BM2_INSTANCE_ID || this.config.env?.NODE_APP_INSTANCE || "0") || 0;
     const proc = this.clusterManager.spawnWorker(
       this.config,
       workerId,
@@ -294,7 +299,7 @@ export class ProcessContainer {
   
           // 3. Max memory restart
           if (this.config.maxMemoryRestart && this.memory > this.config.maxMemoryRestart) {
-            console.log(`[bm2] ${this.name} exceeded memory limit (${this.memory} > ${this.config.maxMemoryRestart}), restarting...`);
+            console.log(`[pboss] ${this.name} exceeded memory limit (${this.memory} > ${this.config.maxMemoryRestart}), restarting...`);
             await this.restart();
           }
           
@@ -322,7 +327,7 @@ export class ProcessContainer {
 
   private setupWatch() {
     const paths = this.config.watchPaths || [this.config.cwd || process.cwd()];
-    const ignorePatterns = this.config.ignoreWatch || ["node_modules", ".git", ".bm2"];
+    const ignorePatterns = this.config.ignoreWatch || ["node_modules", ".git", ".pboss", ".bm2"];
 
     let debounceTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -337,7 +342,7 @@ export class ProcessContainer {
 
             if (debounceTimer) clearTimeout(debounceTimer);
             debounceTimer = setTimeout(() => {
-              console.log(`[bm2] ${filename} changed, restarting ${this.name}...`);
+              console.log(`[pboss] ${filename} changed, restarting ${this.name}...`);
               this.restart();
             }, 1000);
           }
@@ -366,7 +371,7 @@ export class ProcessContainer {
         this.unstableRestarts++;
         // Cap consecutive unstable restarts
         if (this.unstableRestarts >= this.config.maxRestarts) {
-          console.log(`[bm2] ${this.name} reached max consecutive unstable restarts (${this.config.maxRestarts}), not restarting`);
+          console.log(`[pboss] ${this.name} reached max consecutive unstable restarts (${this.config.maxRestarts}), not restarting`);
           this.status = "errored";
           return;
         }
@@ -380,9 +385,9 @@ export class ProcessContainer {
   
       this.restartTimer = setTimeout(() => {
         this.restartCount++; // Keep cumulative for observability
-        console.log(`[bm2] Restarting ${this.name} (cumulative attempt ${this.restartCount})`);
+        console.log(`[pboss] Restarting ${this.name} (cumulative attempt ${this.restartCount})`);
         this.start().catch((err) => {
-          console.error(`[bm2] Failed to restart ${this.name}:`, err);
+          console.error(`[pboss] Failed to restart ${this.name}:`, err);
         });
       }, delay);
     } else if (!this.config.autorestart) {
@@ -516,6 +521,17 @@ export class ProcessContainer {
   }
 
   getState(): ProcessState {
+    const envMeta = {
+      ...this.config,
+      status: this.status,
+      pm_uptime: this.startedAt,
+      restart_time: this.restartCount,
+      unstable_restarts: this.unstableRestarts,
+      created_at: this.createdAt,
+      pm_id: this.id,
+      axm_monitor: this.axmMonitor,
+    };
+
     return {
       id: this.id,
       name: this.name,
@@ -529,16 +545,8 @@ export class ProcessContainer {
         handles: this.handles,
         eventLoopLatency: this.eventLoopLatency,
       },
-      bm2_env: {
-        ...this.config,
-        status: this.status,
-        pm_uptime: this.startedAt,
-        restart_time: this.restartCount,
-        unstable_restarts: this.unstableRestarts,
-        created_at: this.createdAt,
-        pm_id: this.id,
-        axm_monitor: this.axmMonitor,
-      },
+      pboss_env: envMeta,
+      bm2_env: envMeta,
     };
   }
 

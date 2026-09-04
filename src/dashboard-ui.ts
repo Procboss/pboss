@@ -1,5 +1,5 @@
 /**
- * BM2 — Bun Process Manager
+ * ProcBoss (pboss) — Bun Process Manager
  * A production-grade process manager for Bun.
  *
  * Features:
@@ -9,7 +9,8 @@
  * - Log management & rotation
  * - Deployment support
  *
- * https://github.com/bun-bm2/bm2
+ * https://procboss.com
+ * https://github.com/procboss/pboss
  * License: GPL-3.0-only
  */
 export function getDashboardHTML(): string {
@@ -18,7 +19,7 @@ export function getDashboardHTML(): string {
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>BM2 Dashboard</title>
+<title>ProcBoss Dashboard</title>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
   :root {
@@ -82,7 +83,7 @@ export function getDashboardHTML(): string {
 </head>
 <body>
 <div class="header">
-  <h1>⚡ BM2 Dashboard</h1>
+  <h1>⚡ ProcBoss Dashboard</h1>
   <div class="meta"><span class="live-indicator"></span>Live • <span id="update-time">-</span></div>
 </div>
 <div class="container">
@@ -155,7 +156,7 @@ function connect() {
       if (data.type === 'state') render(data.data);
       if (data.type === 'logs') renderLogs(data.data);
     } catch (err) {
-      console.error('BM2 WS parse error:', err);
+      console.error('ProcBoss WS parse error:', err);
     }
   };
   ws.onclose = () => setTimeout(connect, 2000);
@@ -212,7 +213,9 @@ function render(state) {
     return;
   }
 
-  document.getElementById('process-table').innerHTML = processes.map(p => \`
+  document.getElementById('process-table').innerHTML = processes.map(p => {
+    const env = p.pboss_env || p.bm2_env;
+    return \`
     <tr>
       <td>\${p.pm_id}</td>
       <td class="name-cell" title="\${escapeHtml(p.name)}">\${escapeHtml(p.name)}</td>
@@ -220,15 +223,16 @@ function render(state) {
       <td>\${p.pid || '-'}</td>
       <td>\${(p.monit?.cpu || 0).toFixed(1)}%</td>
       <td>\${formatBytes(p.monit?.memory || 0)}</td>
-      <td>\${p.bm2_env?.restart_time ?? 0}</td>
-      <td>\${p.status === 'online' ? formatUptime(Date.now() - (p.bm2_env?.pm_uptime || Date.now())) : '-'}</td>
+      <td>\${env?.restart_time ?? 0}</td>
+      <td>\${p.status === 'online' ? formatUptime(Date.now() - (env?.pm_uptime || Date.now())) : '-'}</td>
       <td class="actions">
         <button class="btn success" title="Restart" onclick="send('restart',{target:'\${p.pm_id}'})">↻</button>
         <button class="btn danger" title="Stop" onclick="send('stop',{target:'\${p.pm_id}'})">■</button>
         <button class="btn" title="View Logs" onclick="viewLogs(\${p.pm_id})">📋</button>
       </td>
     </tr>
-  \`).join('');
+  \`;
+  }).join('');
 
   document.getElementById('log-tabs').innerHTML = processes.map(p => \`
     <div class="tab \${selectedLogProcess === p.pm_id ? 'active' : ''}" onclick="viewLogs(\${p.pm_id})" title="\${escapeHtml(p.name)}">\${escapeHtml(p.name)}</div>

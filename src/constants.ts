@@ -1,5 +1,5 @@
 /**
- * BM2 — Bun Process Manager
+ * ProcBoss (pboss) — Bun Process Manager
  * A production-grade process manager for Bun.
  *
  * Features:
@@ -9,7 +9,8 @@
  * - Log management & rotation
  * - Deployment support
  *
- * https://github.com/bun-bm2/bm2
+ * https://procboss.com
+ * https://github.com/procboss/pboss
  * License: GPL-3.0-only
  */
  
@@ -21,21 +22,22 @@ import packageJson from '../package.json' assert { type: 'json' };
 export const APP_NAME = packageJson.name;
 export const VERSION = packageJson.version;
 
-export const BM2_HOME = join(homedir(), ".bm2");
-export const DAEMON_SOCKET = join(BM2_HOME, "daemon.sock");
-export const DAEMON_PID_FILE = join(BM2_HOME, "daemon.pid");
-export const DAEMON_OUT_LOG_FILE = join(BM2_HOME, "daemon.out.log");
-export const DAEMON_ERR_LOG_FILE = join(BM2_HOME, "daemon.err.log");
-export const LOG_DIR = join(BM2_HOME, "logs");
-export const PID_DIR = join(BM2_HOME, "pids");
-export const DUMP_FILE = join(BM2_HOME, "dump.json");
-export const METRICS_DIR = join(BM2_HOME, "metrics");
-export const MODULE_DIR = join(BM2_HOME, "modules");
-export const CONFIG_FILE = join(BM2_HOME, "config.json");
+export const PBOSS_HOME = process.env.PBOSS_HOME || join(homedir(), ".pboss");
+export const BM2_HOME = PBOSS_HOME; // Backwards compatibility alias
+export const DAEMON_SOCKET = join(PBOSS_HOME, "daemon.sock");
+export const DAEMON_PID_FILE = join(PBOSS_HOME, "daemon.pid");
+export const DAEMON_OUT_LOG_FILE = join(PBOSS_HOME, "daemon.out.log");
+export const DAEMON_ERR_LOG_FILE = join(PBOSS_HOME, "daemon.err.log");
+export const LOG_DIR = join(PBOSS_HOME, "logs");
+export const PID_DIR = join(PBOSS_HOME, "pids");
+export const DUMP_FILE = join(PBOSS_HOME, "dump.json");
+export const METRICS_DIR = join(PBOSS_HOME, "metrics");
+export const MODULE_DIR = join(PBOSS_HOME, "modules");
+export const CONFIG_FILE = join(PBOSS_HOME, "config.json");
 export const DASHBOARD_PORT = 9615;
 export const METRICS_PORT = 9616;
 
-export const ALL_DIRS = [BM2_HOME, LOG_DIR, PID_DIR, METRICS_DIR, MODULE_DIR];
+export const ALL_DIRS = [PBOSS_HOME, LOG_DIR, PID_DIR, METRICS_DIR, MODULE_DIR];
 
 export const DEFAULT_KILL_TIMEOUT = 5000;
 export const DEFAULT_MIN_UPTIME = 1000;

@@ -1,5 +1,5 @@
 /**
- * BM2 — Bun Process Manager
+ * ProcBoss (pboss) — Bun Process Manager
  * A production-grade process manager for Bun.
  *
  * Features:
@@ -9,7 +9,8 @@
  * - Log management & rotation
  * - Deployment support
  *
- * https://github.com/bun-bm2/bm2
+ * https://procboss.com
+ * https://github.com/procboss/pboss
  * License: GPL-3.0-only
  */
 
@@ -25,7 +26,7 @@ import {
 import { ensureDirs } from "./utils";
 import type { DaemonMessage, DaemonResponse } from "./types";
 import type { ReadableStreamController, Server } from "bun";
-import { existsSync, unlinkSync } from "node:fs";
+import { existsSync, unlinkSync, readFileSync } from "node:fs";
 
 
 export default class Daemon {
@@ -65,6 +66,24 @@ export default class Daemon {
     this.debugMode = this.args.includes("--debug");
 
     if (_daemonEnabled) {
+      // Check if an existing daemon is already alive on this machine
+      if (existsSync(DAEMON_PID_FILE)) {
+        try {
+          const pidText = readFileSync(DAEMON_PID_FILE, "utf-8").trim();
+          if (pidText) {
+            const existingPid = parseInt(pidText);
+            if (existingPid !== process.pid) {
+              process.kill(existingPid, 0); // throws if process does not exist
+              if (existsSync(DAEMON_SOCKET)) {
+                // Another daemon process is already active on this machine
+                return;
+              }
+            }
+          }
+        } catch {
+          // Stale PID file, safe to overwrite
+        }
+      }
 
       // Clean up existing socket
       try {
@@ -77,7 +96,6 @@ export default class Daemon {
 
       // Write PID file
       await Bun.write(DAEMON_PID_FILE, String(process.pid));
-
     }
 
     // Load modules

@@ -4,7 +4,7 @@ import { existsSync } from "fs"; // Import existsSync from 'fs' instead
 import { join } from "path";
 import { tmpdir } from "os";
 
-const TEST_DIR = join(tmpdir(), `bm2-test-pm-${Date.now()}`);
+const TEST_DIR = join(tmpdir(), `pboss-test-pm-${Date.now()}`);
 const PROCESS_LIST_FILE = join(TEST_DIR, "processes.json");
 
 interface ProcessEntry {
@@ -285,11 +285,11 @@ describe("ProcessManager save() and resurrect() Full Configuration Round-Trip", 
     // Verify process identification & counters
     expect(resProc.name).toBe("custom-api");
     expect(resProc.id).toBe(0);
-    expect(resProc.bm2_env.restart_time).toBe(7);
-    expect(resProc.bm2_env.unstable_restarts).toBe(2);
+    expect(resProc.pboss_env.restart_time).toBe(7);
+    expect(resProc.pboss_env.unstable_restarts).toBe(2);
 
     // Verify full configuration preservation
-    const env = resProc.bm2_env;
+    const env = resProc.pboss_env;
     expect(env.interpreter).toBe("bun");
     expect(env.interpreterArgs).toEqual(["run"]);
     expect(env.args).toEqual(["--port", "8080"]);

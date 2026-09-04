@@ -1,5 +1,5 @@
 /**
- * BM2 — Bun Process Manager
+ * ProcBoss (pboss) — Bun Process Manager
  * A production-grade process manager for Bun.
  *
  * Features:
@@ -9,7 +9,8 @@
  * - Log management & rotation
  * - Deployment support
  *
- * https://github.com/bun-bm2/bm2
+ * https://procboss.com
+ * https://github.com/procboss/pboss
  * License: GPL-3.0-only
  */
 import type { ProcessContainer } from "./process-container";
@@ -32,7 +33,7 @@ export class GracefulReload {
       
       const oldPid = container.pid;
   
-      console.log(`[bm2] Graceful reload: reloading ${container.name} (${i + 1}/${containers.length})`);
+      console.log(`[pboss] Graceful reload: reloading ${container.name} (${i + 1}/${containers.length})`);
   
       const startPromise = container.start();
   
@@ -70,6 +71,6 @@ export class GracefulReload {
       }
     }
   
-    console.log(`[bm2] Graceful reload complete`);
+    console.log(`[pboss] Graceful reload complete`);
   }
 }

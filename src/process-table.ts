@@ -1,5 +1,5 @@
 /**
- * BM2 — Bun Process Manager
+ * ProcBoss (pboss) — Bun Process Manager
  * A production-grade process manager for Bun.
  *
  * Features:
@@ -9,7 +9,8 @@
  * - Log management & rotation
  * - Deployment support
  *
- * https://github.com/bun-bm2/bm2
+ * https://procboss.com
+ * https://github.com/procboss/pboss
  * License: GPL-3.0-only
  */
 
@@ -50,7 +51,8 @@ function prettyMemory(mem: number) {
 }
 
 function highlightName(p: ProcessState) {
-  if (p.bm2_env.unstable_restarts > 0) return color(p.name, "yellow");
+  const env = p.pboss_env || p.bm2_env;
+  if (env && env.unstable_restarts > 0) return color(p.name, "yellow");
   return p.name;
 }
 
@@ -85,7 +87,7 @@ function minimalBorders() {
 export function printProcessTable(processes: ProcessState[]) {
   
   console.log("");
-  console.log(color("BM2 — Bun Process Manager", "bold"));
+  console.log(color("ProcBoss — Bun Process Manager", "bold"));
   console.log(color("─────────────────────────────────────────────", "dim"));
   console.log("");
 
@@ -109,21 +111,22 @@ export function printProcessTable(processes: ProcessState[]) {
   //console.log("processes===>", processes)
 
   for (const p of processes) {
+    const env = p.pboss_env || p.bm2_env;
     const cpu = p.monit?.cpu ?? 0;
     const mem = p.monit?.memory ?? 0;
-    const uptime = p.status === "online"
-      ? formatUptime(p.bm2_env.pm_uptime)
+    const uptime = (p.status === "online" && env)
+      ? formatUptime(env.pm_uptime)
       : "-";
 
     table.push([
       p.pm_id,
       highlightName(p),
       p.namespace || "default",
-      p.bm2_env.version ?? "-",
-      p.bm2_env.execMode,
+      env?.version ?? "-",
+      env?.execMode ?? "fork",
       p.pid ?? "-",
       uptime,
-      p.bm2_env.restart_time,
+      env?.restart_time ?? 0,
       prettyStatus(p.status),
       prettyCpu(cpu),
       prettyMemory(mem)
@@ -144,12 +147,14 @@ export function liveWatchProcess(processes: ProcessState[], interval = 5_000) {
   // Helper to get sorted processes
   const getSortedProcesses = () => {
     return [...processes].sort((a, b) => {
+      const envA = a.pboss_env || a.bm2_env;
+      const envB = b.pboss_env || b.bm2_env;
       switch (sortBy) {
         case "cpu": return (b.monit.cpu ?? 0) - (a.monit.cpu ?? 0);
         case "mem": return (b.monit.memory ?? 0) - (a.monit.memory ?? 0);
         case "uptime":
-          const uptimeA = a.status === "online" ? Date.now() - a.bm2_env.pm_uptime : 0;
-          const uptimeB = b.status === "online" ? Date.now() - b.bm2_env.pm_uptime : 0;
+          const uptimeA = (a.status === "online" && envA) ? Date.now() - envA.pm_uptime : 0;
+          const uptimeB = (b.status === "online" && envB) ? Date.now() - envB.pm_uptime : 0;
           return uptimeB - uptimeA;
         default: return a.pm_id - b.pm_id;
       }

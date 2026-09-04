@@ -1,5 +1,5 @@
 /**
- * BM2 — Bun Process Manager
+ * ProcBoss (pboss) — Bun Process Manager
  * A production-grade process manager for Bun.
  *
  * Features:
@@ -9,7 +9,8 @@
  * - Log management & rotation
  * - Deployment support
  *
- * https://github.com/bun-bm2/bm2
+ * https://procboss.com
+ * https://github.com/procboss/pboss
  * License: GPL-3.0-only
  */
 
@@ -105,7 +106,7 @@ export class Dashboard {
             headers: { "Content-Type": "text/plain; charset=utf-8" },
           });
         }
-        return new Response("BM2 Metrics Server\nGET /metrics for Prometheus format", {
+        return new Response("ProcBoss Metrics Server\nGET /metrics for Prometheus format", {
           status: 200,
         });
       },
@@ -117,8 +118,8 @@ export class Dashboard {
       this.broadcast();
     }, 2000);
 
-    console.log(`[bm2] Dashboard running at http://localhost:${port}`);
-    console.log(`[bm2] Prometheus metrics at http://localhost:${metricsPort}/metrics`);
+    console.log(`[pboss] Dashboard running at http://localhost:${port}`);
+    console.log(`[pboss] Prometheus metrics at http://localhost:${metricsPort}/metrics`);
   }
 
   private async handleAction(pathname: string, req: Request): Promise<Response> {
