@@ -107,7 +107,7 @@ describe("Windows Support & Cross-Platform Compatibility", () => {
       expect(cmd).toContain("-File");
     });
 
-    test("builds worker command with bun for js/ts", () => {
+    test("builds worker command with resolved bun for js/ts", () => {
       const cm = new ClusterManager();
       const config: ProcessDescription = {
         id: 0,
@@ -129,7 +129,11 @@ describe("Windows Support & Cross-Platform Compatibility", () => {
       };
 
       const cmd = cm.buildWorkerCommand(config);
-      expect(cmd[0]).toBe("bun");
+      // Interpreter is resolved to the absolute system Bun path (works under
+      // minimal-PATH environments like systemd).
+      const bunPath = Bun.which("bun")!;
+      expect(bunPath).toBeTruthy();
+      expect(cmd[0]).toBe(bunPath);
       expect(cmd[1]).toBe("run");
       expect(cmd).toContain("--port");
       expect(cmd).toContain("3000");

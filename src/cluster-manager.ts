@@ -16,6 +16,7 @@
 import type { Subprocess } from "bun";
 import type { ProcessDescription } from "./types";
 import { getCpuCount } from "./utils";
+import { findBun } from "./install-mode";
 import path from "path"
  
 export class ClusterManager {
@@ -61,7 +62,8 @@ export class ClusterManager {
      } else {
        const ext = path.extname(config.script).slice(1).toLowerCase();
        if (ext === "ts" || ext === "tsx" || ext === "jsx" || ext === "mjs" || ext === "cjs" || ext === "js") {
-         cmd.push("bun", "run");
+         cmd.push(resolveBunForScript(config.script));
+         cmd.push("run");
        } else if (ext === "py") {
          cmd.push(process.platform === "win32" ? "python" : "python3");
        } else if (ext === "go") {
@@ -81,7 +83,8 @@ export class ClusterManager {
        } else if (ext === "exe" || ext === "bin" || ext === "") {
          // Standalone compiled executable (Go, Rust, C/C++, Swift, etc.) — executed directly
        } else {
-         cmd.push("bun", "run");
+         cmd.push(resolveBunForScript(config.script));
+         cmd.push("run");
        }
      }
  
@@ -137,3 +140,25 @@ export class ClusterManager {
      this.workers.delete(processId);
    }
  }
+
+/**
+ * Resolve the Bun interpreter for a JS/TS worker script.
+ *
+ * Uses the absolute path of the system Bun so spawned workers survive
+ * minimal-PATH environments (systemd, launchd, containers). On compiled
+ * installs the system Bun is optional — if it is missing we fail with an
+ * actionable message instead of a confusing ENOENT on a bare `bun` name.
+ */
+function resolveBunForScript(script: string): string {
+  const bun = findBun();
+  if (!bun) {
+    throw new Error(
+      `Cannot run "${script}": the Bun runtime was not found on this system. ` +
+        "pboss itself is running as a compiled standalone binary, so executing " +
+        "JavaScript/TypeScript worker scripts requires a separate Bun installation. " +
+        "Install Bun from https://bun.sh, or select another runtime with " +
+        "--interpreter (e.g. --interpreter node, --interpreter none for binaries)."
+    );
+  }
+  return bun;
+}

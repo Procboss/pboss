@@ -29,6 +29,7 @@ import {
   DAEMON_ERR_LOG_FILE,
 } from "./constants";
 import { ensureDirs, generateId } from "./utils";
+import { daemonSpawnCommand } from "./install-mode";
 import Daemon from "./daemon";
 import type {
   DaemonMessage,
@@ -679,19 +680,10 @@ export class PBoss extends EventEmitter<PBossEvents> {
    */
   async launchDaemon(): Promise<void> {
     await ensureDirs();
-    const bunPath = Bun.which("bun");
-    let spawnArgs: string[];
-
-    if ((Bun as any).isStandaloneExecutable || !bunPath) {
-      spawnArgs = [process.execPath, "__daemon"];
-    } else {
-      const daemonScript = join(import.meta.dir, "daemon.ts");
-      if (existsSync(daemonScript)) {
-        spawnArgs = [bunPath, "run", daemonScript];
-      } else {
-        spawnArgs = [process.execPath, "__daemon"];
-      }
-    }
+    // Resolved from the install mode (see install-mode.ts):
+    //   compiled → [<pboss binary>, "__daemon"]   (no system Bun needed)
+    //   script   → [<bun>, "run", <daemon.ts>]    (system Bun required)
+    const spawnArgs = daemonSpawnCommand();
 
     // Open log files for daemon stdout/stderr
     const outLog = Bun.file(DAEMON_OUT_LOG_FILE);

@@ -17,6 +17,7 @@
 import path, { join } from "path";
 import { MODULE_DIR } from "./constants";
 import { existsSync, readdirSync, symlinkSync, cpSync, rmSync } from "fs";
+import { findBun, findNpm } from "./install-mode";
 import type { ProcessManager } from "./process-manager";
 
 export interface PBossModule {
@@ -52,8 +53,10 @@ export class ModuleManager {
         cpSync(moduleNameOrPath, targetDir, { recursive: true });
       }
     } else {
-      // npm package
-      const proc = Bun.spawn(["bun", "add", moduleNameOrPath], {
+      // npm package — install with Bun when available, npm otherwise
+      // (compiled standalone installs may not have a system Bun).
+      const [installer, installVerb] = resolveModuleInstaller();
+      const proc = Bun.spawn([installer, installVerb, moduleNameOrPath], {
         cwd: MODULE_DIR,
         stdout: "pipe", stderr: "pipe",
       });
@@ -62,7 +65,8 @@ export class ModuleManager {
 
     // Install deps
     if (existsSync(join(targetDir, "package.json"))) {
-      const proc = Bun.spawn(["bun", "install"], {
+      const [installer] = resolveModuleInstaller();
+      const proc = Bun.spawn([installer, "install"], {
         cwd: targetDir,
         stdout: "pipe", stderr: "pipe",
       });
@@ -120,3 +124,25 @@ export class ModuleManager {
      }));
    }
  }
+
+/**
+ * Pick the package manager for module installs: the system Bun when present
+ * (fast, matches pboss), otherwise npm — compiled standalone installs do not
+ * require a system Bun, so npm is the fallback there.
+ *
+ * Returns [executable, add-verb], e.g. ["/usr/local/bin/bun", "add"] or
+ * ["/usr/bin/npm", "install"]. Throws a clear error when neither exists.
+ */
+function resolveModuleInstaller(): [string, string] {
+  const bun = findBun();
+  if (bun) return [bun, "add"];
+
+  const npm = findNpm();
+  if (npm) return [npm, "install"];
+
+  throw new Error(
+    "Cannot install modules: neither `bun` nor `npm` was found on this system. " +
+      "pboss is running as a compiled standalone binary, so module installation " +
+      "needs a separate package manager. Install Bun (https://bun.sh) or Node.js/npm."
+  );
+}

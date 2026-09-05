@@ -983,6 +983,8 @@ Generate and display a startup script for your operating system:
 pboss startup
 ```
 
+The generated script automatically detects how pboss was installed and adapts the daemon command accordingly. On a **compiled standalone install** (one-line installer, Homebrew, Snap, `build:bin`) the service re-executes the pboss binary itself (`ExecStart=/usr/local/bin/pboss __daemon`) — the Bun runtime is embedded in the binary and is **not required** on the system. On a **script install** (`bun add -g pboss`, npm) the service runs the source on the system Bun runtime (`ExecStart=/usr/local/bin/bun run .../daemon.ts`). The generated file's header comment states which mode was detected.
+
 On Windows, you can also specify the platform explicitly:
 ```powershell
 pboss startup win32
