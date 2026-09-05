@@ -140,25 +140,6 @@ ProcBoss replaces complex, heavyweight process managers with a clean, ultra-fast
 
 ---
 
-## Requirements
-
-- **Runtime:** Bun version 1.0 or higher.
-- **Platforms:** Linux, macOS, and Windows.
-
-Install Bun if you haven't already:
-
-**Linux / macOS:**
-```bash
-curl -fsSL https://bun.sh/install | bash
-```
-
-**Windows (PowerShell):**
-```powershell
-powershell -c "irm bun.sh/install.ps1 | iex"
-```
-
----
-
 ## Installation
 
 ### One-Line Universal Install

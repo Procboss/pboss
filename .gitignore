@@ -35,3 +35,4 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 bun.lock
 package-lock.json
 _release.yml
+pboss_1.1.0_amd64.snap

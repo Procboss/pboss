@@ -1,5 +1,5 @@
 name: pboss
-base: core22
+base: core24
 version: '1.1.0'
 summary: Universal production process manager for any software stack
 description: |
@@ -17,12 +17,19 @@ description: |
   - HTTP health checks & cron-scheduled restarts
   - Standalone and foreground (container) modes
 
+contact: hello@procboss.com
+license: GPL-3.0
+website: https://docs.procboss.com
+source-code: https://github.com/Procboss/pboss
+issues: https://github.com/Procboss/pboss/issues
+
+
 grade: stable
 confinement: classic
 
-architectures:
-  - build-on: amd64
-  - build-on: arm64
+platforms:
+  amd64:
+  arm64:
 
 apps:
   pboss:
@@ -37,13 +44,15 @@ parts:
     build-packages:
       - curl
       - unzip
+    build-attributes:
+      - enable-patchelf
     override-build: |
       # Install Bun build tool
       curl -fsSL https://bun.sh/install | bash
       export PATH="$HOME/.bun/bin:$PATH"
 
       # Install project dependencies
-      bun install
+      bun install -f
 
       # Compile standalone binary for the target architecture
       mkdir -p $CRAFT_PART_INSTALL/bin
