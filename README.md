@@ -8,13 +8,13 @@ By [procboss.com](https://procboss.com).
 ![Language](https://img.shields.io/badge/language-TypeScript-3178c6?style=flat-square)
 ![License](https://img.shields.io/badge/license-GPLv3-green?style=flat-square)
 [![Tests](https://github.com/procboss/pboss/actions/workflows/test.yml/badge.svg)](https://github.com/procboss/pboss/actions/workflows/test.yml)
-[![GitHub Sponsors](https://img.shields.io/badge/sponsor-GitHub%20Sponsors-ea4aaa?style=flat-square&logo=github-sponsors)](https://github.com/sponsors/procboss)
+
 
 ---
 
 ### Support ProcBoss
 
-ProcBoss (pboss) is free and open-source software built for the developer community by [procboss.com](https://procboss.com). If ProcBoss saves you time or powers your production services, please consider supporting its development:
+ProcBoss (pboss) is free and open-source software built for the developer community by [procboss.com](https://docs.procboss.com). If ProcBoss saves you time or powers your production services, please consider supporting its development:
 
 - ⭐ **Star the Repo:** Star us on [GitHub](https://github.com/procboss/pboss) to help more developers discover ProcBoss.
 - 🐛 **Contribute:** Open issues, suggest features, or submit pull requests.
@@ -167,17 +167,17 @@ Install and compile the native standalone `pboss` executable directly on your de
 
 **Linux / macOS:**
 ```bash
-curl -fsSL https://procboss.com/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/Procboss/pboss/refs/heads/main/scripts/install.sh | bash
 ```
 
 **Windows (PowerShell):**
 ```powershell
-powershell -c "irm https://procboss.com/install.ps1 | iex"
+powershell -c "irm https://raw.githubusercontent.com/Procboss/pboss/refs/heads/main/scripts/install.ps1 | iex"
 ```
 
 **Windows (Command Prompt):**
 ```cmd
-curl -fsSL https://procboss.com/install.cmd | cmd
+curl -fsSL https://raw.githubusercontent.com/Procboss/pboss/refs/heads/main/scripts/install.cmd | cmd
 ```
 
 ---
