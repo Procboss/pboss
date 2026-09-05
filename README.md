@@ -39,36 +39,29 @@ ProcBoss (pboss) is free and open-source software built for the developer commun
 
 ### One-Line Universal Install
 
-Install and compile the native standalone `pboss` executable directly on your device:
+Install and compile the native standalone `pboss` executable directly on your device. The installer installs system-wide (`/usr/local/bin`) and therefore requires root — pipe it through `sudo`:
 
 **Linux / macOS:**
 ```bash
-curl -fsSL https://procboss.com/install.sh | bash
+curl -fsSL https://procboss.com/install.sh | sudo bash
 ```
 
-**Windows (PowerShell):**
+**Windows (PowerShell, run as Administrator):**
 ```powershell
 powershell -c "irm https://procboss.com/install.ps1 | iex"
 ```
 
-**Windows (Command Prompt):**
+**Windows (Command Prompt, run as Administrator):**
 ```cmd
 curl -fsSL https://procboss.com/install.cmd | cmd
 ```
 
-### Package Managers
+The installers check for the required privileges themselves and tell you exactly how to re-run them if `sudo` / Administrator rights are missing.
 
-**Snap (Linux):**
-```bash
-sudo snap install pboss --classic
-```
+### Bun Global Install
 
-**Homebrew (macOS / Linux):**
-```bash
-brew install procboss/tap/pboss
-```
+If you already use Bun, you can run pboss straight from source:
 
-**Bun Global Install:**
 ```bash
 bun add -g pboss
 ```

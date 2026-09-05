@@ -7,7 +7,7 @@
  * pboss ships in two flavors and this module tells them apart at runtime:
  *
  *   1. Compiled standalone executable (`bun build --compile`, produced by the
- *      one-line installer, `build:bin`, Homebrew and Snap). The Bun runtime is
+ *      one-line installer and `build:bin`). The Bun runtime is
  *      embedded inside the binary — a system-wide Bun installation is NOT
  *      required. The daemon is started by re-executing the binary itself:
  *      `<pboss> __daemon`.

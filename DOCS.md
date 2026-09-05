@@ -134,38 +134,31 @@ ProcBoss replaces complex, heavyweight process managers with a clean, ultra-fast
 
 ### One-Line Universal Install
 
-Install and compile the native standalone `pboss` executable directly on your device:
+Install and compile the native standalone `pboss` executable directly on your device. The installer installs system-wide (`/usr/local/bin`) and therefore requires root — pipe it through `sudo`:
 
 **Linux / macOS:**
 ```bash
-curl -fsSL https://procboss.com/install.sh | bash
+curl -fsSL https://procboss.com/install.sh | sudo bash
 ```
 
-**Windows (PowerShell):**
+**Windows (PowerShell, run as Administrator):**
 ```powershell
 powershell -c "irm https://procboss.com/install.ps1 | iex"
 ```
 
-**Windows (Command Prompt):**
+**Windows (Command Prompt, run as Administrator):**
 ```cmd
 curl -fsSL https://procboss.com/install.cmd | cmd
 ```
 
+The installers check for the required privileges themselves and tell you exactly how to re-run them if `sudo` / Administrator rights are missing.
+
 ---
 
-### Package Managers
+### Bun Global Install
 
-**Snap (Linux):**
-```bash
-sudo snap install pboss --classic
-```
+If you already use Bun, you can run pboss straight from source:
 
-**Homebrew (macOS / Linux):**
-```bash
-brew install procboss/tap/pboss
-```
-
-**Bun Global Install:**
 ```bash
 bun add -g pboss
 ```
@@ -983,7 +976,7 @@ Generate and display a startup script for your operating system:
 pboss startup
 ```
 
-The generated script automatically detects how pboss was installed and adapts the daemon command accordingly. On a **compiled standalone install** (one-line installer, Homebrew, Snap, `build:bin`) the service re-executes the pboss binary itself (`ExecStart=/usr/local/bin/pboss __daemon`) — the Bun runtime is embedded in the binary and is **not required** on the system. On a **script install** (`bun add -g pboss`, npm) the service runs the source on the system Bun runtime (`ExecStart=/usr/local/bin/bun run .../daemon.ts`). The generated file's header comment states which mode was detected.
+The generated script automatically detects how pboss was installed and adapts the daemon command accordingly. On a **compiled standalone install** (one-line installer, `build:bin`) the service re-executes the pboss binary itself (`ExecStart=/usr/local/bin/pboss __daemon`) — the Bun runtime is embedded in the binary and is **not required** on the system. On a **script install** (`bun add -g pboss`, npm) the service runs the source on the system Bun runtime (`ExecStart=/usr/local/bin/bun run .../daemon.ts`). The generated file's header comment states which mode was detected.
 
 On Windows, you can also specify the platform explicitly:
 ```powershell
