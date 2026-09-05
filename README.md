@@ -167,17 +167,17 @@ Install and compile the native standalone `pboss` executable directly on your de
 
 **Linux / macOS:**
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Procboss/pboss/refs/heads/main/scripts/install.sh | bash
+curl -fsSL https://procboss.com/install.sh | bash
 ```
 
 **Windows (PowerShell):**
 ```powershell
-powershell -c "irm https://raw.githubusercontent.com/Procboss/pboss/refs/heads/main/scripts/install.ps1 | iex"
+powershell -c "irm https://procboss.com/install.ps1 | iex"
 ```
 
 **Windows (Command Prompt):**
 ```cmd
-curl -fsSL https://raw.githubusercontent.com/Procboss/pboss/refs/heads/main/scripts/install.cmd | cmd
+curl -fsSL https://procboss.com/install.cmd | cmd
 ```
 
 ---
