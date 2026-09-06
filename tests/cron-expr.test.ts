@@ -1,5 +1,5 @@
 import { describe, test, expect } from "bun:test";
-import { parseSchedule, nextCronRun, validateCron } from "../src/cron-expr";
+import { parseSchedule, nextCronRun, nextCronRuns, validateCron } from "../src/cron-expr";
 
 // Fixed "now" so assertions are deterministic:
 // 2026-09-06 (Sunday) 08:00 local time.
@@ -59,6 +59,35 @@ describe("parseSchedule — recurring friendly syntax", () => {
 
   test("everyminute", () => {
     expect(parseSchedule("everyminute", NOW).cron).toBe("* * * * *");
+  });
+
+  test("everysecond / every-second / everySecond / everysec → every second", () => {
+    for (const s of ["everysecond", "every-second", "everySecond", "everysec", "every second"]) {
+      const r = parseSchedule(s, NOW);
+      expect(r.kind).toBe("cron");
+      expect(r.cron).toBe("* * * * * *");
+      expect(r.description).toBe("every second");
+    }
+  });
+
+  test("every-15-seconds → step 15 in a seconds field", () => {
+    const s = parseSchedule("every-15-seconds", NOW);
+    expect(s.cron).toBe("*/15 * * * * *");
+    expect(s.description).toBe("every 15 seconds");
+  });
+
+  test("every-30-secs / every 7 second tolerate variant spellings", () => {
+    expect(parseSchedule("every-30-secs", NOW).cron).toBe("*/30 * * * * *");
+    expect(parseSchedule("every 7 second", NOW).cron).toBe("*/7 * * * * *");
+  });
+
+  test("every-second rejects an @time part", () => {
+    expect(() => parseSchedule("every-second@5", NOW)).toThrow(/does not take an @time/i);
+  });
+
+  test("every-N-seconds range is 1-59 (60+ means minutes)", () => {
+    expect(() => parseSchedule("every-60-seconds", NOW)).toThrow(/every-N-minutes/i);
+    expect(() => parseSchedule("every-0-seconds", NOW)).toThrow(/out of range/i);
   });
 
   test("everyweek → Sunday 00:00", () => {
@@ -194,6 +223,14 @@ describe("parseSchedule — one-shot syntax", () => {
     expect(() => parseSchedule("onDate@5-13-2026", NOW)).toThrow(/month/i);
   });
 
+  test("on-date / onDate / on_date / at-date are the same keyword", () => {
+    const want = parseSchedule("on-date@24-10-2026-23:10", NOW).at;
+    expect(want).toBe(new Date(2026, 9, 24, 23, 10).getTime());
+    for (const s of ["onDate@24-10-2026-23:10", "on_date@24-10-2026-23:10", "at-date@24-10-2026-23:10"]) {
+      expect(parseSchedule(s, NOW).at).toBe(want);
+    }
+  });
+
   test("today@24:30 → tomorrow 00:30", () => {
     const s = parseSchedule("today@24:30", NOW);
     expect(s.at).toBe(new Date(2026, 8, 7, 0, 30).getTime());
@@ -210,6 +247,14 @@ describe("parseSchedule — raw cron escape hatch", () => {
   test("complex cron passes through", () => {
     const s = parseSchedule("30 2 * * 1-5", NOW);
     expect(s.cron).toBe("30 2 * * 1-5");
+  });
+
+  test("6-field cron (with a seconds field) passes through", () => {
+    const s = parseSchedule("*/10 * * * * *", NOW);
+    expect(s.kind).toBe("cron");
+    expect(s.cron).toBe("*/10 * * * * *");
+    const s2 = parseSchedule("0/10 * * * * *", NOW);
+    expect(s2.cron).toBe("0/10 * * * * *");
   });
 
   test("invalid cron expression rejected", () => {
@@ -271,5 +316,24 @@ describe("next-run computation (cron-parser)", () => {
   test("validateCron accepts and rejects", () => {
     expect(validateCron("0 0 * * *")).toBe("0 0 * * *");
     expect(() => validateCron("not a cron")).toThrow();
+  });
+
+  test("every-second has second-level next-run precision", () => {
+    const from = new Date(2026, 8, 6, 8, 0, 5, 250); // 08:00:05.25
+    const next = nextCronRun("* * * * * *", from);
+    expect(new Date(next).getSeconds()).toBe(6);
+    expect(next - from.getTime()).toBe(750);
+  });
+
+  test("nextCronRuns returns 1s-spaced runs for every-second", () => {
+    const runs = nextCronRuns("* * * * * *", 3, new Date(2026, 8, 6, 8, 0, 5));
+    expect(runs).toHaveLength(3);
+    expect(runs[1]! - runs[0]!).toBe(1000);
+    expect(runs[2]! - runs[1]!).toBe(1000);
+  });
+
+  test("every-15-seconds fires on :00 :15 :30 :45", () => {
+    const runs = nextCronRuns("*/15 * * * * *", 4, new Date(2026, 8, 6, 8, 0, 1));
+    expect(runs.map((t) => new Date(t).getSeconds())).toEqual([15, 30, 45, 0]);
   });
 });

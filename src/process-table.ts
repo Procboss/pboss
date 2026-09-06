@@ -144,17 +144,23 @@ function formatWhen(ts: number | null | undefined): string {
   const d = new Date(ts);
   const p = (n: number) => String(n).padStart(2, "0");
   const date = `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
-  const time = `${p(d.getHours())}:${p(d.getMinutes())}`;
-  const day = new Intl.DateTimeFormat(undefined, { weekday: "short" }).format(d);
   const rel = ts - Date.now();
+  // Second-level schedules show seconds, so "06:14:13 (in 1s)" reads right.
+  const time =
+    rel > 0 && rel < 60_000
+      ? `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
+      : `${p(d.getHours())}:${p(d.getMinutes())}`;
+  const day = new Intl.DateTimeFormat(undefined, { weekday: "short" }).format(d);
   const relStr =
     rel <= 0
       ? "due"
-      : rel < 3600_000
-        ? `${Math.ceil(rel / 60_000)}m`
-        : rel < 86400_000
-          ? `${Math.floor(rel / 3600_000)}h ${Math.floor((rel % 3600_000) / 60_000)}m`
-          : `${Math.floor(rel / 86400_000)}d ${Math.floor((rel % 86400_000) / 3600_000)}h`;
+      : rel < 60_000
+        ? `${Math.max(1, Math.ceil(rel / 1000))}s`
+        : rel < 3600_000
+          ? `${Math.ceil(rel / 60_000)}m`
+          : rel < 86400_000
+            ? `${Math.floor(rel / 3600_000)}h ${Math.floor((rel % 3600_000) / 60_000)}m`
+            : `${Math.floor(rel / 86400_000)}d ${Math.floor((rel % 86400_000) / 3600_000)}h`;
   return `${date} ${time} ${day} (in ${relStr})`;
 }
 

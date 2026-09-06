@@ -5,10 +5,11 @@
  * Human-friendly schedule expressions for cron jobs.
  *
  * This module converts the friendly syntax accepted by `pboss cron run …`
- * and the `crons` array in ecosystem files into either a standard 5-field
- * cron expression (recurring jobs) or an absolute timestamp (one-shot
- * jobs). Cron math is delegated to the mature `cron-parser` library, which
- * also validates raw cron expressions passed through as an escape hatch.
+ * and the `crons` array in ecosystem files into either a 5-field cron
+ * expression (6 fields when seconds matter) for recurring jobs or an
+ * absolute timestamp for one-shot jobs. Cron math is delegated to the
+ * mature `cron-parser` library, which also validates raw cron expressions
+ * passed through as an escape hatch.
  *
  * Grammar
  * ───────
@@ -19,6 +20,8 @@
  *   everyday@9:11                   every day at 09:11
  *   everyday@24:30                  every day at 00:30 (24:xx = next day)
  *
+ *   everysecond [second]           every second
+ *   every-15-seconds                every 15 seconds
  *   everyhour [hourly]              every hour at :00
  *   everyhour@30                    every hour at :30
  *   everyminute                     every minute
@@ -42,16 +45,20 @@
  *
  *   today@23:10                     today at 23:10 (must be in the future)
  *   tomorrow@8:00                   tomorrow at 08:00
- *   onDate@24-10-2026               24 Oct 2026 at 00:00  (day-month-year)
- *   onDate@24-10-2026-23:10         24 Oct 2026 at 23:10
+ *   on-date@24-10-2026              24 Oct 2026 at 00:00  (day-month-year)
+ *   on-date@24-10-2026-23:10        24 Oct 2026 at 23:10
+ *   (also accepted: onDate@ / on_date@ / at-date@)
  *
  * Escape hatch:
  *
  *   30 2 * * 1-5                  any raw 5-field cron expression
+ *   0/10 * * * * *               6-field cron adds a seconds field
  *
  * Times use the 24-hour clock. Hour 24 is accepted and means "the following
  * day" (24:30 = 00:30 the next day; 24:00 = midnight rolling into the next
  * day). Dates are day-month-year, e.g. 24-10-2026 = October 24, 2026.
+ * Keywords tolerate hyphens, underscores and camelCase (every-second,
+ * everysecond and everySecond are the same word).
  *
  * https://procboss.com
  * https://github.com/procboss/pboss
@@ -90,14 +97,14 @@ const DAY_NAMES = [
 ];
 
 /**
- * Fields that look like a raw cron expression (5 whitespace-separated fields
- * of digits, `*`, `,`, `-`, `/`).
+ * Fields that look like a raw cron expression: 5 fields, or 6 fields where
+ * the first is a seconds step (e.g. `0/10 * * * * *`).
  */
-const RAW_CRON_RE = /^[\d*,\-\/]+(\s+[\d*,\-\/]+){4}$/;
+const RAW_CRON_RE = /^[\d*,\-\/]+(\s+[\d*,\-\/]+){4,5}$/;
 
 /**
- * Validate a 5-field cron expression with cron-parser. Throws a readable
- * error when invalid.
+ * Validate a 5- or 6-field cron expression with cron-parser. Throws a
+ * readable error when invalid.
  */
 export function validateCron(expression: string): string {
   try {
@@ -246,7 +253,7 @@ function parseDateTime(raw: string, context: string, now: Date): number {
   if (date.getTime() <= now.getTime()) {
     throw new Error(
       `"${context}" is in the past — one-shot schedules must be in the future. ` +
-        `Try tomorrow@${pad2(hour)}:${pad2(minute)} or a later onDate@day-month-year`
+        `Try tomorrow@${pad2(hour)}:${pad2(minute)} or a later on-date@day-month-year`
     );
   }
 
@@ -302,7 +309,7 @@ export function parseSchedule(input: string, now: Date = new Date()): ParsedSche
     const date = new Date(now.getFullYear(), now.getMonth(), now.getDate() + t.dayShift, t.hour, t.minute, 0, 0);
     if (date.getTime() <= now.getTime()) {
       throw new Error(
-        `"${source}" is already past — use tomorrow@${timeString(t)} or onDate@day-month-year[-HH:MM] instead`
+        `"${source}" is already past — use tomorrow@${timeString(t)} or on-date@day-month-year[-HH:MM] instead`
       );
     }
     return {
@@ -359,10 +366,37 @@ export function parseSchedule(input: string, now: Date = new Date()): ParsedSche
     };
   }
 
+  // everysecond
+  if (base === "everysecond" || base === "everysec") {
+    noTimeAllowed();
+    return { kind: "cron", cron: "* * * * * *", description: "every second", source };
+  }
+
   // everyminute
   if (base === "everyminute" || base === "everymin") {
     noTimeAllowed();
     return { kind: "cron", cron: "* * * * *", description: "every minute", source };
+  }
+
+  // every-N-seconds
+  {
+    const m = base.match(/^every(\d+)(seconds|second|secs|sec)$/);
+    if (m) {
+      noTimeAllowed();
+      const step = parseInt(m[1]!, 10);
+      if (step < 1 || step > 59) {
+        throw new Error(
+          `Step out of range in "${source}" — use every-2-seconds … every-59-seconds; ` +
+            `for a minute or longer use every-N-minutes`
+        );
+      }
+      return {
+        kind: "cron",
+        cron: `*/${step} * * * * *`,
+        description: `every ${step} seconds`,
+        source,
+      };
+    }
   }
 
   // everyweek / weekly (Sunday by default)
@@ -514,8 +548,8 @@ export function parseSchedule(input: string, now: Date = new Date()): ParsedSche
   // Nothing matched.
   throw new Error(
     `Unknown schedule "${source}". Examples: everyday@9:11 · every-sunday@10:10 · everyweek · ` +
-      `everymonth · every-15th@10:10 · every-6-hours@30 · today@23:10 · tomorrow@8:00 · ` +
-      `onDate@24-10-2026-23:10 · "*/5 * * * *"`
+      `everymonth · every-15th@10:10 · every-6-hours@30 · every-second · every-30-seconds · ` +
+      `today@23:10 · tomorrow@8:00 · on-date@24-10-2026-23:10 · "*/5 * * * *"`
   );
 }
 

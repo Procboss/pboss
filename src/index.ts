@@ -658,7 +658,7 @@ class PBossCLI {
 
 Commands:
   run <schedule> <command...>   Schedule a command. The schedule is friendly
-                                syntax or a raw 5-field cron expression.
+                                syntax or a raw 5/6-field cron expression.
   list                          List all cron jobs
   remove <id|name>              Remove a cron job
   next <id|name> [--count N]    Show the next N run times (default 3)
@@ -673,8 +673,9 @@ Schedules:
   everyday@10                   every day at 10:00
   everyday@9:11                 every day at 09:11
   everyday@24:30                every day at 00:30 (24:xx = next day)
-  everyhour [@30]               every hour at :00 / :30
-  everyminute                   every minute
+  everysecond                   every second (also: every-15-seconds)
+  everyminute                   every minute (also: every-30-minutes)
+  everyhour [@30]               every hour at :00 / :30 (also: every-6-hours)
   everyweek [@10:10]            every Sunday
   every-sunday [@10:10]         every Sunday (also: everySunday, onSunday)
   every-saturday@22:00          every Saturday at 22:00 (3-letter: every-sat)
@@ -685,15 +686,15 @@ Schedules:
   every-2-days [@8]             every 2nd day
   today@23:10                   once, today
   tomorrow@8:00                 once, tomorrow
-  onDate@24-10-2026             once, 24 Oct 2026 00:00 (day-month-year)
-  onDate@24-10-2026-23:10       once, 24 Oct 2026 23:10
-  "*/5 * * * *"                 raw cron escape hatch
+  on-date@24-10-2026            once, 24 Oct 2026 00:00 (day-month-year)
+  on-date@24-10-2026-23:10      once, 24 Oct 2026 23:10 (also: onDate@)
+  "*/5 * * * *"                 raw cron (5 fields, or 6 w/ seconds)
 
 Examples:
   pboss cron run everyday@2:00 "bun /srv/backup.ts"
   pboss cron run every-sunday@10:10 "sh /srv/cleanup.sh" --name cleanup
   pboss cron run every-15th "tar -czf /backups/site.tar.gz /var/www"
-  pboss cron run onDate@24-10-2026-23:10 "node migrate.js"
+  pboss cron run on-date@24-10-2026-23:10 "node migrate.js"
   pboss cron list
   pboss cron next cleanup --count 5
   pboss cron trigger cleanup
@@ -749,9 +750,10 @@ Examples:
           if (job.nextRun) {
             const d = new Date(job.nextRun);
             const p = (n: number) => String(n).padStart(2, "0");
+            const secs = job.nextRun - Date.now() < 60_000 ? `:${p(d.getSeconds())}` : "";
             console.log(
               `  next run: ${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ` +
-                `${p(d.getHours())}:${p(d.getMinutes())} (${formatUptime(job.nextRun - Date.now())} from now)`
+                `${p(d.getHours())}:${p(d.getMinutes())}${secs} (${formatUptime(job.nextRun - Date.now())} from now)`
             );
           } else {
             console.log(colorize("  paused (enabled: false)", "yellow"));
@@ -802,13 +804,16 @@ Examples:
           const name = job.find((j) => j.id.toString() === target || j.name === target)?.name ?? target;
           console.log("");
           console.log(colorize(`Next ${times.length} run${times.length > 1 ? "s" : ""} of ${name}:`, "cyan"));
+          // Sub-minute spacing (every-second jobs) needs second-level display.
+          const spaced = times.length > 1 && times[1]! - times[0]! < 60_000;
           for (const t of times) {
             const d = new Date(t);
             const p = (n: number) => String(n).padStart(2, "0");
             const day = new Intl.DateTimeFormat(undefined, { weekday: "short" }).format(d);
+            const secs = spaced ? `:${p(d.getSeconds())}` : "";
             console.log(
               `  ${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ` +
-                `${p(d.getHours())}:${p(d.getMinutes())}  ${day}`
+                `${p(d.getHours())}:${p(d.getMinutes())}${secs}  ${day}`
             );
           }
           console.log("");
@@ -1050,7 +1055,7 @@ Examples:
     startup [install|remove]      Generate/install startup script
     
     ${colorize("Scheduling:", "cyan")}
-    cron run <when> <command>     Schedule a command (everyday@9:11, every-sunday, …)
+    cron run <when> <command>     Schedule a command (everyday@9:11, every-second, …)
     cron list                     List scheduled jobs
     cron remove <id|name>         Remove a scheduled job
     cron next <id|name>           Preview upcoming runs

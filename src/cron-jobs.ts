@@ -9,13 +9,14 @@
  * `crons` array in an ecosystem file), persisted in `~/.pboss/cron.json`,
  * and executed by the daemon's scheduler:
  *
- *   - Recurring jobs carry a standard 5-field cron expression; next-run
- *     times are computed by the mature `cron-parser` library.
- *   - One-shot jobs (today@23:10, tomorrow@8:00, onDate@24-10-2026-23:10)
+ *   - Recurring jobs carry a 5-field cron expression — or a 6-field one
+ *     when seconds matter (every-second → `* * * * * *`); next-run times
+ *     are computed by the mature `cron-parser` library.
+ *   - One-shot jobs (today@23:10, tomorrow@8:00, on-date@24-10-2026-23:10)
  *     carry an absolute timestamp and are marked completed after firing.
  *   - The scheduler sleeps until the earliest next run (setTimeout) with a
- *     periodic watchdog rescan, so firing is precise to ~250ms and robust
- *     against clock adjustments.
+ *     periodic watchdog rescan, so firing is precise to ~250ms (second-level
+ *     schedules included) and robust against clock adjustments.
  *   - Runs missed while the daemon was down are skipped (like classic
  *     cron); the job simply reschedules to its next future occurrence.
  *   - Output of every run is appended to ~/.pboss/logs/cron/<name>.log.

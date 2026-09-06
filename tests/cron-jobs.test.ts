@@ -179,6 +179,35 @@ describe("CronJobManager — execution", () => {
     expect(job.nextRun).toBeNull();
     expect(mgr.next("oneshot", 3)).toHaveLength(0);
   });
+
+  test("every-second job gets a sub-minute nextRun", async () => {
+    const mgr = freshManager();
+    const job = await mgr.add({ schedule: "every-second", command: "echo tick", name: "ticker" });
+    expect(job.cron).toBe("* * * * * *");
+    expect(job.description).toBe("every second");
+    const delta = (job.nextRun ?? 0) - Date.now();
+    expect(delta).toBeGreaterThan(0);
+    expect(delta).toBeLessThanOrEqual(1_500); // next second + the 250ms precision buffer
+    expect(mgr.next("ticker", 3)).toHaveLength(3);
+    mgr.stop();
+  });
+
+  test("every-second job fires autonomously at second-level precision", async () => {
+    const mgr = freshManager();
+    const job = await mgr.add({ schedule: "every-second", command: "echo tick", name: "autotick" });
+
+    // Let the real scheduler fire it a few times.
+    await new Promise((r) => setTimeout(r, 3_000));
+
+    expect(job.runCount).toBeGreaterThanOrEqual(1);
+    expect(job.lastExitCode).toBe(0);
+    expect(job.nextRun).toBeGreaterThan(Date.now()); // rescheduled forward
+    const logPath = join(CRON_LOG_DIR, "autotick.log");
+    expect(existsSync(logPath)).toBe(true);
+    const log = readFileSync(logPath, "utf-8");
+    expect(log).toContain('▶ pboss cron "autotick" (every-second)');
+    mgr.stop();
+  });
 });
 
 describe("CronJobManager — restart recovery", () => {

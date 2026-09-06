@@ -113,7 +113,7 @@ ProcBoss replaces complex, heavyweight process managers with a clean, ultra-fast
 
 **Cron Restarts** — Schedule periodic restarts using standard cron expressions for applications that benefit from regular recycling.
 
-**Standalone Cron Jobs** — Schedule any shell command or script with human-friendly syntax (`everyday@9:11`, `every-sunday@10:10`, `onDate@24-10-2026-23:10`) — no managed process required. Jobs persist across daemon restarts and reboots, run with output logs, and survive missed runs gracefully. See [Cron Jobs](#cron-jobs).
+**Standalone Cron Jobs** — Schedule any shell command or script with human-friendly syntax (`everyday@9:11`, `every-second`, `every-sunday@10:10`, `on-date@24-10-2026-23:10`) — no managed process required. Jobs persist across daemon restarts and reboots, run with output logs, and survive missed runs gracefully. See [Cron Jobs](#cron-jobs).
 
 **File Watching** — Automatic restart on file changes with configurable watch paths and ignore patterns. Ideal for development workflows.
 
@@ -983,7 +983,7 @@ pboss cron run every-sunday@10:10 "sh /srv/cleanup.sh" --name cleanup
 ```
 
 ```bash
-pboss cron run onDate@24-10-2026-23:10 "node migrate.js"
+pboss cron run on-date@24-10-2026-23:10 "node migrate.js"
 ```
 
 The full schedule grammar (24-hour clock, day-month-year dates):
@@ -994,6 +994,8 @@ The full schedule grammar (24-hour clock, day-month-year dates):
 | `everyday@10` | every day at 10:00 |
 | `everyday@9:11` | every day at 09:11 |
 | `everyday@24:30` | every day at 00:30 (`24:xx` = the next day) |
+| `everysecond` | every second |
+| `every-15-seconds` | every 15 seconds (1–59) |
 | `everyhour` / `everyhour@30` | every hour at :00 / :30 |
 | `everyminute` | every minute |
 | `everyweek` / `everyweek@10:10` | every Sunday |
@@ -1005,17 +1007,19 @@ The full schedule grammar (24-hour clock, day-month-year dates):
 | `every-2-days` / `every-2-days@8` | every 2nd day |
 | `today@23:10` | once, today (must be in the future) |
 | `tomorrow@8:00` | once, tomorrow |
-| `onDate@24-10-2026` | once, 24 Oct 2026 at 00:00 |
-| `onDate@24-10-2026-23:10` | once, 24 Oct 2026 at 23:10 |
+| `on-date@24-10-2026` | once, 24 Oct 2026 at 00:00 |
+| `on-date@24-10-2026-23:10` | once, 24 Oct 2026 at 23:10 |
 | `"*/5 * * * *"` | raw 5-field cron expression (escape hatch) |
+| `"*/10 * * * * *"` | raw 6-field cron — first field is seconds |
 
 Notes:
 
 - Times use the 24-hour clock. Hour **24** is accepted and means "the following day": `24:30` is `00:30` the next day.
 - Dates are **day-month-year** (`24-10-2026` = October 24, 2026) and are calendar-validated (leap years included).
-- Next-run times are computed by the mature [cron-parser](https://www.npmjs.com/package/cron-parser) library — the same engine validates raw cron expressions.
+- Keywords tolerate hyphens, underscores and camelCase: `on-date@`, `onDate@` and `on_date@` are the same word; so are `every-second` and `everySecond`.
+- Next-run times are computed by the mature [cron-parser](https://www.npmjs.com/package/cron-parser) library — the same engine validates raw cron expressions, and 6-field ones get a seconds field.
 - Jobs missed while the machine or daemon was down are **skipped** (like classic cron), not back-filled; recurring jobs simply reschedule to their next future occurrence.
-- If a time has already passed for `today@…` or `onDate@…`, pboss rejects it with a suggestion instead of scheduling a job that never fires.
+- If a time has already passed for `today@…` or `on-date@…`, pboss rejects it with a suggestion instead of scheduling a job that never fires.
 
 Options for `cron run`:
 
@@ -1036,7 +1040,7 @@ pboss cron list
 ├────┼─────────┼─────────────┼──────────────────┼───────────────────────────┼──────┼──────┼──────────┤
 │  1 │ backup  │ everyday@9  │ bun backup.ts    │ 2026-09-07 09:00 Mon      │   14 │ ✓    │ ● online │
 │  2 │ cleanup │ every-sunday│ sh cleanup.sh    │ 2026-09-13 00:00 Sun      │    3 │ ✓    │ ● online │
-│  3 │ migrate │ onDate@24-10-2026-23:10 │ node migrate.js │ 2026-10-24 23:10 │ 0  │ -    │ ● done   │
+│  3 │ migrate │ on-date@24-10-2026-23:10 │ node migrate.js │ 2026-10-24 23:10 │ 0  │ -    │ ● done   │
 └────┴─────────┴─────────────┴──────────────────┴───────────────────────────┴──────┴──────┴──────────┘
 ```
 
@@ -2034,7 +2038,7 @@ console.log(`Restored ${restored.length} processes`);
 
 #### `pboss.cronAdd(schedule, command, options?): Promise<CronJob>`
 
-Schedule a standalone command. The schedule accepts the friendly syntax (`everyday@9:11`, `every-sunday@10:10`, `every-15th@10:10`, `every-6-hours@30`, `today@23:10`, `tomorrow@8:00`, `onDate@24-10-2026-23:10`) or a raw 5-field cron expression.
+Schedule a standalone command. The schedule accepts the friendly syntax (`everyday@9:11`, `every-sunday@10:10`, `every-15th@10:10`, `every-6-hours@30`, `every-second`, `every-30-seconds`, `today@23:10`, `tomorrow@8:00`, `on-date@24-10-2026-23:10`) or a raw 5-field cron expression (6 fields adds a seconds step).
 
 ```ts
 const job = await pboss.cronAdd("everyday@9:11", "bun backup.ts", { name: "backup" });

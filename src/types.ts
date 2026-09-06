@@ -181,7 +181,7 @@ export type CronJobState = "scheduled" | "completed" | "disabled";
 export interface CronJobConfig {
   /** Job name (defaults to a slug derived from the command). */
   name?: string;
-  /** Friendly schedule ("everyday@9:11") or a raw 5-field cron expression. */
+  /** Friendly schedule ("everyday@9:11", "every-30-seconds") or a raw 5/6-field cron expression. */
   schedule: string;
   /** Shell command to run when the schedule fires. */
   command: string;
@@ -198,7 +198,7 @@ export interface CronJob extends CronJobConfig {
   schedule: string;
   command: string;
   cwd: string;
-  /** Standard 5-field cron expression (recurring jobs). */
+  /** Cron expression — 5 fields, or 6 when seconds matter (recurring jobs). */
   cron?: string;
   /** One-shot execution time, epoch ms (one-shot jobs). */
   at?: number;

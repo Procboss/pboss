@@ -521,8 +521,9 @@ export class PBoss extends EventEmitter<PBossEvents> {
    * ```
    *
    * The schedule accepts the friendly syntax (`everyday@9:11`, `every-sunday`,
-   * `every-15th@10:10`, `every-6-hours@30`, `today@23:10`, `tomorrow@8:00`,
-   * `onDate@24-10-2026-23:10`) or a raw 5-field cron expression.
+   * `every-15th@10:10`, `every-6-hours@30`, `every-second`, `every-30-seconds`,
+   * `today@23:10`, `tomorrow@8:00`, `on-date@24-10-2026-23:10`) or a raw
+   * 5-field cron expression (6 fields adds a seconds step).
    */
   async cronAdd(
     schedule: string,
