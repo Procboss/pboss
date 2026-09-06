@@ -36,6 +36,8 @@ import type {
   DaemonResponse,
   StartOptions,
   EcosystemConfig,
+  CronJob,
+  CronJobConfig,
   ProcessState,
   MetricSnapshot,
   ProcessStatus,
@@ -73,6 +75,10 @@ export interface PBossEvents {
   "metrics": [snapshot: MetricSnapshot];
   /** Log data received */
   "log:data": [logs: LogItem[]];
+  /** Standalone cron job added */
+  "cron:add": [job: CronJob];
+  /** Standalone cron job removed */
+  "cron:remove": [job: CronJob];
 }
 
 export interface PBossOptions {
@@ -116,6 +122,17 @@ export async function loadEcosystemConfig(filePath: string): Promise<EcosystemCo
     }
     return app;
   });
+
+  // Standalone cron jobs: default their cwd to the config file's directory
+  // (same rule the apps above follow) so relative commands resolve there.
+  if (Array.isArray(config.crons)) {
+    config.crons = config.crons.map((cron) => {
+      if ((cron.cwd || "").trim() === "") {
+        cron.cwd = cwd;
+      }
+      return cron;
+    });
+  }
 
   return config;
 }
@@ -492,6 +509,74 @@ export class PBoss extends EventEmitter<PBossEvents> {
       type: "flush",
       data: target !== undefined ? { target: String(target) } : undefined,
     });
+  }
+
+  //  cron jobs 
+
+  /**
+   * Schedule a standalone command.
+   *
+   * ```ts
+   * await pboss.cronAdd("everyday@9:11", "bun backup.ts", { name: "backup" });
+   * ```
+   *
+   * The schedule accepts the friendly syntax (`everyday@9:11`, `every-sunday`,
+   * `every-15th@10:10`, `every-6-hours@30`, `today@23:10`, `tomorrow@8:00`,
+   * `onDate@24-10-2026-23:10`) or a raw 5-field cron expression.
+   */
+  async cronAdd(
+    schedule: string,
+    command: string,
+    options: Omit<CronJobConfig, "schedule" | "command"> = {}
+  ): Promise<CronJob> {
+    const res = await this.sendOrThrow({
+      type: "cronAdd",
+      data: { schedule, command, ...options },
+    });
+    this.emit("cron:add", res.data);
+    return res.data;
+  }
+
+  /**
+   * List standalone cron jobs.
+   */
+  async cronJobs(): Promise<CronJob[]> {
+    const res = await this.sendOrThrow({ type: "cronList" });
+    return res.data;
+  }
+
+  /**
+   * Remove a standalone cron job by id or name.
+   */
+  async cronRemove(target: string | number): Promise<CronJob> {
+    const res = await this.sendOrThrow({
+      type: "cronRemove",
+      data: { target: String(target) },
+    });
+    this.emit("cron:remove", res.data);
+    return res.data;
+  }
+
+  /**
+   * Preview the next `count` run times (epoch ms) of a cron job.
+   */
+  async cronNext(target: string | number, count = 3): Promise<number[]> {
+    const res = await this.sendOrThrow({
+      type: "cronNext",
+      data: { target: String(target), count },
+    });
+    return res.data;
+  }
+
+  /**
+   * Run a cron job immediately (without waiting for its schedule).
+   */
+  async cronTrigger(target: string | number): Promise<CronJob> {
+    const res = await this.sendOrThrow({
+      type: "cronTrigger",
+      data: { target: String(target) },
+    });
+    return res.data;
   }
 
   //  monitoring 
@@ -1016,6 +1101,45 @@ export class PBoss extends EventEmitter<PBossEvents> {
   }
 
   /**
+   * Schedule a standalone cron job.
+   */
+  static async cronAdd(
+    schedule: string,
+    command: string,
+    options: Omit<CronJobConfig, "schedule" | "command"> = {}
+  ): Promise<CronJob> {
+    return PBoss.getDefaultInstance().cronAdd(schedule, command, options);
+  }
+
+  /**
+   * List standalone cron jobs.
+   */
+  static async cronJobs(): Promise<CronJob[]> {
+    return PBoss.getDefaultInstance().cronJobs();
+  }
+
+  /**
+   * Remove a standalone cron job by id or name.
+   */
+  static async cronRemove(target: string | number): Promise<CronJob> {
+    return PBoss.getDefaultInstance().cronRemove(target);
+  }
+
+  /**
+   * Preview the next run times of a cron job.
+   */
+  static async cronNext(target: string | number, count = 3): Promise<number[]> {
+    return PBoss.getDefaultInstance().cronNext(target, count);
+  }
+
+  /**
+   * Run a cron job immediately.
+   */
+  static async cronTrigger(target: string | number): Promise<CronJob> {
+    return PBoss.getDefaultInstance().cronTrigger(target);
+  }
+
+  /**
    * Ping the daemon.
    */
   static async ping(): Promise<{ pid: number; uptime: number }> {
@@ -1096,6 +1220,15 @@ export const reload = (target: string | number = "all") => PBoss.reload(target);
 export const del = (target: string | number = "all") => PBoss.delete(target);
 export const scale = (target: string | number, count: number) => PBoss.scale(target, count);
 export const flush = (target?: string | number) => PBoss.flush(target);
+export const cronAdd = (
+  schedule: string,
+  command: string,
+  options: Omit<CronJobConfig, "schedule" | "command"> = {}
+) => PBoss.cronAdd(schedule, command, options);
+export const cronJobs = () => PBoss.cronJobs();
+export const cronRemove = (target: string | number) => PBoss.cronRemove(target);
+export const cronNext = (target: string | number, count = 3) => PBoss.cronNext(target, count);
+export const cronTrigger = (target: string | number) => PBoss.cronTrigger(target);
 export const save = () => PBoss.save();
 export const resurrect = () => PBoss.resurrect();
 export const ping = () => PBoss.ping();

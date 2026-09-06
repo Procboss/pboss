@@ -15,7 +15,7 @@
  */
 
 import Table from "cli-table3";
-import type { ProcessState, ProcessStatus, ExecMode } from "./types";
+import type { ProcessState, ProcessStatus, ExecMode, CronJob } from "./types";
 import { color } from "./colors";
 import { colorize } from "./utils";
 
@@ -134,6 +134,94 @@ export function printProcessTable(processes: ProcessState[]) {
   }
 
   console.log(table.toString());
+  console.log("");
+}
+
+// ---------- Cron job table ----------
+
+function formatWhen(ts: number | null | undefined): string {
+  if (!ts) return "-";
+  const d = new Date(ts);
+  const p = (n: number) => String(n).padStart(2, "0");
+  const date = `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+  const time = `${p(d.getHours())}:${p(d.getMinutes())}`;
+  const day = new Intl.DateTimeFormat(undefined, { weekday: "short" }).format(d);
+  const rel = ts - Date.now();
+  const relStr =
+    rel <= 0
+      ? "due"
+      : rel < 3600_000
+        ? `${Math.ceil(rel / 60_000)}m`
+        : rel < 86400_000
+          ? `${Math.floor(rel / 3600_000)}h ${Math.floor((rel % 3600_000) / 60_000)}m`
+          : `${Math.floor(rel / 86400_000)}d ${Math.floor((rel % 86400_000) / 3600_000)}h`;
+  return `${date} ${time} ${day} (in ${relStr})`;
+}
+
+function prettyJobState(job: CronJob) {
+  if (!job.enabled) return color("● paused", "dim");
+  switch (job.state) {
+    case "completed": return color("● done", "magenta");
+    default: {
+      if (job.lastError) return color("● error", "red");
+      if (job.lastExitCode != null && job.lastExitCode !== 0) return color("● failing", "red");
+      if (job.runCount > 0) return color("● online", "green");
+      return color("● waiting", "cyan");
+    }
+  }
+}
+
+export function printCronTable(jobs: CronJob[]) {
+  console.log("");
+  console.log(color("ProcBoss — Cron Jobs", "bold"));
+  console.log(color("─────────────────────────────────────────────", "dim"));
+  console.log("");
+
+  if (!jobs?.length) {
+    console.log(color("No cron jobs scheduled", "dim"));
+    console.log(
+      colorize(
+        `Add one: pboss cron run everyday@9:11 "bun backup.ts"`,
+        "dim"
+      )
+    );
+    console.log("");
+    return;
+  }
+
+  const table = new Table({
+    head: [
+      h("id"), h("name"), h("schedule"), h("command"),
+      h("next run"), h("runs"), h("last"), h("status"),
+    ],
+    colAligns: ["right", "left", "left", "left", "left", "right", "right", "left"],
+    style: { border: ["dim"] },
+    chars: minimalBorders(),
+  });
+
+  for (const job of jobs) {
+    const command =
+      job.command.length > 38 ? job.command.slice(0, 35) + "…" : job.command;
+    const last =
+      job.lastExitCode != null
+        ? job.lastExitCode === 0 ? color("✓", "green") : color(job.lastExitCode.toString(), "red")
+        : "-";
+    table.push([
+      job.id,
+      job.name,
+      job.schedule,
+      color(command, "dim"),
+      formatWhen(job.nextRun),
+      job.runCount,
+      last,
+      prettyJobState(job),
+    ]);
+  }
+
+  console.log(table.toString());
+  console.log(
+    colorize(`Logs: ~/.pboss/logs/cron/<name>.log   Remove: pboss cron remove <id|name>`, "dim")
+  );
   console.log("");
 }
 

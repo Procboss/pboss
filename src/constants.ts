@@ -31,13 +31,20 @@ export const DAEMON_ERR_LOG_FILE = join(PBOSS_HOME, "daemon.err.log");
 export const LOG_DIR = join(PBOSS_HOME, "logs");
 export const PID_DIR = join(PBOSS_HOME, "pids");
 export const DUMP_FILE = join(PBOSS_HOME, "dump.json");
+export const CRON_FILE = join(PBOSS_HOME, "cron.json");
+export const CRON_LOG_DIR = join(PBOSS_HOME, "logs", "cron");
 export const METRICS_DIR = join(PBOSS_HOME, "metrics");
 export const MODULE_DIR = join(PBOSS_HOME, "modules");
 export const CONFIG_FILE = join(PBOSS_HOME, "config.json");
 export const DASHBOARD_PORT = 9615;
 export const METRICS_PORT = 9616;
 
-export const ALL_DIRS = [PBOSS_HOME, LOG_DIR, PID_DIR, METRICS_DIR, MODULE_DIR];
+export const ALL_DIRS = [PBOSS_HOME, LOG_DIR, PID_DIR, METRICS_DIR, MODULE_DIR, CRON_LOG_DIR];
+
+/** Jobs later than this behind schedule are treated as missed (daemon was down). */
+export const CRON_LATE_WINDOW_MS = 120_000;
+/** Safety-net rescan interval for the cron scheduler. */
+export const CRON_WATCHDOG_INTERVAL_MS = 60_000;
 
 export const DEFAULT_KILL_TIMEOUT = 5000;
 export const DEFAULT_MIN_UPTIME = 1000;

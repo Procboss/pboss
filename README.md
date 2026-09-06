@@ -29,6 +29,7 @@ ProcBoss (pboss) is free and open-source software built for the developer commun
 - **Prometheus metrics** — dedicated `/metrics` endpoint, ready for scraping and Grafana dashboards.
 - **Log management** — automatic capture, size-based rotation, retention, and optional gzip compression.
 - **Health checks, cron restarts, file watching** — keep processes healthy and self-healing.
+- **Standalone cron jobs** — schedule any command with friendly syntax (`pboss cron run everyday@9:11 "bun backup.ts"`), no managed process required; persists across reboots.
 - **Persistence** — `pboss save` + `pboss startup` keeps your apps alive across daemon restarts and system reboots.
 - **Remote deployment** — SSH-based deploys with release directories, symlink rotation, and pre/post hooks.
 - **Tiny footprint** — a single machine-level daemon that starts in under 50ms and uses only ~12MB of RAM.
@@ -130,6 +131,14 @@ Save and auto-resurrect on reboot:
 ```bash
 pboss save
 pboss startup
+```
+
+Schedule a command — backups, reports, cleanups — without a managed process:
+
+```bash
+pboss cron run everyday@2:00 "bun /srv/backup.ts"
+pboss cron run every-sunday@10:10 "sh /srv/cleanup.sh" --name cleanup
+pboss cron list
 ```
 
 ---

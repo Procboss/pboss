@@ -164,6 +164,59 @@ export interface EcosystemConfig {
   apps: StartOptions[];
   noDaemon?: boolean;
   deploy?: Record<string, DeployConfig>;
+  /** Standalone scheduled commands — see `pboss cron run` / CronJobConfig. */
+  crons?: CronJobConfig[];
+}
+
+/** Lifecycle state of a standalone cron job. */
+export type CronJobState = "scheduled" | "completed" | "disabled";
+
+/**
+ * A standalone scheduled command — runs a shell command on a schedule,
+ * independent of any managed process.
+ *
+ * Defined in ecosystem files (`crons: [...]`) or created with
+ * `pboss cron run <schedule> <command>`.
+ */
+export interface CronJobConfig {
+  /** Job name (defaults to a slug derived from the command). */
+  name?: string;
+  /** Friendly schedule ("everyday@9:11") or a raw 5-field cron expression. */
+  schedule: string;
+  /** Shell command to run when the schedule fires. */
+  command: string;
+  /** Working directory for the command. */
+  cwd?: string;
+  /** Set false to keep the job defined but paused. */
+  enabled?: boolean;
+}
+
+/** Runtime record of a standalone cron job (persisted in ~/.pboss/cron.json). */
+export interface CronJob extends CronJobConfig {
+  id: number;
+  name: string;
+  schedule: string;
+  command: string;
+  cwd: string;
+  /** Standard 5-field cron expression (recurring jobs). */
+  cron?: string;
+  /** One-shot execution time, epoch ms (one-shot jobs). */
+  at?: number;
+  oneShot: boolean;
+  /** Human-readable expansion of the schedule, e.g. "every day at 09:11". */
+  description: string;
+  enabled: boolean;
+  state: CronJobState;
+  createdAt: number;
+  /** Next scheduled run, epoch ms (null when paused or completed). */
+  nextRun: number | null;
+  /** Last execution start, epoch ms. */
+  lastRun: number | null;
+  /** Exit code of the last execution (null while running / never run). */
+  lastExitCode: number | null;
+  /** Error message when the last execution could not be spawned. */
+  lastError?: string | null;
+  runCount: number;
 }
 
 export interface DeployConfig {
@@ -193,6 +246,9 @@ export interface DaemonResponse {
   success: boolean;
   error?: string;
   id?: string;
+  /** Populated by the "ecosystem" command: standalone cron jobs applied. */
+  cronsAdded?: number;
+  cronsUpdated?: number;
 }
 
 export interface MetricSnapshot {

@@ -17,6 +17,7 @@
 import { ProcessManager } from "./process-manager";
 import { Dashboard } from "./dashboard";
 import { ModuleManager } from "./module-manager";
+import { CronJobManager } from "./cron-jobs";
 import {
   DAEMON_SOCKET,
   DAEMON_PID_FILE,
@@ -37,6 +38,7 @@ export default class Daemon {
   pm: ProcessManager | null = null;
   dashboard: Dashboard | null = null;
   moduleManager: ModuleManager | null = null;
+  cronJobManager: CronJobManager | null = null;
   metricsInterval: NodeJS.Timeout | null = null;
   args = process.argv.slice(2);
 
@@ -61,6 +63,7 @@ export default class Daemon {
     this.pm = new ProcessManager();
     this.dashboard = new Dashboard(this.pm);
     this.moduleManager = new ModuleManager(this.pm);
+    this.cronJobManager = new CronJobManager();
 
     this.args = process.argv.slice(2);
     this.debugMode = this.args.includes("--debug");
@@ -100,6 +103,9 @@ export default class Daemon {
 
     // Load modules
     await this.moduleManager.loadAll();
+
+    // Standalone cron jobs: load persisted jobs and start the scheduler
+    await this.cronJobManager.start();
 
     this.metricsInterval = setInterval(() => {
       this.pm!.getMetrics();
@@ -279,7 +285,16 @@ export default class Daemon {
         }
         case "ecosystem": {
           const states = await pm.startEcosystem(msg.data);
-          return { type: "ecosystem", data: states, success: true, id: msg.id };
+          // Register/update the config's standalone cron jobs (if any)
+          const crons = await this.cronJobManager!.syncFromConfig(msg.data?.crons);
+          return {
+            type: "ecosystem",
+            data: states,
+            cronsAdded: crons.added,
+            cronsUpdated: crons.updated,
+            success: true,
+            id: msg.id,
+          };
         }
         case "signal": {
           await pm.sendSignal(msg.data.target, msg.data.signal);
@@ -322,6 +337,33 @@ export default class Daemon {
         case "moduleList": {
           return { type: "moduleList", data: moduleManager.list(), success: true, id: msg.id };
         }
+        case "cronAdd": {
+          const job = await this.cronJobManager!.add(msg.data);
+          return { type: "cronAdd", data: job, success: true, id: msg.id };
+        }
+        case "cronList": {
+          return { type: "cronList", data: this.cronJobManager!.list(), success: true, id: msg.id };
+        }
+        case "cronRemove": {
+          const job = await this.cronJobManager!.remove(msg.data.target);
+          if (!job) {
+            return {
+              type: "error",
+              error: `No cron job found for "${msg.data.target}" — see pboss cron list`,
+              success: false,
+              id: msg.id,
+            };
+          }
+          return { type: "cronRemove", data: job, success: true, id: msg.id };
+        }
+        case "cronNext": {
+          const times = this.cronJobManager!.next(msg.data?.target, msg.data?.count ?? 3);
+          return { type: "cronNext", data: times, success: true, id: msg.id };
+        }
+        case "cronTrigger": {
+          const job = await this.cronJobManager!.trigger(msg.data.target);
+          return { type: "cronTrigger", data: job, success: true, id: msg.id };
+        }
         case "daemonReload": {
           if (!this.server) {
             this.server = this.startServer();
@@ -341,6 +383,7 @@ export default class Daemon {
         case "kill": {
           await pm.stopAll();
           dashboard.stop();
+          this.cronJobManager!.stop();
           clearInterval(metricsInterval);
           setTimeout(() => process.exit(0), 200);
           return { type: "kill", success: true, id: msg.id };

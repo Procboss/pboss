@@ -1,6 +1,6 @@
 {
 	"name": "pboss",
-	"version": "1.1.0",
+	"version": "1.2.0",
 	"description": "A blazing-fast, universal production process manager built on Bun native APIs. Run, cluster, and supervise Node.js, Bun, Go, Python, Rust, Ruby, PHP, Java, and any software with zero overhead.",
 	"main": "src/api.ts",
 	"module": "src/api.ts",
@@ -69,6 +69,7 @@
 	"dependencies": {
 		"chalk": "^5.6.2",
 		"cli-table3": "^0.6.5",
+		"cron-parser": "^5",
 		"pidusage": "^4.0.1"
 	},
 	"devDependencies": {
