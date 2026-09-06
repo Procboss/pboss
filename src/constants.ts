@@ -39,6 +39,13 @@ export const CONFIG_FILE = join(PBOSS_HOME, "config.json");
 export const DASHBOARD_PORT = 9615;
 export const METRICS_PORT = 9616;
 
+/** Cloud link state (per-server credential, written 0600). */
+export const CLOUD_FILE = join(PBOSS_HOME, "cloud.json");
+/** Default ProcBoss Cloud endpoint; override with --url or PBOSS_CLOUD_URL. */
+export const CLOUD_DEFAULT_URL = "https://procboss.com";
+/** How often the cloud agent posts a full state report. */
+export const CLOUD_REPORT_INTERVAL_MS = 10_000;
+
 export const ALL_DIRS = [PBOSS_HOME, LOG_DIR, PID_DIR, METRICS_DIR, MODULE_DIR, CRON_LOG_DIR];
 
 /** Jobs later than this behind schedule are treated as missed (daemon was down). */

@@ -882,6 +882,131 @@ Examples:
     }
   }
 
+  async cmdCloud(args: string[]) {
+    const sub = args[0];
+    const rest = args.slice(1);
+
+    try {
+      switch (sub) {
+        case "connect": {
+          let token = "";
+          let url: string | undefined;
+          for (let i = 0; i < rest.length; i++) {
+            if (rest[i] === "--url" && rest[i + 1]) {
+              url = rest[i + 1];
+              i++;
+            } else if (!token && !rest[i]!.startsWith("-")) {
+              token = rest[i]!;
+            }
+          }
+          if (!token) {
+            console.error(
+              colorize("Usage: pboss cloud connect <token> [--url <cloud>]", "red")
+            );
+            console.error(
+              "Mint a token in the ProcBoss dashboard: Servers → Connect server."
+            );
+            process.exit(1);
+          }
+          console.log(colorize("☁  Linking this machine to ProcBoss Cloud…", "cyan"));
+          const info = await this.pboss.cloudConnect(token, url);
+          console.log("");
+          console.log(colorize(`✓ Server registered and connected`, "green"));
+          console.log(`  Server:    ${info.serverName} (${info.serverId})`);
+          console.log(
+            `  Dashboard: ${colorize((url || process.env.PBOSS_CLOUD_URL || "https://procboss.com").replace(/\/+$/, ""), "cyan")}`
+          );
+          console.log("");
+          console.log(
+            colorize("The daemon now streams state and accepts commands from your dashboard.", "dim")
+          );
+          console.log(
+            colorize("Credential stored in ~/.pboss/cloud.json (0600). Reconnects are automatic.", "dim")
+          );
+          break;
+        }
+
+        case "status": {
+          const st = await this.pboss.cloudStatus();
+          console.log("");
+          console.log(colorize("☁  ProcBoss Cloud", "bold"));
+          console.log("");
+          if (!st.configured) {
+            console.log(`  Status:    ${colorize("not linked", "yellow")}`);
+            console.log(
+              `  Link with: ${colorize("pboss cloud connect <token>", "cyan")} (mint one in the dashboard)`
+            );
+          } else {
+            const state =
+              st.streamState === "connected"
+                ? colorize("connected — command channel live", "green")
+                : st.streamState === "connecting"
+                  ? colorize("connecting…", "yellow")
+                  : st.streamState === "backoff"
+                    ? colorize(`reconnecting (backoff, ${st.reconnects} retries)`, "yellow")
+                    : colorize("stopped", "red");
+            console.log(`  Status:    ${state}`);
+            console.log(`  Cloud:     ${st.cloudUrl}`);
+            console.log(`  Server:    ${st.serverName ?? "?"} (${st.serverId})`);
+            console.log(`  Processes: ${st.processes}`);
+            console.log(
+              `  Report:    ${
+                st.lastReportAgeMs != null
+                  ? `${Math.max(0, Math.round(st.lastReportAgeMs / 1000))}s ago`
+                  : "never"
+              }`
+            );
+            if (st.lastError) {
+              console.log(`  Last err:  ${colorize(st.lastError, "yellow")}`);
+            }
+          }
+          console.log("");
+          break;
+        }
+
+        case "disconnect":
+        case "unlink": {
+          await this.pboss.cloudDisconnect();
+          console.log(
+            colorize("✓ Unlinked — credential revoked, cloud.json removed", "green")
+          );
+          console.log(
+            colorize("The server row stays in your dashboard (offline); re-link any time.", "dim")
+          );
+          break;
+        }
+
+        case "help":
+        case "--help":
+        case undefined:
+          this.printCloudHelp();
+          break;
+        default:
+          console.error(colorize(`Unknown cloud command: ${sub}`, "red"));
+          this.printCloudHelp();
+          process.exit(1);
+      }
+    } catch (err: any) {
+      console.error(colorize(`Error: ${err.message}`, "red"));
+      process.exit(1);
+    }
+  }
+
+  printCloudHelp() {
+    console.log(`Usage: pboss cloud <command>
+
+${colorize("Commands:", "cyan")}
+  connect <token> [--url <cloud>]   Link this machine (token from the dashboard)
+  status                            Show link status, server id, last report
+  disconnect                        Unlink: revoke credential + stop the agent
+
+${colorize("Notes:", "dim")}
+  Tokens are single-use, expire in 15 minutes, and are minted in the
+  ProcBoss dashboard (Servers → Connect server).
+  The connection is outbound-only — no ports to open, ever.
+  Set PBOSS_CLOUD_URL to override the cloud endpoint.`);
+  }
+
   async cmdEnv(args: string[]) {
     const envMgr = new EnvManager();
     const subCmd = args[0];
@@ -1087,6 +1212,11 @@ Examples:
     cron next <id|name>           Preview upcoming runs
     cron trigger <id|name>        Run a job immediately
     
+    ${colorize("Cloud:", "cyan")}
+    cloud connect <token>         Link this machine to ProcBoss Cloud
+    cloud status                  Show the cloud link status
+    cloud disconnect              Unlink (revokes this machine's credential)
+    
     ${colorize("Deploy:", "cyan")}
     deploy <config> <env> [setup] Deploy using ecosystem config
     
@@ -1245,6 +1375,9 @@ Examples:
         break;
       case "cron":
         await this.cmdCron(commandArgs);
+        break;
+      case "cloud":
+        await this.cmdCloud(commandArgs);
         break;
       case "env":
         await this.cmdEnv(commandArgs);

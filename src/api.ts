@@ -580,6 +580,53 @@ export class PBoss extends EventEmitter<PBossEvents> {
     return res.data;
   }
 
+  // ── cloud ────────────────────────────────────────────────────────────
+
+  /**
+   * Link this machine to ProcBoss Cloud by exchanging a single-use
+   * enrollment token (minted in the dashboard) for a permanent
+   * per-server credential. The daemon then maintains the outbound
+   * connection (commands down, state up).
+   */
+  async cloudConnect(
+    token: string,
+    url?: string
+  ): Promise<{ serverId: string; serverName: string }> {
+    const res = await this.sendOrThrow({
+      type: "cloudConnect",
+      data: { token, url },
+    });
+    return res.data;
+  }
+
+  /** Live cloud-link status (connection state, last report, server id). */
+  async cloudStatus(): Promise<{
+    configured: boolean;
+    cloudUrl: string | null;
+    serverId: string | null;
+    serverName: string | null;
+    connected: boolean;
+    streamState: string;
+    reconnects: number;
+    lastReportAt: number | null;
+    lastReportAgeMs: number | null;
+    processes: number;
+    lastError: string | null;
+  }> {
+    const res = await this.sendOrThrow({ type: "cloudStatus" });
+    return res.data;
+  }
+
+  /**
+   * Unlink this machine: revokes the credential server-side, stops the
+   * agent, and wipes the local cloud.json. The server row stays in the
+   * dashboard fleet (offline) — re-link any time with a fresh token.
+   */
+  async cloudDisconnect(): Promise<{ ok: boolean }> {
+    const res = await this.sendOrThrow({ type: "cloudDisconnect" });
+    return res.data;
+  }
+
   //  monitoring 
 
   /**

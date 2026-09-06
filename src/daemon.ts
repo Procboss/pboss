@@ -18,6 +18,7 @@ import { ProcessManager } from "./process-manager";
 import { Dashboard } from "./dashboard";
 import { ModuleManager } from "./module-manager";
 import { CronJobManager } from "./cron-jobs";
+import { CloudAgent, loadCloudConfig, resolveCloudUrl } from "./cloud";
 import {
   DAEMON_SOCKET,
   DAEMON_PID_FILE,
@@ -39,6 +40,7 @@ export default class Daemon {
   dashboard: Dashboard | null = null;
   moduleManager: ModuleManager | null = null;
   cronJobManager: CronJobManager | null = null;
+  cloudAgent: CloudAgent | null = null;
   metricsInterval: NodeJS.Timeout | null = null;
   args = process.argv.slice(2);
 
@@ -106,6 +108,13 @@ export default class Daemon {
 
     // Standalone cron jobs: load persisted jobs and start the scheduler
     await this.cronJobManager.start();
+
+    // Cloud link: if this machine was already enrolled, resume the agent
+    this.cloudAgent = new CloudAgent(this.pm);
+    const cloudCfg = loadCloudConfig();
+    if (cloudCfg) {
+      this.cloudAgent.start(cloudCfg);
+    }
 
     this.metricsInterval = setInterval(() => {
       this.pm!.getMetrics();
@@ -364,6 +373,27 @@ export default class Daemon {
           const job = await this.cronJobManager!.trigger(msg.data.target);
           return { type: "cronTrigger", data: job, success: true, id: msg.id };
         }
+        case "cloudConnect": {
+          // Exchange a dashboard enrollment token for a permanent credential
+          // and start the outbound cloud connection from the daemon.
+          const { token, url } = msg.data ?? {};
+          if (!token) {
+            return { type: "error", error: "cloudConnect requires a token", success: false, id: msg.id };
+          }
+          const cloudUrl = resolveCloudUrl(url);
+          const info = await this.cloudAgent!.enroll(String(token), cloudUrl);
+          const cfg = this.cloudAgent!.config!;
+          this.cloudAgent!.start(cfg);
+          return { type: "cloudConnect", data: info, success: true, id: msg.id };
+        }
+        case "cloudStatus": {
+          const status = this.cloudAgent!.status();
+          return { type: "cloudStatus", data: status, success: true, id: msg.id };
+        }
+        case "cloudDisconnect": {
+          await this.cloudAgent!.stop({ revoke: true });
+          return { type: "cloudDisconnect", data: { ok: true }, success: true, id: msg.id };
+        }
         case "daemonReload": {
           if (!this.server) {
             this.server = this.startServer();
@@ -384,6 +414,7 @@ export default class Daemon {
           await pm.stopAll();
           dashboard.stop();
           this.cronJobManager!.stop();
+          if (this.cloudAgent) await this.cloudAgent.stop({ revoke: false, quiet: true });
           clearInterval(metricsInterval);
           setTimeout(() => process.exit(0), 200);
           return { type: "kill", success: true, id: msg.id };
