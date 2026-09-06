@@ -61,11 +61,23 @@ The installers check for the required privileges themselves and tell you exactly
 
 ### Bun Global Install
 
-If you already use Bun, you can run pboss straight from source:
+If you already use Bun, install pboss **system-wide** — `pboss startup` needs sudo on Linux, and sudo's PATH does not include per-user directories like `~/.bun/bin` (that's why plain `sudo pboss` says "command not found"):
 
 ```bash
-bun add -g pboss
+sudo BUN_INSTALL=/usr/local bun add -g pboss
 ```
+
+This expects a system-wide Bun. To install one, put the sudo on the **bash** side of the pipe — `sudo curl … | bash` still runs the installer as your normal user, because sudo would only apply to curl:
+
+```bash
+curl -fsSL https://bun.sh/install | sudo BUN_INSTALL=/usr/local bash
+```
+
+Update later with `sudo BUN_INSTALL=/usr/local bun update -g pboss`.
+
+A user-local install (`bun add -g pboss` without sudo) works too — whenever a command needs root, keep your PATH visible to sudo: `sudo env PATH="$PATH" pboss startup`.
+
+On Windows, elevated shells keep your user PATH, so a regular `bun add -g pboss` is fine — just open the shell as Administrator for `pboss startup`.
 
 ### Build From Source
 
@@ -130,7 +142,8 @@ Save and auto-resurrect on reboot:
 
 ```bash
 pboss save
-pboss startup
+sudo env PATH="$PATH" pboss startup   # Linux: install the systemd boot service
+                                      # macOS: plain `pboss startup` (no sudo needed)
 ```
 
 Schedule a command — backups, reports, cleanups — without a managed process:

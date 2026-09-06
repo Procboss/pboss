@@ -79,7 +79,10 @@ if [ -z "$BUN_PATH" ] || [ "$BUN_OK" != "yes" ]; then
   else
     echo -e "${YELLOW}Bun v${BUN_VERSION} found, but v1.1.30+ is required to compile pboss. Upgrading Bun...${RESET}"
   fi
-  BUN_INSTALL="$INVOKE_HOME/.bun" curl -fsSL https://bun.sh/install | bash
+  # The env assignment must sit on the *bash* side of the pipe: piping into
+  # `BUN_INSTALL=… bash` sends the var to the installer, whereas prefixing
+  # curl with it does nothing for the installer (classic pipe foot-gun).
+  curl -fsSL https://bun.sh/install | BUN_INSTALL="$INVOKE_HOME/.bun" bash
   # Bun was installed as root — hand it back to the invoking user.
   if [ -n "$INVOKE_USER" ]; then
     chown -R "${INVOKE_USER}:" "$INVOKE_HOME/.bun" 2>/dev/null \

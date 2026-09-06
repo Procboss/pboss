@@ -635,18 +635,41 @@ class PBossCLI {
 
   async cmdStartup(args: string[]) {
     const startup = new StartupManager();
+    const sub = args[0];
 
-    if (args[0] === "remove" || args[0] === "uninstall") {
-      console.log(await startup.uninstall());
-      return;
-    }
+    // Platform names keep the legacy "pboss startup <platform>" generate form.
+    const PLATFORM_ALIASES: Record<string, string> = {
+      linux: "linux",
+      darwin: "darwin",
+      macos: "darwin",
+      win32: "win32",
+      windows: "win32",
+    };
 
-    if (args[0] === "install") {
+    try {
+      if (sub === "remove" || sub === "uninstall") {
+        console.log(await startup.uninstall());
+        return;
+      }
+
+      if (sub === "generate" || sub === "show" || sub === "print") {
+        console.log(await startup.generate(PLATFORM_ALIASES[args[1] ?? ""] ?? args[1]));
+        return;
+      }
+
+      if (sub && PLATFORM_ALIASES[sub]) {
+        console.log(await startup.generate(PLATFORM_ALIASES[sub]));
+        return;
+      }
+
+      // Bare "pboss startup" (and legacy "pboss startup install") install the
+      // boot service directly — generating a file to save by hand is what
+      // `startup generate` is for.
       console.log(await startup.install());
-      return;
+    } catch (err: any) {
+      console.error(colorize(err?.message ?? String(err), "red"));
+      process.exit(1);
     }
-
-    console.log(await startup.generate(args[0]));
   }
 
   // -------------------------------------------------------------------------
@@ -1052,7 +1075,10 @@ Examples:
     ${colorize("Persistence:", "cyan")}
     save                          Save current process list
     resurrect                     Restore saved process list
-    startup [install|remove]      Generate/install startup script
+    startup                       Install the boot startup service
+                                  (sudo env PATH="$PATH" pboss startup on Linux)
+    startup generate [os]         Print the service config without installing
+    startup remove                Remove the boot startup service
     
     ${colorize("Scheduling:", "cyan")}
     cron run <when> <command>     Schedule a command (everyday@9:11, every-second, …)

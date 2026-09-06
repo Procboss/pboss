@@ -160,11 +160,23 @@ The installers check for the required privileges themselves and tell you exactly
 
 ### Bun Global Install
 
-If you already use Bun, you can run pboss straight from source:
+If you already use Bun, install pboss **system-wide** — `pboss startup` needs sudo on Linux, and sudo's PATH does not include per-user directories like `~/.bun/bin` (that's why plain `sudo pboss` says "command not found"):
 
 ```bash
-bun add -g pboss
+sudo BUN_INSTALL=/usr/local bun add -g pboss
 ```
+
+This expects a system-wide Bun. To install one, put the sudo on the **bash** side of the pipe — `sudo curl … | bash` still runs the installer as your normal user, because sudo would only apply to curl:
+
+```bash
+curl -fsSL https://bun.sh/install | sudo BUN_INSTALL=/usr/local bash
+```
+
+Update later with `sudo BUN_INSTALL=/usr/local bun update -g pboss`.
+
+A user-local install (`bun add -g pboss` without sudo) works too — whenever a command needs root, keep your PATH visible to sudo: `sudo env PATH="$PATH" pboss startup`.
+
+On Windows, elevated shells keep your user PATH, so a regular `bun add -g pboss` is fine — just open the shell as Administrator for `pboss startup`.
 
 ---
 
@@ -243,8 +255,10 @@ Output:
 
 ```
 pboss save
-pboss startup
+sudo env PATH="$PATH" pboss startup
 ```
+
+(The env form keeps your PATH visible to sudo; on macOS plain `pboss startup` works, and on a compiled one-line install plain `sudo pboss startup` is enough.)
 
 ---
 
@@ -1120,42 +1134,42 @@ pboss cron run everyday@3 "bun report.ts | mail -s 'daily report' ops@example.co
 
 #### pboss startup
 
-Generate and display a startup script for your operating system:
-- **Linux:** Generates a `systemd` service unit file (`/etc/systemd/system/pboss.service`).
-- **macOS:** Generates a `launchd` plist (`~/Library/LaunchAgents/com.pboss.daemon.plist`).
-- **Windows:** Generates a Windows Task Scheduler command (`schtasks`) and PowerShell task configuration.
+Install the boot startup service directly — no `install` subcommand needed:
+
+- **Linux:** writes and enables a `systemd` service (`/etc/systemd/system/pboss.service`). Requires root — when run without sudo, pboss exits with the exact command to re-run, `sudo env PATH="$PATH" pboss startup`. The env form keeps your PATH visible to sudo, so it finds pboss even in per-user locations like `~/.bun/bin` (plain `sudo pboss` cannot see those directories).
+- **macOS:** writes and loads a `launchd` LaunchAgent (`~/Library/LaunchAgents/com.pboss.daemon.plist`). No root needed.
+- **Windows:** registers a Scheduled Task (`PBOSS_Daemon`) that starts the daemon at logon with highest privileges. Requires an elevated shell (Run as Administrator) — pboss checks and tells you when the shell is not elevated.
+
+When installed with sudo on Linux/macOS, the generated service runs as the invoking user (resolved from `SUDO_USER`), not as root — the boot daemon then uses the same `~/.pboss` data as your daily `pboss` commands instead of silently splitting off into `/root/.pboss`.
 
 ```bash
+# Linux (script installs — keeps your PATH visible to sudo)
+sudo env PATH="$PATH" pboss startup
+
+# Linux (compiled one-line install — pboss is already system-wide)
+sudo pboss startup
+
+# macOS / Windows (elevated shell)
 pboss startup
 ```
 
-The generated script automatically detects how pboss was installed and adapts the daemon command accordingly. On a **compiled standalone install** (one-line installer, `build:bin`) the service re-executes the pboss binary itself (`ExecStart=/usr/local/bin/pboss __daemon`) — the Bun runtime is embedded in the binary and is **not required** on the system. On a **script install** (`bun add -g pboss`, npm) the service runs the source on the system Bun runtime (`ExecStart=/usr/local/bin/bun run .../daemon.ts`). The generated file's header comment states which mode was detected.
+The generated file detects how pboss was installed and adapts the daemon command accordingly. On a **compiled standalone install** (one-line installer, `build:bin`) the service re-executes the pboss binary itself (`ExecStart=/usr/local/bin/pboss __daemon`) — the Bun runtime is embedded in the binary and is **not required** on the system. On a **script install** (`bun add -g pboss`, npm) the service runs the source on the system Bun runtime (`ExecStart=/usr/local/bin/bun run .../daemon.ts`). The generated file's header comment states which mode was detected.
 
-On Windows, you can also specify the platform explicitly:
-```powershell
-pboss startup win32
-```
+#### pboss startup generate
 
-#### pboss startup install
-
-Automatically install the startup script so the ProcBoss daemon starts at boot / logon:
+Print the service config for review (or to install by hand) without touching the system:
 
 ```bash
-# Linux (sudo) / macOS
-pboss startup install
-
-# Windows (Command Prompt / PowerShell as Administrator)
-pboss startup install
+pboss startup generate
+pboss startup generate win32   # generate for another OS
 ```
 
-On Windows, this registers a Scheduled Task (`PBOSS_Daemon`) configured to start automatically on user logon with highest privileges.
+#### pboss startup remove
 
-#### pboss startup uninstall
-
-Remove the startup service / scheduled task:
+Remove the installed startup service (root on Linux — `sudo env PATH="$PATH" pboss startup remove`):
 
 ```bash
-pboss startup uninstall
+pboss startup remove
 ```
 
 #### pboss save
@@ -1179,7 +1193,7 @@ Recommended boot setup:
 ```
 pboss start ecosystem.config.json
 pboss save
-pboss startup install
+sudo env PATH="$PATH" pboss startup
 ```
 
 On reboot, systemd, launchd, or Task Scheduler starts the ProcBoss daemon, and the daemon automatically runs resurrect to restore your processes.
@@ -2462,7 +2476,7 @@ CMD ["pboss", "start", "--no-daemon", "./server.ts"]
 ```
 pboss start ecosystem.config.json
 pboss save
-pboss startup install
+sudo env PATH="$PATH" pboss startup
 pboss dashboard
 pboss list
 ```

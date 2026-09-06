@@ -26,6 +26,7 @@
  */
 
 import { join } from "path";
+import { readFileSync } from "fs";
 import { $ } from "bun";
 import {
   IS_COMPILED,
@@ -34,6 +35,66 @@ import {
   cliSpawnCommand,
   installModeDescription,
 } from "./install-mode";
+
+/**
+ * The user the generated service should run as.
+ *
+ * `pboss startup` needs root on Linux (to write /etc/systemd/system), so it is
+ * typically invoked with sudo — but the daemon itself should keep running as
+ * the *invoking* human, not as root: their daemon data lives in their own
+ * ~/.pboss, and a root daemon would silently split off into /root/.pboss.
+ * When SUDO_USER is present we resolve that user's home and use it for the
+ * service's User= and PBOSS_HOME.
+ */
+function targetUserContext(): { user: string; home: string } {
+  const sudoUser = process.env.SUDO_USER;
+  if (sudoUser && sudoUser !== "root") {
+    const home = homeForUser(sudoUser);
+    if (home) return { user: sudoUser, home };
+  }
+  return {
+    user: process.env.USER || "root",
+    home: process.env.HOME || "/root",
+  };
+}
+
+/** Resolve a user's home directory: /etc/passwd → dscl (macOS) → getent (NSS). */
+function homeForUser(user: string): string | null {
+  try {
+    const passwd = readFileSync("/etc/passwd", "utf-8");
+    const line = passwd.split("\n").find((l) => l.startsWith(`${user}:`));
+    const home = line?.split(":")[5];
+    if (home) return home;
+  } catch {}
+  try {
+    const r = Bun.spawnSync(["dscl", ".", "-read", `/Users/${user}`, "NFSHomeDirectory"]);
+    const out = new TextDecoder().decode(r.stdout ?? new Uint8Array()).trim();
+    const m = out.match(/NFSHomeDirectory:\s*(.+)/);
+    if (m?.[1]) return m[1].trim();
+  } catch {}
+  try {
+    const r = Bun.spawnSync(["getent", "passwd", user]);
+    const out = new TextDecoder().decode(r.stdout ?? new Uint8Array()).trim();
+    const home = out.split(":")[5];
+    if (home) return home;
+  } catch {}
+  return null;
+}
+
+/**
+ * The re-run command printed when privileges are missing. Preserving the
+ * invoking user's PATH is the trick: `sudo` alone uses a minimal secure PATH
+ * that does not include per-user bin dirs like ~/.bun/bin — which is exactly
+ * why `sudo pboss` reports "command not found" on Bun-global installs.
+ */
+function sudoRetryHint(): string {
+  return 'sudo env PATH="$PATH" pboss startup';
+}
+
+/** True when the current process has root privileges on Linux/macOS. */
+function isRoot(): boolean {
+  return typeof process.getuid === "function" && process.getuid() === 0;
+}
 
 export class StartupManager {
   async generate(platform?: string): Promise<string> {
@@ -81,8 +142,12 @@ export class StartupManager {
     return `# PBOSS Windows Startup Configuration
 # Install mode: ${installModeDescription()}
 #
-# To install as a Scheduled Task that starts automatically on user logon:
+# To install as a Scheduled Task that starts automatically on user logon,
+# simply run this from an elevated shell (Run as Administrator):
 #
+# pboss startup
+#
+# Equivalent manual commands:
 # schtasks /create /tn "${taskName}" /tr "${trValue}" /sc onlogon /f /rl highest
 #
 # Or run with PowerShell:
@@ -101,6 +166,7 @@ export class StartupManager {
     const execStartPost = cliSpawnCommand("resurrect").join(" ");
     const execReload = cliSpawnCommand("reload", "all").join(" ");
     const execStop = cliSpawnCommand("kill").join(" ");
+    const target = targetUserContext();
 
     const unit = `[Unit]
 Description=ProcBoss Process Manager
@@ -109,12 +175,12 @@ After=network.target
 
 [Service]
 Type=simple
-User=${process.env.USER || "root"}
+User=${target.user}
 LimitNOFILE=infinity
 LimitNPROC=infinity
 LimitCORE=infinity
 Environment=PATH=${this.servicePath()}
-Environment=PBOSS_HOME=${join(process.env.HOME || "/root", ".pboss")}
+Environment=PBOSS_HOME=${join(target.home, ".pboss")}
 Restart=on-failure
 
 ExecStart=${execStart}
@@ -129,8 +195,11 @@ WantedBy=multi-user.target
     const servicePath = "/etc/systemd/system/pboss.service";
     return `# PBOSS Systemd Service
 # Install mode: ${installModeDescription()}
+# Runs as user: ${target.user} (home: ${target.home})
 # Save to: ${servicePath}
-# Then run:
+# Or install it directly with:  ${sudoRetryHint()}
+#
+# If saved manually, then run:
 #   sudo systemctl daemon-reload
 #   sudo systemctl enable pboss
 #   sudo systemctl start pboss
@@ -142,6 +211,10 @@ ${unit}`;
     const programArgs = daemonCmd
       .map((arg) => `         <string>${escapeXml(arg)}</string>`)
       .join("\n");
+    // LaunchAgents are per-user — when installed via sudo, target the
+    // invoking user's home, not root's (SUDO_USER-aware).
+    const target = targetUserContext();
+    const home = target.home;
 
     const plist = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -158,26 +231,27 @@ ${programArgs}
     <key>KeepAlive</key>
     <true/>
     <key>StandardOutPath</key>
-    <string>${join(process.env.HOME || "/Users/user", ".pboss", "logs", "daemon-out.log")}</string>
+    <string>${join(home, ".pboss", "logs", "daemon-out.log")}</string>
     <key>StandardErrorPath</key>
-    <string>${join(process.env.HOME || "/Users/user", ".pboss", "logs", "daemon-error.log")}</string>
+    <string>${join(home, ".pboss", "logs", "daemon-error.log")}</string>
     <key>EnvironmentVariables</key>
     <dict>
         <key>PATH</key>
         <string>${this.servicePath()}</string>
         <key>HOME</key>
-        <string>${process.env.HOME}</string>
+        <string>${home}</string>
     </dict>
 </dict>
 </plist>`;
 
-    const plistPath = `${process.env.HOME}/Library/LaunchAgents/com.pboss.daemon.plist`;
+    const plistPath = `${home}/Library/LaunchAgents/com.pboss.daemon.plist`;
 
     return `# PBOSS LaunchAgent (macOS)
 # Install mode: ${installModeDescription()}
+# Runs as user: ${target.user}
 # Save to: ${plistPath}
 # Then run:
-# launchctl load ${plistPath}
+# launchctl load -w ${plistPath}
 
 ${plist}`;
   }
@@ -187,6 +261,15 @@ ${plist}`;
     const content = await this.generate(os);
 
     if (os === "linux") {
+      if (!isRoot()) {
+        throw new Error(
+          `Root is required to install a system-wide systemd service.\n` +
+            `Re-run:  ${sudoRetryHint()}\n` +
+            `(keeping your PATH lets sudo find pboss wherever it is installed —\n` +
+            ` plain \`sudo pboss\` cannot see per-user dirs like ~/.bun/bin)`
+        );
+      }
+
       const servicePath = "/etc/systemd/system/pboss.service";
 
       const unitStart = content.indexOf("[Unit]");
@@ -195,23 +278,62 @@ ${plist}`;
       try {
         await Bun.write(servicePath, unitContent);
       } catch {
-        return "Failed to create the service file. Please ensure you have sufficient permissions (try running with sudo).";
+        throw new Error(
+          `Failed to write ${servicePath}. Re-run with root:  ${sudoRetryHint()}`
+        );
       }
 
-      await $`systemctl daemon-reload`;
-      await $`systemctl enable pboss`;
-      await $`systemctl start pboss`;
+      // Best-effort enablement — on hosts without a running systemd (some
+      // containers) these fail; the file is still installed, so tell the user
+      // which commands to run instead of crashing.
+      const manual: string[] = [];
+      for (const args of [
+        ["daemon-reload"],
+        ["enable", "pboss"],
+        ["start", "pboss"],
+      ] as const) {
+        try {
+          await $`systemctl ${args}`;
+        } catch {
+          manual.push(`systemctl ${args.join(" ")}`);
+        }
+      }
 
-      return `Service installed at ${servicePath}`;
+      if (manual.length > 0) {
+        return (
+          `Service file installed at ${servicePath}, but systemd could not be\n` +
+          `controlled from here. Finish enabling it with:\n  ` +
+          manual.map((c) => `sudo ${c}`).join("\n  ")
+        );
+      }
+      return `Service installed and started: ${servicePath}`;
     } else if (os === "darwin") {
-      const plistPath = `${process.env.HOME}/Library/LaunchAgents/com.pboss.daemon.plist`;
+      // LaunchAgents are per-user and need no root.
+      const target = targetUserContext();
+      const plistPath = join(target.home, "Library", "LaunchAgents", "com.pboss.daemon.plist");
       // Extract plist content
       const plistStart = content.indexOf("<?xml");
       const plistContent = content.substring(plistStart);
       await Bun.write(plistPath, plistContent);
 
-      return `Plist installed at ${plistPath}\nRun: launchctl load ${plistPath}`;
+      try {
+        await $`launchctl unload ${plistPath}`; // reload if it was already loaded
+      } catch {}
+      try {
+        await $`launchctl load -w ${plistPath}`;
+        return `Plist installed and loaded: ${plistPath}`;
+      } catch {
+        return `Plist installed at ${plistPath}\nLoad it:  launchctl load -w ${plistPath}`;
+      }
     } else if (os === "win32") {
+      if (!(await this.isAdmin())) {
+        throw new Error(
+          `Administrator rights are required to register the startup task.\n` +
+            `Open a terminal as Administrator (Windows Terminal → right-click →\n` +
+            ` Run as Administrator) and re-run:  pboss startup`
+        );
+      }
+
       // Daemon command resolved from the install mode, same as generate().
       const daemonCmd = daemonSpawnCommand();
       const taskName = "PBOSS_Daemon";
@@ -234,7 +356,10 @@ ${plist}`;
           ],
           { stdout: "pipe", stderr: "pipe" }
         );
-        await proc.exited;
+        const code = await proc.exited;
+        if (code !== 0) {
+          return `Failed to create the scheduled task (schtasks exit code ${code}). Try running as Administrator.`;
+        }
 
         return `Windows Scheduled Task "${taskName}" installed successfully.\nRun on demand: schtasks /run /tn "${taskName}"`;
       } catch (err: any) {
@@ -245,22 +370,44 @@ ${plist}`;
     return "Unsupported platform for auto-install. Manual setup required.";
   }
 
+  /** Detect whether the Windows shell is elevated (`net session` needs admin). */
+  private async isAdmin(): Promise<boolean> {
+    try {
+      const proc = Bun.spawn(["net", "session"], {
+        stdout: "ignore",
+        stderr: "ignore",
+        stdin: "ignore",
+      });
+      return (await proc.exited) === 0;
+    } catch {
+      // Can't tell — let schtasks surface the real error instead.
+      return true;
+    }
+  }
+
   async uninstall(): Promise<string> {
     const os = process.platform;
 
     if (os === "linux") {
-      await $`systemctl stop pboss`;
-      await $`systemctl disable pboss`;
-
-      await $`rm -f /etc/systemd/system/pboss.service`;
-      await $`systemctl daemon-reload`;
+      if (!isRoot()) {
+        throw new Error(
+          `Root is required to remove the system service.\n` +
+            `Re-run:  sudo env PATH="$PATH" pboss startup remove`
+        );
+      }
+      // Best-effort — tolerate hosts where systemd is not the init.
+      try { await $`systemctl stop pboss`; } catch {}
+      try { await $`systemctl disable pboss`; } catch {}
+      try { await $`rm -f /etc/systemd/system/pboss.service`; } catch {}
+      try { await $`systemctl daemon-reload`; } catch {}
 
       return "PBOSS service removed";
     } else if (os === "darwin") {
-      const plistPath = `${process.env.HOME}/Library/LaunchAgents/com.pboss.daemon.plist`;
+      const target = targetUserContext();
+      const plistPath = join(target.home, "Library", "LaunchAgents", "com.pboss.daemon.plist");
 
-      await $`launchctl unload ${plistPath}`;
-      await $`rm -f ${plistPath}`;
+      try { await $`launchctl unload ${plistPath}`; } catch {}
+      try { await $`rm -f ${plistPath}`; } catch {}
       return "PBOSS launch agent removed";
     } else if (os === "win32") {
       const taskName = "PBOSS_Daemon";
