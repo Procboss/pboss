@@ -58,39 +58,10 @@ powershell -c "irm https://procboss.com/install.ps1 | iex"
 curl -fsSL https://procboss.com/install.cmd | cmd
 ```
 
-The installers check for the required privileges themselves and tell you exactly how to re-run them if `sudo` / Administrator rights are missing.
-
-The installer's final step enables **boot persistence automatically**: it installs the OS service, starts the daemon, and from then on every process you manage is saved after each change and resurrected at every reboot. Hosts without systemd (containers, minimal VMs) get a note instead of an error — run `sudo pboss startup install` there later if needed.
-
 ### Bun Global Install
 
-If you already use Bun, install pboss **system-wide** — `pboss startup install` needs sudo on Linux, and sudo's PATH does not include per-user directories like `~/.bun/bin` (that's why plain `sudo pboss` says "command not found"):
-
 ```bash
-sudo BUN_INSTALL=/usr/local bun add -g pboss
-```
-
-This expects a system-wide Bun. To install one, put the sudo on the **bash** side of the pipe — `sudo curl … | bash` still runs the installer as your normal user, because sudo would only apply to curl:
-
-```bash
-curl -fsSL https://bun.sh/install | sudo BUN_INSTALL=/usr/local bash
-```
-
-Update later with `sudo BUN_INSTALL=/usr/local bun update -g pboss`.
-
-Both `BUN_INSTALL=/usr/local` flags are load-bearing: the global `pboss` shim is a symlink whose target starts with `#!/usr/bin/env bun`, so `sudo pboss` must find the shim **and** bun itself on root's PATH. The variable puts bun in `/usr/local/bin` (installer line) and the shim in `$BUN_INSTALL/bin` (add/update lines); without it, everything sits in `~/.bun/bin`, invisible to sudo.
-
-A user-local install (`bun add -g pboss` without sudo) works too — the boot service cannot be installed without root, so pboss prints the one command to enable it; whenever a command needs root, keep your PATH visible to sudo: `sudo env PATH="$PATH" pboss startup install`.
-
-On Windows, elevated shells keep your user PATH, so a regular `bun add -g pboss` is fine — just open the shell as Administrator for `pboss startup install`.
-
-### Build From Source
-
-```bash
-git clone https://github.com/procboss/pboss.git
-cd pboss
-bun install
-bun run build:bin
+sudo bun add -g pboss
 ```
 
 ### Verify Installation
