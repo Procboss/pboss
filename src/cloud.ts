@@ -49,8 +49,10 @@ export function saveCloudConfig(cfg: CloudConfig): void {
   writeFileSync(CLOUD_FILE, JSON.stringify(cfg, null, 2), { mode: 0o600 });
   try {
     chmodSync(CLOUD_FILE, 0o600);
-  } catch {
-    /* best-effort — some filesystems reject chmod */
+  } catch (err) {
+    // Best-effort — some filesystems reject chmod; the credential is still
+    // written, and the failure is recorded instead of vanishing.
+    ignore(`chmod cloud credential ${CLOUD_FILE} 0600`, err);
   }
 }
 
@@ -414,8 +416,10 @@ export class CloudAgent {
           method: "POST",
           headers: this.authHeader(cfg),
         });
-      } catch {
-        /* network gone — the credential file is cleared below anyway */
+      } catch (err) {
+        // Network gone — the credential file is cleared below anyway, but
+        // record it so a persistent reachability problem stays visible.
+        ignore("revoke cloud credential (agent disconnect)", err);
       }
       clearCloudConfig();
       if (!opts.quiet) {

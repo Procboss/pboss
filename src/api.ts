@@ -922,8 +922,10 @@ export class PBoss extends EventEmitter<PBossEvents> {
             }
           }
         }
-      } catch {
-        // Not ready yet — keep waiting
+      } catch (err) {
+        // Not ready yet — keep waiting (recorded: a persistently failing
+        // ping here is the symptom of a daemon that died during launch).
+        ignore("ping daemon during launch poll", err);
       }
     }
 
@@ -958,7 +960,8 @@ export class PBoss extends EventEmitter<PBossEvents> {
       process.kill(pid, "SIGTERM");
       await Bun.write(DAEMON_PID_FILE, "");
     } catch (err) {
-      // Ignore if already stopped
+      // Already stopped / PID vanished mid-stop — record, don't crash.
+      ignore("stop daemon via SIGTERM (already stopped)", err);
     }
   }
 
@@ -972,16 +975,39 @@ export class PBoss extends EventEmitter<PBossEvents> {
 
   /**
    * Kill the daemon and all managed processes.
+   *
+   * NEVER spawns: `pboss kill` is the systemd unit's ExecStop, and the old
+   * path (send → auto-spawn when nobody answers) would launch a fresh
+   * daemon just to kill it — and a failing stop marks the unit's stop
+   * transaction failed (systemd then waits TimeoutStopSec before SIGKILL).
+   * Idempotent instead: no live daemon → clean stale files → success.
    */
   async kill(): Promise<void> {
-    try {
-      await this.send({ type: "kill" });
-    } catch (err) {
-      // Expected — daemon exits before responding
-      ignore("send kill to daemon (exits before responding)", err);
+    const live = await probeDaemon();
+    if (live) {
+      try {
+        await fetch("http://localhost/", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ type: "kill", id: "cli-kill" }),
+          unix: DAEMON_SOCKET,
+        });
+        // The daemon may exit before responding — that IS the success path.
+      } catch (err) {
+        ignore("send kill to daemon (exits before responding)", err);
+      }
+
+      // Bounded wait so callers (ExecStop, scripts) see a daemon that is
+      // actually GONE, not one that merely accepted the request.
+      const deadline = Date.now() + 10_000;
+      while (Date.now() < deadline) {
+        if (!(await probeDaemon())) break;
+        await Bun.sleep(200);
+      }
     }
 
-    // Clean up leftover files
+    // Clean up leftover files (real ones after a kill, stale ones when no
+    // daemon was running at all)
     try { if (existsSync(DAEMON_SOCKET)) unlinkSync(DAEMON_SOCKET); } catch (err) { ignore(`unlink ${DAEMON_SOCKET} after kill`, err); }
     try { if (existsSync(DAEMON_PID_FILE)) unlinkSync(DAEMON_PID_FILE); } catch (err) { ignore(`unlink ${DAEMON_PID_FILE} after kill`, err); }
 

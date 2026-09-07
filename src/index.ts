@@ -506,19 +506,36 @@ class PBossCLI {
     // spawns one — the spawned daemon would race the unit's daemon for the
     // socket and the loser's EADDRINUSE exit was what restarted the unit in
     // a loop ("Start request repeated too quickly").
+    //
+    // --wait mode is also BEST-EFFORT by contract: its only caller is the
+    // systemd unit's ExecStartPost, and a FAILED ExecStartPost aborts the
+    // unit's whole start transaction — systemd kills the (healthy)
+    // ExecStart daemon and restart-loops it. Unit health is ExecStart's
+    // responsibility; a timeout or RPC hiccup must be reported (stderr =
+    // the journal) and exit 0. The unit file additionally prefixes
+    // ExecStartPost with '-' for the same guarantee.
     const waitSec = parseWaitFlag(args);
     if (waitSec !== null) {
       if (!(await waitForDaemon(waitSec * 1000))) {
         console.error(
-          colorize(`✗ Daemon did not become ready within ${waitSec}s`, "red"),
+          colorize(
+            `⚠ daemon not ready within ${waitSec}s — resurrect skipped (best-effort)`,
+            "yellow",
+          ),
         );
-        process.exit(1);
+        process.exit(0);
       }
     }
     try {
       const states = await this.pboss.resurrect();
       printProcessTable(states);
     } catch (err: any) {
+      if (waitSec !== null) {
+        console.error(
+          colorize(`⚠ resurrect failed (best-effort): ${err?.message ?? err}`, "yellow"),
+        );
+        process.exit(0);
+      }
       console.error(colorize(`Error: ${err.message}`, "red"));
       process.exit(1);
     }

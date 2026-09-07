@@ -124,6 +124,26 @@ describe("StartupManager — generated unit shape", () => {
     }
   );
 
+  test.skipIf(process.platform === "win32")(
+    "linux unit marks ExecStartPost and ExecStop best-effort with the '-' prefix",
+    async () => {
+      const startup = new StartupManager();
+      const out = await startup.generate("linux");
+
+      // systemd contract: a FAILED ExecStartPost aborts the unit's whole
+      // start transaction — systemd kills the healthy ExecStart daemon and
+      // restart-loops it. The '-' modifier makes systemd ignore the exit
+      // status, so resurrect problems can never fail the unit start. Same
+      // for ExecStop: a failing stop must not block systemd's
+      // SIGTERM/SIGKILL fallback.
+      expect(out).toMatch(/ExecStartPost=-\S/);
+      expect(out).toMatch(/ExecStop=-\S/);
+      // ExecStart itself stays honest — it IS the unit's health.
+      expect(out).toMatch(/ExecStart=\S/);
+      expect(out).not.toMatch(/ExecStart=-/);
+    }
+  );
+
   test("win32 config mentions the simple install command", async () => {
     const startup = new StartupManager();
     const out = await startup.generate("win32");

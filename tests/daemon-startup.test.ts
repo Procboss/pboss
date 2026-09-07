@@ -136,7 +136,7 @@ describe("daemon startup: stale files (post-reboot / PID reuse)", () => {
 
 describe("resurrect --wait (ExecStartPost race fix)", () => {
   test.skipIf(process.platform === "win32")(
-    "with no daemon: exits 1 and NEVER spawns one",
+    "with no daemon: exits 0 (best-effort) and NEVER spawns one",
     async () => {
       const home = mkdtempSync(join(tmpdir(), "pboss-nowait-"));
       homes.push(home);
@@ -144,8 +144,14 @@ describe("resurrect --wait (ExecStartPost race fix)", () => {
       const proc = spawnCli(["resurrect", "--wait", "1"], home);
       const code = await proc.exited;
       const { out, err } = await drain(proc);
-      expect(code).toBe(1);
-      expect(err).toContain("did not become ready");
+
+      // ExecStartPost contract: a FAILED ExecStartPost aborts the unit's
+      // start transaction — systemd would kill the healthy ExecStart daemon
+      // and restart-loop ("Start request repeated too quickly"). So a wait
+      // timeout must be reported (stderr = journal) and exit 0.
+      expect(code).toBe(0);
+      expect(err).toContain("daemon not ready within 1s");
+      expect(err).toContain("best-effort");
 
       // THE regression guard: no pid file, no socket — nothing was spawned
       // to fight the unit's daemon for the socket.
@@ -177,6 +183,67 @@ describe("resurrect --wait (ExecStartPost race fix)", () => {
 
       await hardKillDaemon(home);
       await daemon.exited;
+      await drain(daemon);
+    }
+  );
+});
+
+describe("kill (ExecStop idempotency)", () => {
+  test.skipIf(process.platform === "win32")(
+    "pboss kill with no daemon: exits 0, never spawns, cleans stale files",
+    async () => {
+      const home = mkdtempSync(join(tmpdir(), "pboss-kill0-"));
+      homes.push(home);
+
+      // Post-crash leftovers: a stale socket file and PID file pointing at
+      // a process that does not exist.
+      writeFileSync(join(home, "daemon.sock"), "stale");
+      writeFileSync(join(home, "daemon.pid"), "999999");
+
+      const proc = spawnCli(["kill"], home);
+      const code = await proc.exited;
+      const { out, err } = await drain(proc);
+
+      // `pboss kill` is the unit's ExecStop: it must be a no-op success
+      // when nobody is home — the old path auto-SPAWNED a daemon via
+      // send() just to kill it.
+      expect(code).toBe(0);
+      expect(out).toContain("Daemon killed");
+
+      // No daemon was spawned to be killed.
+      expect(existsSync(join(home, "daemon.err.log"))).toBeFalse();
+      expect(out).not.toContain("Daemon listening");
+
+      // Stale runtime files were cleaned up either way.
+      await Bun.sleep(100);
+      expect(existsSync(join(home, "daemon.sock"))).toBeFalse();
+      expect(existsSync(join(home, "daemon.pid"))).toBeFalse();
+      expect(err).toBe("");
+    }
+  );
+
+  test.skipIf(process.platform === "win32")(
+    "pboss kill with a live daemon: stops it and cleans up its files",
+    async () => {
+      const home = mkdtempSync(join(tmpdir(), "pboss-kill1-"));
+      homes.push(home);
+
+      const daemon = spawnCli(["__daemon"], home);
+      expect(await waitResponsive(home)).toBeTrue();
+
+      const proc = spawnCli(["kill"], home);
+      const code = await proc.exited;
+      const { out } = await drain(proc);
+      expect(code).toBe(0);
+      expect(out).toContain("Daemon killed");
+
+      // The daemon actually exited and removed its own files (plus the
+      // CLI's fallback cleanup). Nothing listens afterwards.
+      await daemon.exited;
+      await Bun.sleep(200);
+      expect(existsSync(join(home, "daemon.sock"))).toBeFalse();
+      expect(existsSync(join(home, "daemon.pid"))).toBeFalse();
+      expect(await probeDaemon(join(home, "daemon.sock"))).toBeNull();
       await drain(daemon);
     }
   );

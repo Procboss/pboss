@@ -199,10 +199,16 @@ Restart=on-failure
 # into "Start request repeated too quickly".
 RestartPreventExitStatus=81
 
+# The leading '-' on ExecStartPost/ExecStop is the systemd "ignore exit
+# status" modifier: a FAILED ExecStartPost aborts the whole start
+# transaction — systemd would kill the healthy ExecStart daemon and
+# restart-loop it. Resurrecting user processes is best-effort; unit health
+# is ExecStart's job. Similarly, ExecStop failing must not mark the stop
+# failed (systemd still falls back to SIGTERM + SIGKILL).
 ExecStart=${execStart}
-ExecStartPost=${execStartPost}
+ExecStartPost=-${execStartPost}
 ExecReload=${execReload}
-ExecStop=${execStop}
+ExecStop=-${execStop}
 
 [Install]
 WantedBy=multi-user.target

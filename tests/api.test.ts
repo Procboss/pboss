@@ -813,7 +813,7 @@ describe("PBoss API", () => {
   });
 
   describe("kill()", () => {
-    test("sends kill, cleans up state, and emits daemon:killed", async () => {
+    test("cleans up state and emits daemon:killed even with no daemon alive", async () => {
       sendMock.mockResolvedValue(okResponse(undefined, "kill"));
       (pboss as any)._connected = true;
       (pboss as any)._daemonPid = 42;
@@ -828,11 +828,44 @@ describe("PBoss API", () => {
       expect(events).toContain("daemon:killed");
     });
 
-    test("does not throw when send fails (daemon exits before responding)", async () => {
-      sendMock.mockRejectedValue(new Error("connection reset"));
+    test("never spawns when no daemon is alive (ExecStop idempotency)", async () => {
+      // The old path went through send(), whose auto-start would SPAWN a
+      // fresh daemon just to kill it — wasteful and, under systemd's
+      // ExecStop, an extra competing daemon.
+      const launchSpy = spyOn(pboss as any, "launchDaemon");
 
-      await expect(pboss.kill()).resolves.toBeUndefined();
+      await pboss.kill();
+
+      expect(sendMock).not.toHaveBeenCalled();
+      expect(launchSpy).not.toHaveBeenCalled();
+      launchSpy.mockRestore();
+    });
+
+    test("sends kill and waits for the daemon to be gone when one is alive", async () => {
+      // fetch call 1: probe (alive) · call 2: the kill request · call 3+:
+      // follow-up probes (gone) — the bounded wait must observe the exit.
+      let calls = 0;
+      const fetchSpy = spyOn(globalThis, "fetch").mockImplementation((async () => {
+        calls++;
+        const alive = calls <= 2;
+        return {
+          ok: true,
+          json: async () =>
+            alive
+              ? { success: true, data: { pid: 42, uptime: 5 } }
+              : { success: false },
+        } as any;
+      }) as unknown as typeof fetch);
+
+      const events: string[] = [];
+      pboss.on("daemon:killed", () => events.push("daemon:killed"));
+
+      await pboss.kill();
+
+      expect(events).toContain("daemon:killed");
       expect(pboss.connected).toBe(false);
+      expect(calls).toBeGreaterThanOrEqual(3);
+      fetchSpy.mockRestore();
     });
 
     test("stops polling on kill", async () => {
