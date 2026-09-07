@@ -16,7 +16,7 @@
 import type { Subprocess } from "bun";
 import type { ProcessDescription } from "./types";
 import { getCpuCount } from "./utils";
-import { findBun } from "./install-mode";
+import { findBun, bunSearchDescription } from "./install-mode";
 import path from "path"
  
 export class ClusterManager {
@@ -145,9 +145,12 @@ export class ClusterManager {
  * Resolve the Bun interpreter for a JS/TS worker script.
  *
  * Uses the absolute path of the system Bun so spawned workers survive
- * minimal-PATH environments (systemd, launchd, containers). On compiled
- * installs the system Bun is optional — if it is missing we fail with an
- * actionable message instead of a confusing ENOENT on a bare `bun` name.
+ * minimal-PATH environments (systemd, launchd, containers). findBun()
+ * searches PATH AND the well-known install locations (~/.bun/bin,
+ * $BUN_INSTALL/bin, ...) precisely because daemons often run without a
+ * login-shell PATH. On compiled installs the system Bun is optional — if
+ * it is missing we fail with an actionable message (including where we
+ * looked) instead of a confusing ENOENT on a bare `bun` name.
  */
 function resolveBunForScript(script: string): string {
   const bun = findBun();
@@ -156,6 +159,7 @@ function resolveBunForScript(script: string): string {
       `Cannot run "${script}": the Bun runtime was not found on this system. ` +
         "pboss itself is running as a compiled standalone binary, so executing " +
         "JavaScript/TypeScript worker scripts requires a separate Bun installation. " +
+        `Looked in: ${bunSearchDescription()}. ` +
         "Install Bun from https://bun.sh, or select another runtime with " +
         "--interpreter (e.g. --interpreter node, --interpreter none for binaries)."
     );

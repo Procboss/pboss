@@ -148,11 +148,21 @@ Survive a reboot — nothing to do, it's the default:
 pboss start server.ts            # saved automatically
 sudo env PATH="$PATH" pboss startup install   # only if the boot service could not be
                                                # installed automatically (Linux)
+pboss startup status              # show: service installed? daemon up? what a
+                                  # reboot would restore
 ```
 
-The process list is saved to `~/.pboss/dump.json` after **every** change (start, stop, restart, delete, scale), and the boot service resurrects it at boot. Processes that were running come back running; processes you stopped come back stopped; deleted processes don't come back. `pboss startup` with no option does not install — it prints the list of options (`install` / `uninstall` / `generate [os]`).
+The process list is saved to `~/.pboss/dump.json` after **every** change (start, stop, restart, delete, scale), and the boot service resurrects it at boot. Processes that were running come back running; processes you stopped come back stopped; deleted processes don't come back. `pboss startup` with no option does not install — it prints the list of options (`install` / `uninstall` / `status` / `generate [os]`). The first time you start a process, pboss states where persistence stands in one line — and hands you the exact install command when the boot service is missing.
 
 `pboss startup install` always returns: the systemd start is submitted with `--no-block` and verified against a hard deadline (unit state + a ping on the daemon's socket); an unhealthy unit prints the state, the socket probe result, and the recent journal output instead of hanging.
+
+Run any JavaScript or TypeScript — bun is found where the daemon can see it:
+
+```bash
+pboss start ./index.ts            # .ts/.js/.tsx/.mjs/.cjs → executed with Bun
+```
+
+Bun is located through the full search chain, not just `PATH`: `PATH` → `$BUN_INSTALL/bin` → `~/.bun/bin` (the default `curl bun.sh/install` location) → `/usr/local/bin` → `/usr/bin` → `/opt/bun/bin` (plus `/opt/homebrew/bin` on macOS). This matters because the daemon often runs where no login shell ever set a PATH — under systemd or launchd — and the generated unit's `PATH` now includes the target user's `~/.bun/bin` whenever it exists. If no Bun is found at all, the error lists every location that was checked. Use `--interpreter node` or `--interpreter none` to pick a different runtime per process.
 
 Schedule a command — backups, reports, cleanups — without a managed process:
 

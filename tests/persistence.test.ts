@@ -31,9 +31,9 @@ afterEach(async () => {
   await rm(TEST_HOME, { recursive: true, force: true });
 });
 
-async function writeScript(name: string): Promise<string> {
+async function writeScript(name: string, content = "setInterval(() => {}, 1000);"): Promise<string> {
   const scriptPath = join(TEST_DIR, name);
-  await writeFile(scriptPath, "setInterval(() => {}, 1000);");
+  await writeFile(scriptPath, content);
   return scriptPath;
 }
 
@@ -207,5 +207,74 @@ describe("Resurrect honors the stopped flag", () => {
     expect(states[0]!.pid ?? null).not.toBeNull();
 
     await newPm.deleteAll();
+  });
+
+  test("deleting an EXITED process is a clean no-op (post-reboot: resurrect-stopped → delete)", async () => {
+    // Regression: force-stop (del/deleteAll) of a process whose worker
+    // already exited dereferenced a null this.process in the kill branch.
+    // The exact post-reboot flow hits this: resurrect restores a stopped
+    // entry, the user deletes it — no OS process exists to kill.
+    const { ProcessManager } = await import("../src/process-manager");
+    const pm = new ProcessManager();
+    // Exits immediately (exit 0) with autorestart off → container ends in
+    // the exited state: process nulled, pid undefined.
+    const script = await writeScript("exit-immediately.ts", "process.exit(0);");
+
+    await pm.start({ name: "exited-app", script: script, autorestart: false });
+
+    // Wait until the worker's exit handler ran (status no longer "online").
+    const deadline = Date.now() + 5_000;
+    let status = "online";
+    while (Date.now() < deadline) {
+      status = pm.list()[0]?.status ?? status;
+      if (status !== "online") break;
+      await Bun.sleep(50);
+    }
+    expect(status).toBe("stopped");
+
+    // THE regression: this del() used to throw "null is not an object
+    // (evaluating 'this.process.kill')".
+    const states = await pm.del("exited-app");
+    expect(states).toHaveLength(1);
+    expect(pm.list()).toHaveLength(0);
+  });
+});
+
+describe("Persistence onboarding hint (PM2 contrast: pboss states its default)", () => {
+  test("hint says persistence is on when the boot service is installed", async () => {
+    const { persistenceHintLine } = await import("../src/startup-manager");
+    const line = persistenceHintLine({ installed: true, howToInstall: "x" });
+    expect(line).toContain("Persistence on");
+    expect(line).toContain("come back after reboot");
+    expect(line).toContain("pboss startup status");
+  });
+
+  test("hint hands over the exact install command when it is not", async () => {
+    const { persistenceHintLine } = await import("../src/startup-manager");
+    const line = persistenceHintLine({
+      installed: false,
+      howToInstall: 'sudo env PATH="$PATH" pboss startup install',
+    });
+    expect(line).toContain("Reboot persistence is off");
+    expect(line).toContain('sudo env PATH="$PATH" pboss startup install');
+    expect(line).toContain("pboss startup status");
+  });
+
+  test("dumpEntryCount reads the live dump and tolerates absence/corruption", async () => {
+    const { dumpEntryCount } = await import("../src/utils");
+    const { DUMP_FILE } = await import("../src/constants");
+
+    // Absent → 0 (first-process condition true).
+    await rm(TEST_HOME, { recursive: true, force: true });
+    expect(dumpEntryCount()).toBe(0);
+
+    // Two entries → 2.
+    await mkdir(join(TEST_HOME, "logs"), { recursive: true });
+    await writeFile(DUMP_FILE, JSON.stringify([{ stopped: false }, { stopped: true }]));
+    expect(dumpEntryCount()).toBe(2);
+
+    // Corrupt JSON → 0, never a throw.
+    await writeFile(DUMP_FILE, "{not json");
+    expect(dumpEntryCount()).toBe(0);
   });
 });

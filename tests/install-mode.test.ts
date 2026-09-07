@@ -7,10 +7,94 @@ import {
   daemonSpawnCommand,
   cliSpawnCommand,
   installModeDescription,
+  bunSearchCandidates,
+  bunSearchDescription,
 } from "../src/install-mode";
 import { StartupManager } from "../src/startup-manager";
 import { join } from "path";
 import { existsSync } from "fs";
+
+/**
+ * The discovery ORDER is the contract: PATH first (the shell's view), then
+ * $BUN_INSTALL (explicit override), then ~/.bun/bin (the default
+ * user-install location daemons can't see on PATH), then the fixed system
+ * locations. Bun.which only resolves against the spawn-time PATH — which
+ * is why daemons under systemd/launchd need the fallbacks at all.
+ */
+describe("bunSearchCandidates: the discovery order", () => {
+  test("PATH hit, then BUN_INSTALL, then ~/.bun/bin, then system dirs", () => {
+    const candidates = bunSearchCandidates({
+      whichResult: "/custom/path-bun",
+      home: "/home/alice",
+      bunInstall: "/opt/buninstall",
+      platform: "linux",
+    });
+    expect(candidates[0]).toBe("/custom/path-bun");
+    expect(candidates[1]).toBe("/opt/buninstall/bin/bun");
+    expect(candidates[2]).toBe("/home/alice/.bun/bin/bun");
+    expect(candidates).toContain("/usr/local/bin/bun");
+    expect(candidates).toContain("/usr/bin/bun");
+    expect(candidates).toContain("/opt/bun/bin/bun");
+    // No Homebrew dir on Linux.
+    expect(candidates).not.toContain("/opt/homebrew/bin/bun");
+  });
+
+  test("macOS adds /opt/homebrew/bin (not on a launchd agent's PATH)", () => {
+    const candidates = bunSearchCandidates({
+      home: "/Users/alice",
+      platform: "darwin",
+    });
+    expect(candidates).toContain("/opt/homebrew/bin/bun");
+    expect(candidates).toContain("/Users/alice/.bun/bin/bun");
+  });
+
+  test("win32 uses bun.exe and no homebrew", () => {
+    const candidates = bunSearchCandidates({
+      home: "C:\\Users\\alice",
+      bunInstall: "D:\\bun",
+      platform: "win32",
+    });
+    expect(candidates).toContain("D:\\bun\\bin\\bun.exe");
+    expect(candidates).toContain("C:\\Users\\alice\\.bun\\bin\\bun.exe");
+    expect(candidates).toContain(join("/usr/local/bin", "bun.exe"));
+    expect(candidates.some((c) => c.includes("homebrew"))).toBe(false);
+  });
+
+  test("duplicates collapse (BUN_INSTALL equal to HOME fallback)", () => {
+    const candidates = bunSearchCandidates({
+      whichResult: "/x/bun",
+      home: "/h",
+      bunInstall: "/h/.bun",
+      platform: "linux",
+    });
+    const dirCounts = new Map<string, number>();
+    for (const c of candidates) {
+      const key = c;
+      dirCounts.set(key, (dirCounts.get(key) ?? 0) + 1);
+    }
+    for (const [path, count] of dirCounts) {
+      expect(count).toBe(1);
+    }
+    // /h/.bun/bin/bun appears exactly once (BUN_INSTALL and HOME agree).
+    expect(candidates.filter((c) => c === "/h/.bun/bin/bun")).toHaveLength(1);
+  });
+
+  test("missing home/BUN_INSTALL produce no bogus empty-dir candidates", () => {
+    const candidates = bunSearchCandidates({ platform: "linux" });
+    for (const c of candidates) {
+      expect(c.startsWith("/")).toBe(true);
+      expect(c).not.toContain("//");
+    }
+  });
+
+  test("bunSearchDescription mentions every fallback root", () => {
+    const desc = bunSearchDescription();
+    expect(desc).toContain("PATH");
+    expect(desc).toContain("$BUN_INSTALL/bin");
+    expect(desc).toContain("~/.bun/bin");
+    expect(desc).toContain("/usr/local/bin");
+  });
+});
 
 /**
  * Install-mode detection and the startup-manager / daemon command resolution.

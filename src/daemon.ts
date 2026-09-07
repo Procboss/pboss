@@ -31,6 +31,7 @@ import {
   ignore,
 } from "./error-handling";
 import { probeDaemon } from "./daemon-probe";
+import { enrichPathWithBun } from "./install-mode";
 import { ensureDirs } from "./utils";
 import type { DaemonMessage, DaemonResponse } from "./types";
 import type { ReadableStreamController, Server } from "bun";
@@ -64,6 +65,16 @@ export default class Daemon {
 
   
   async initialize(_daemonEnabled: boolean = true) {
+
+    // PATH self-healing for minimal environments: a daemon spawned by a
+    // systemd/launchd unit (especially one generated BEFORE the
+    // multi-location Bun search existed) runs with a PATH that lacks
+    // per-user bin dirs like ~/.bun/bin. findBun() resolves the absolute
+    // interpreter for worker spawns anyway, but worker children inherit
+    // the daemon's PATH — anything they shell out to by name (`bun`,
+    // `bunx`) must also resolve. Worker envs are built from process.env,
+    // so amending PATH here propagates to every future child.
+    enrichPathWithBun();
 
     await ensureDirs();
 

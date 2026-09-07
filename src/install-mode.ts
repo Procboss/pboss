@@ -25,8 +25,10 @@
  * License: GPL-3.0-only
  */
 
-import { join } from "path";
-import { existsSync } from "fs";
+import { join, dirname, win32 as pathWin32 } from "path";
+import { existsSync, statSync } from "fs";
+import { homedir } from "os";
+import { ignore } from "./error-handling";
 
 /**
  * Executable names that mean the current host process is the Bun runtime
@@ -66,12 +68,126 @@ export const PBOSS_EXECUTABLE: string = process.execPath;
 
 /**
  * Locate the system Bun runtime.
- * Returns null when Bun is not installed — which is only acceptable when
- * `IS_COMPILED` is true (the embedded runtime covers pboss itself, but not
- * user scripts that need a `bun` interpreter).
+ *
+ * PATH alone is not enough: pboss daemons regularly run where no login
+ * shell ever touched their environment — systemd/launchd units ship a
+ * minimal PATH without per-user bin dirs, so `~/.bun/bin` (the default
+ * `curl bun.sh/install` location for user installs) is invisible to
+ * Bun.which even though Bun is right there. The search therefore falls
+ * back through every well-known location, in priority order:
+ *
+ *   1. PATH (Bun.which — spawn-time PATH of the current process)
+ *   2. $BUN_INSTALL/bin            (set by the official installer)
+ *   3. <home>/.bun/bin             (default user install)
+ *   4. /usr/local/bin, /usr/bin, /opt/bun/bin
+ *   5. /opt/homebrew/bin           (macOS Homebrew, not on the default PATH)
+ *
+ * Returns null when no Bun exists — only acceptable when `IS_COMPILED` is
+ * true (the embedded runtime covers pboss itself, but not user scripts).
  */
 export function findBun(): string | null {
-  return Bun.which("bun") ?? null;
+  const candidates = bunSearchCandidates({
+    whichResult: Bun.which("bun") ?? undefined,
+    home: process.env.HOME || homedir(),
+    bunInstall: process.env.BUN_INSTALL,
+    platform: process.platform,
+  });
+  for (const candidate of candidates) {
+    try {
+      // throwIfNoEntry: false — a missing candidate is normal, not an error.
+      const st = statSync(candidate, { throwIfNoEntry: false });
+      if (st?.isFile()) return candidate;
+    } catch (err) {
+      ignore(`stat Bun candidate ${candidate}`, err);
+    }
+  }
+  return null;
+}
+
+/** Input for bunSearchCandidates — every field is injectable for tests. */
+export interface BunSearchContext {
+  /** PATH hit from Bun.which (spawn-time PATH of the caller's process). */
+  whichResult?: string;
+  /** Home directory to check for the default `~/.bun/bin` user install. */
+  home?: string;
+  /** $BUN_INSTALL — the install PREFIX (contains bin/), set by bun.sh. */
+  bunInstall?: string;
+  /** Node platform name (process.platform). */
+  platform?: string;
+}
+
+/**
+ * Ordered, de-duplicated absolute Bun candidates for a search context.
+ * Pure: no filesystem or environment access, so tests can pin the exact
+ * discovery order without touching the host.
+ */
+export function bunSearchCandidates(ctx: BunSearchContext): string[] {
+  const isWin = ctx.platform === "win32";
+  const exe = isWin ? "bun.exe" : "bun";
+  const home = ctx.home || "";
+  const bunInstall = ctx.bunInstall || "";
+  // User-provided roots (home, BUN_INSTALL) carry the TARGET platform's
+  // shape — join them with that platform's separator so win32 candidates
+  // are well-formed even when generated on a POSIX host (and vice versa).
+  // The fixed system roots below are POSIX-only locations, joined plainly.
+  const userJoin = isWin ? pathWin32.join : join;
+
+  const candidates: (string | undefined)[] = [
+    ctx.whichResult,
+    bunInstall && userJoin(bunInstall, "bin", exe),
+    home && userJoin(home, ".bun", "bin", exe),
+    join("/usr/local/bin", exe),
+    join("/usr/bin", exe),
+    join("/opt/bun/bin", exe),
+    // Homebrew on Apple Silicon installs to /opt/homebrew, which is NOT on
+    // the PATH a launchd agent gets — only /usr/local/bin (Intel) is.
+    ctx.platform === "darwin" ? join("/opt/homebrew/bin", exe) : undefined,
+  ];
+
+  const seen = new Set<string>();
+  const unique: string[] = [];
+  for (const c of candidates) {
+    if (!c || seen.has(c)) continue;
+    seen.add(c);
+    unique.push(c);
+  }
+  return unique;
+}
+
+/**
+ * Where findBun looks — one human-readable line for error messages.
+ */
+export function bunSearchDescription(): string {
+  return (
+    "PATH, $BUN_INSTALL/bin, ~/.bun/bin, /usr/local/bin, /usr/bin, " +
+    "/opt/bun/bin" +
+    (process.platform === "darwin" ? ", /opt/homebrew/bin" : "")
+  );
+}
+
+/**
+ * Prepend the discovered Bun's bin dir to PATH when it is missing.
+ *
+ * The daemon calls this at startup: daemons spawned by systemd/launchd
+ * units (or by an older unit file generated before the multi-location
+ * search existed) run with a minimal PATH, and worker children inherit
+ * the daemon's environment — `bun`-by-name lookups inside those children
+ * would fail even though findBun() can resolve the absolute path. Returns
+ * true when PATH was amended.
+ */
+export function enrichPathWithBun(): boolean {
+  const bun = findBun();
+  if (!bun) return false;
+
+  const dir = dirname(bun);
+  const sep = process.platform === "win32" ? ";" : ":";
+  const parts = (process.env.PATH ?? "")
+    .split(sep)
+    .filter((p) => p.length > 0);
+  if (parts.includes(dir)) return false;
+
+  process.env.PATH = [dir, ...parts].join(sep);
+  return true;
 }
 
 /**

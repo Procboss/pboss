@@ -25,8 +25,8 @@
  * License: GPL-3.0-only
  */
 
-import { join } from "path";
-import { readFileSync, rmSync } from "fs";
+import { join, dirname } from "path";
+import { readFileSync, rmSync, existsSync } from "fs";
 import { mkdir } from "fs/promises";
 import { $ } from "bun";
 import { ignore } from "./error-handling";
@@ -132,13 +132,24 @@ export class StartupManager {
    * Build the PATH the service should run with. Unlike a login shell,
    * systemd/launchd start with a minimal PATH, so the directory containing
    * the executable we reference must be included explicitly. Compiled
-   * installs do not need a Bun directory at all.
+   * installs do not need a Bun directory for pboss itself — but the target
+   * user's ~/.bun/bin is still added when it exists, because worker
+   * processes (and anything they shell out to by name) inherit the unit's
+   * PATH and a `bun`-by-name lookup inside a worker must resolve.
    */
-  private servicePath(): string {
-    const parts = ["/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin"];
+  private servicePath(targetHome?: string): string {
+    const parts: string[] = [];
+    if (targetHome) {
+      const userBunBin = join(targetHome, ".bun", "bin");
+      if (existsSync(userBunBin)) parts.push(userBunBin);
+    }
+    parts.push("/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin");
     if (!IS_COMPILED) {
       const bun = findBun();
-      if (bun) parts.push(join(bun, ".."));
+      if (bun) {
+        const bunDir = dirname(bun);
+        if (!parts.includes(bunDir)) parts.push(bunDir);
+      }
     }
     return parts.join(":");
   }
@@ -188,6 +199,7 @@ export class StartupManager {
     const execReload = cliSpawnCommand("reload", "all").join(" ");
     const execStop = cliSpawnCommand("kill").join(" ");
     const target = targetUserContext();
+    const unitPath = this.servicePath(target.home);
 
     const unit = `[Unit]
 Description=ProcBoss Process Manager
@@ -208,7 +220,7 @@ User=${target.user}
 LimitNOFILE=infinity
 LimitNPROC=infinity
 LimitCORE=infinity
-Environment=PATH=${this.servicePath()}
+Environment=PATH=${unitPath}
 Environment=PBOSS_HOME=${join(target.home, ".pboss")}
 Restart=on-failure
 # Bound the whole start (including ExecStartPost) so a hung start is a
@@ -279,7 +291,7 @@ ${programArgs}
     <key>EnvironmentVariables</key>
     <dict>
         <key>PATH</key>
-        <string>${escapeXml(this.servicePath())}</string>
+        <string>${escapeXml(this.servicePath(home))}</string>
         <key>HOME</key>
         <string>${escapeXml(home)}</string>
         <key>PBOSS_HOME</key>
@@ -535,6 +547,114 @@ ${plist}`;
 
     return "Unsupported platform";
   }
+
+  /**
+   * Read-only boot-persistence report (`pboss startup status`): is the
+   * boot service installed/enabled, is the daemon up, and what exactly a
+   * reboot would restore from the auto-saved dump. Never mutates anything.
+   *
+   * `opts.unitDir` redirects where the systemd unit is looked up
+   * (default /etc/systemd/system) so tests can point it at a fixture
+   * directory without root.
+   */
+  async status(opts: { unitDir?: string } = {}): Promise<string> {
+    const os = process.platform;
+    const target = targetUserContext();
+    const unitDir = opts.unitDir ?? "/etc/systemd/system";
+    // The pboss home the daemon actually uses: an explicit PBOSS_HOME env
+    // wins (the daemon started under it honors the same pointer), else the
+    // TARGET user's ~/.pboss (sudo/SUDO_USER-aware, same rule as the unit).
+    const pbossHome = process.env.PBOSS_HOME || join(target.home, ".pboss");
+    const lines: string[] = [];
+    let installed = false;
+
+    if (os === "linux") {
+      const unitPath = join(unitDir, "pboss.service");
+      const wantsPath = join(unitDir, "multi-user.target.wants", "pboss.service");
+      installed = existsSync(unitPath);
+
+      lines.push("Boot startup service (systemd)");
+      lines.push(`  Service:    ${unitPath}`);
+      lines.push(`  Installed:  ${installed ? "yes" : "no"}`);
+      if (installed) {
+        lines.push(
+          existsSync(wantsPath)
+            ? "  Enabled:    yes — starts at boot (multi-user.target)"
+            : "  Enabled:    no — run:  sudo systemctl enable pboss"
+        );
+        // 127 = no systemctl on this host (container): nothing to report.
+        const active = await runSystemctl(["is-active", "pboss"]);
+        if (active.code !== 127) {
+          lines.push(`  Active:     ${active.out || "unknown"}`);
+        }
+      } else {
+        lines.push(`  → install it with:  ${sudoRetryHint()}`);
+      }
+    } else if (os === "darwin") {
+      const plistPath = join(target.home, "Library", "LaunchAgents", "com.pboss.daemon.plist");
+      installed = existsSync(plistPath);
+      lines.push("Boot startup service (launchd)");
+      lines.push(`  Service:    ${plistPath}`);
+      lines.push(`  Installed:  ${installed ? "yes" : "no"}`);
+      if (!installed) {
+        lines.push("  → install it with:  pboss startup install");
+      }
+    } else if (os === "win32") {
+      let installed = false;
+      try {
+        const proc = Bun.spawn(["schtasks", "/query", "/tn", "PBOSS_Daemon"], {
+          stdout: "ignore",
+          stderr: "ignore",
+          stdin: "ignore",
+        });
+        installed = (await proc.exited) === 0;
+      } catch (err) {
+        ignore("schtasks /query (startup status)", err);
+      }
+      lines.push("Boot startup service (Task Scheduler)");
+      lines.push(`  Service:    PBOSS_Daemon scheduled task`);
+      lines.push(`  Installed:  ${installed ? "yes" : "no"}`);
+      if (!installed) {
+        lines.push("  → install it with:  pboss startup install   (elevated shell)");
+      }
+    } else {
+      return `Unsupported platform for startup status: ${os}`;
+    }
+
+    // Daemon liveness on the daemon's ACTUAL home (explicit PBOSS_HOME or
+    // the target user's ~/.pboss — SUDO_USER-aware, same rule as the unit).
+    if (os === "linux" || os === "darwin") {
+      const socket = join(pbossHome, "daemon.sock");
+      const probe = await probeDaemon(socket);
+      lines.push(
+        probe
+          ? `  Daemon:     reachable (pid ${probe.pid}) at ${socket}`
+          : `  Daemon:     not answering at ${socket}`
+      );
+    }
+
+    // What a reboot restores — from the auto-saved dump.
+    const dumpPath = join(pbossHome, "dump.json");
+    const summary = dumpBootSummary(pbossHome);
+    lines.push("");
+    lines.push("Reboot persistence:");
+    lines.push(`  Dump:       ${dumpPath}`);
+    if (!summary || summary.total === 0) {
+      lines.push(
+        "  On boot:    nothing to restore yet (process starts are saved automatically)"
+      );
+    } else if (installed) {
+      const parts = [`${summary.running} process(es) come back running`];
+      if (summary.stopped > 0) parts.push(`${summary.stopped} stopped`);
+      lines.push(`  On boot:    ${parts.join(", ")}`);
+    } else {
+      lines.push(
+        `  On boot:    nothing yet — ${summary.total} saved process(es) are waiting for the service above`
+      );
+    }
+
+    return lines.join("\n");
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -715,6 +835,107 @@ function escapeXml(value: string): string {
 /** Quote a single command token for a Windows command line when needed. */
 function quoteWindowsToken(token: string): string {
   return /\s/.test(token) ? `"${token}"` : token;
+}
+
+// ---------------------------------------------------------------------------
+// Boot-persistence introspection — shared by `pboss startup status` and the
+// first-start onboarding hint in the CLI. All read-only.
+// ---------------------------------------------------------------------------
+
+/** What the auto-saved dump would restore at boot. */
+export interface DumpBootSummary {
+  total: number;
+  running: number;
+  stopped: number;
+}
+
+/**
+ * Count what a reboot restores from a pboss home's dump.json (the
+ * directory that CONTAINS dump.json — i.e. ~/.pboss or $PBOSS_HOME):
+ * entries with stopped === true come back stopped, everything else comes
+ * back running. Returns null when there is no dump (nothing started yet).
+ */
+export function dumpBootSummary(pbossHome: string): DumpBootSummary | null {
+  try {
+    const dumpPath = join(pbossHome, "dump.json");
+    if (!existsSync(dumpPath)) return null;
+    const parsed = JSON.parse(readFileSync(dumpPath, "utf-8"));
+    if (!Array.isArray(parsed)) return null;
+    let running = 0;
+    let stopped = 0;
+    for (const entry of parsed) {
+      if (entry && typeof entry === "object" && (entry as any).stopped === true) {
+        stopped++;
+      } else {
+        running++;
+      }
+    }
+    return { total: parsed.length, running, stopped };
+  } catch (err) {
+    ignore(`read dump summary for ${pbossHome}`, err);
+    return null;
+  }
+}
+
+/** Presence + install command for the boot service on this platform. */
+export interface BootServicePresence {
+  installed: boolean;
+  /** The exact command that installs the boot service here. */
+  howToInstall: string;
+}
+
+/**
+ * Cheap read-only check for the boot service: file existence on
+ * Linux/macOS, a bounded schtasks query on Windows. Safe to call from
+ * anywhere — the first-start persistence hint runs this after `pboss start`.
+ */
+export async function bootServiceInstalled(): Promise<BootServicePresence> {
+  const os = process.platform;
+  if (os === "linux") {
+    return {
+      installed: existsSync("/etc/systemd/system/pboss.service"),
+      howToInstall: sudoRetryHint(),
+    };
+  }
+  if (os === "darwin") {
+    const home = targetUserContext().home;
+    return {
+      installed: existsSync(join(home, "Library", "LaunchAgents", "com.pboss.daemon.plist")),
+      howToInstall: "pboss startup install",
+    };
+  }
+  if (os === "win32") {
+    try {
+      const proc = Bun.spawn(["schtasks", "/query", "/tn", "PBOSS_Daemon"], {
+        stdout: "ignore",
+        stderr: "ignore",
+        stdin: "ignore",
+      });
+      const installed = (await proc.exited) === 0;
+      return {
+        installed,
+        howToInstall: "pboss startup install   (elevated shell)",
+      };
+    } catch (err) {
+      ignore("schtasks /query (boot presence check)", err);
+      return { installed: false, howToInstall: "pboss startup install   (elevated shell)" };
+    }
+  }
+  return { installed: false, howToInstall: "pboss startup install" };
+}
+
+/**
+ * The one hint printed after the first process start, telling the user
+ * where reboot persistence stands. PM2 makes users discover
+ * `pm2 startup && pm2 save` the hard way; pboss states its default out
+ * loud, once, at the moment it becomes relevant.
+ */
+export function persistenceHintLine(presence: BootServicePresence): string {
+  return presence.installed
+    ? "✓ Persistence on: this process is saved and will come back after reboot  (pboss startup status)"
+    : "Reboot persistence is off — run:\n" +
+        `    ${presence.howToInstall}\n` +
+        "  to bring your processes back after a reboot  (pboss startup status)";
 }
 
 /** Quote a value for a PowerShell single-quoted string ('' escapes '). */

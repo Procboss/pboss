@@ -23,12 +23,16 @@ import {
   DASHBOARD_PORT,
   METRICS_PORT,
 } from "./constants";
-import { ensureDirs, formatBytes, formatUptime, colorize, padRight } from "./utils";
+import { ensureDirs, formatBytes, formatUptime, colorize, padRight, dumpEntryCount } from "./utils";
 import { PBoss, loadEcosystemConfig, waitForDaemon } from "./api";
 import { DeployManager } from "./deploy";
-import { StartupManager } from "./startup-manager";
+import {
+  StartupManager,
+  bootServiceInstalled,
+  persistenceHintLine,
+} from "./startup-manager";
 import { EnvManager } from "./env-manager";
-import { DaemonConflictError, EXIT_DAEMON_CONFLICT } from "./error-handling";
+import { DaemonConflictError, EXIT_DAEMON_CONFLICT, ignore } from "./error-handling";
 import type {
   StartOptions,
   ProcessState,
@@ -254,6 +258,9 @@ class PBossCLI {
     }
 
     const ext = extname(firstPositional);
+    // Read BEFORE the start: an empty dump means this is the fleet's first
+    // process — the one moment the persistence onboarding hint matters.
+    const wasEmptyFleet = dumpEntryCount() === 0;
 
     try {
       if (
@@ -277,6 +284,7 @@ class PBossCLI {
         if (!raw && !config.apps.some((app) => app.raw)) {
           printProcessTable(states);
         }
+        await this.maybePersistenceHint(raw, wasEmptyFleet);
 
         if (this.noDaemon) {
           await new Promise(() => {});
@@ -295,6 +303,7 @@ class PBossCLI {
         if (!opts.raw) {
           printProcessTable(states);
         }
+        await this.maybePersistenceHint(opts.raw === true, wasEmptyFleet);
 
         if (this.noDaemon) {
           await new Promise(() => {});
@@ -303,6 +312,30 @@ class PBossCLI {
     } catch (err: any) {
       console.error(colorize(`Error: ${err.message}`, "red"));
       process.exit(1);
+    }
+  }
+
+  /**
+   * After a successful start that took the fleet from empty to non-empty,
+   * state where reboot persistence stands — once, in one line, only on a
+   * TTY (piped/scripted output stays clean for parsers).
+   *
+   * PM2's biggest usability trap is that persistence is opt-in and silent
+   * (`pm2 startup` + `pm2 save`, discovered the hard way after a reboot).
+   * pboss persists by default; this hint just says so out loud — and when
+   * the boot service is missing (e.g. a manual binary copy without the
+   * installer), it hands the user the one command that fixes it.
+   */
+  private async maybePersistenceHint(raw: boolean, wasEmptyFleet: boolean) {
+    if (raw || !wasEmptyFleet || !process.stdout.isTTY) return;
+    try {
+      const presence = await bootServiceInstalled();
+      const line = persistenceHintLine(presence);
+      console.log("");
+      console.log(colorize(line, presence.installed ? "green" : "yellow"));
+    } catch (err) {
+      // The hint is cosmetic — never let it break a successful start.
+      ignore("persistence onboarding hint", err);
     }
   }
 
@@ -696,7 +729,7 @@ class PBossCLI {
    * matching way back out is `uninstall` — so the user chooses.
    */
   printStartupUsage(): void {
-    console.log(`Usage: pboss startup <install | uninstall> [generate [os]]
+    console.log(`Usage: pboss startup <install | uninstall | status> [generate [os]]
 
 Manage the boot startup service for the pboss daemon.
 
@@ -711,6 +744,9 @@ Commands:
                           macOS:    pboss startup install   (no sudo needed)
                           Windows:  pboss startup install   (elevated shell)
   uninstall             Remove the boot startup service (alias: remove)
+  status                Show whether the boot service is installed/enabled,
+                          whether the daemon is up, and what a reboot would
+                          restore from the auto-saved dump
   generate [os]         Print the service config without installing
                           (os: linux, darwin, win32)
 
@@ -742,6 +778,11 @@ survive reboots and restarts by default.
 
       if (sub === "remove" || sub === "uninstall") {
         console.log(await startup.uninstall());
+        return;
+      }
+
+      if (sub === "status") {
+        console.log(await startup.status());
         return;
       }
 
@@ -1312,6 +1353,10 @@ ${colorize("Notes:", "dim")}
                                   an elevated shell)
     startup uninstall             Remove the boot startup service
                                   (alias: startup remove)
+    startup status                Show boot-persistence state: service
+                                  installed/enabled, daemon up, and what a
+                                  reboot would restore from the auto-saved
+                                  dump
     startup generate [os]         Print the service config without installing
                                   (bare \`pboss startup\` shows these options)
     

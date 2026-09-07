@@ -259,7 +259,9 @@ Output:
 pboss start server.ts
 ```
 
-That is the whole setup. The process list is saved automatically to `~/.pboss/dump.json` after **every** change (start, stop, restart, delete, scale), and the boot service — installed automatically by the one-line installer at install time — starts the daemon at boot and resurrects the list: running processes come back running, stopped ones come back stopped, deleted ones don't come back.
+That is the whole setup. The process list is saved automatically to `~/.pboss/dump.json` after **every** change (start, stop, restart, delete, scale), and the boot service — installed automatically by the one-line installer at install time — starts the daemon at boot and resurrects the list: running processes come back running, stopped ones come back stopped, deleted ones don't come back. The first `pboss start` states where persistence stands in one line, so the default is never a silent surprise.
+
+`pboss startup status` shows the whole picture read-only: whether the boot service is installed and enabled, whether the daemon is up, and exactly what a reboot would restore from the dump.
 
 If the boot service could not be installed automatically (user-level install without root, or a host without systemd), one command enables it:
 
@@ -301,6 +303,18 @@ pboss start ./dist/my-go-api --name api --instances 4
 # Run with explicit direct binary mode
 pboss start ./my-binary --interpreter none
 ```
+
+### Runtime discovery — how pboss finds `bun` (and why it matters)
+
+JavaScript/TypeScript workers are spawned by the **daemon**, and the daemon often runs where no login shell ever set a `PATH` — as a systemd service on Linux, a launchd agent on macOS, or a scheduled task on Windows. A PATH-only lookup therefore misses the most common Bun install location, `~/.bun/bin`, even though `which bun` finds it perfectly in your shell. pboss resolves the interpreter through a full chain, in order:
+
+1. `PATH` (as seen by the current process — the CLI inherits your shell's)
+2. `$BUN_INSTALL/bin` (set by the official `bun.sh` installer)
+3. `~/.bun/bin` (the default user install — the one daemons can't see)
+4. `/usr/local/bin`, `/usr/bin`, `/opt/bun/bin`
+5. `/opt/homebrew/bin` (macOS Homebrew on Apple Silicon — not on a launchd PATH)
+
+Three layers make this work everywhere: the absolute resolved path is used for the worker spawn (surviving any PATH), the generated boot service's `PATH` includes the target user's `~/.bun/bin` when present (workers that call `bun` by name), and the daemon prepends the discovered bun directory to its own `PATH` at startup (healing daemons started by older unit files). If no Bun exists at all, the error message lists every location that was checked before suggesting `--interpreter node` or `--interpreter none`.
 
 ### Running Python Services
 
@@ -1145,9 +1159,11 @@ pboss cron run everyday@3 "bun report.ts | mail -s 'daily report' ops@example.co
 
 ```bash
 pboss startup
-# Usage: pboss startup <install | uninstall> [generate [os]]
+# Usage: pboss startup <install | uninstall | status> [generate [os]]
 #   install      Install the boot startup service
 #   uninstall    Remove the boot startup service (alias: remove)
+#   status       Show boot-persistence state: service installed/enabled,
+#                daemon up, and what a reboot would restore
 #   generate [os]  Print the service config without installing
 ```
 
@@ -1175,6 +1191,30 @@ pboss startup install
 ```
 
 The generated file detects how pboss was installed and adapts the daemon command accordingly. On a **compiled standalone install** (one-line installer, `build:bin`) the service re-executes the pboss binary itself (`ExecStart=/usr/local/bin/pboss __daemon`) — the Bun runtime is embedded in the binary and is **not required** on the system. On a **script install** (`bun add -g pboss`, npm) the service runs the source on the system Bun runtime (`ExecStart=/usr/local/bin/bun run .../daemon.ts`). The generated file's header comment states which mode was detected.
+
+The unit/agent `PATH` deliberately includes the target user's `~/.bun/bin` whenever it exists (even on compiled installs): worker processes inherit the service's environment, so a worker shelling out to `bun` by name must resolve it. Independently of the unit file, the daemon self-heals its own `PATH` at startup (prepending the directory of the Bun it discovered) — so daemons started by **older** unit files also find Bun after a binary upgrade. See [Runtime discovery](#multi-language--runtime-support) for the full Bun discovery chain.
+
+#### pboss startup status
+
+A read-only report of boot persistence — nothing is started, installed, or changed:
+
+```bash
+pboss startup status
+# Boot startup service (systemd)
+#   Service:    /etc/systemd/system/pboss.service
+#   Installed:  yes
+#   Enabled:    yes — starts at boot (multi-user.target)
+#   Active:     active
+#   Daemon:     reachable (pid 1234) at /home/ra/.pboss/daemon.sock
+#
+# Reboot persistence:
+#   Dump:       /home/ra/.pboss/dump.json
+#   On boot:    3 process(es) come back running, 1 stopped
+```
+
+When the service is missing, the report says so and prints the exact install command; saved processes are reported as *waiting* for the service. When the dump is absent or empty, it says "nothing to restore yet" — starts are saved automatically, so the count appears the moment you run `pboss start`. The daemon socket and dump are read from the home the daemon actually uses (an explicit `PBOSS_HOME` wins; otherwise the target user's `~/.pboss`, `SUDO_USER`-aware under sudo).
+
+The first `pboss start` on an empty machine also states where persistence stands — one line, only on a TTY (piped output stays clean for scripts): `✓ Persistence on: this process is saved and will come back after reboot` when the boot service is active, or the one command that enables it when it is not.
 
 #### pboss startup generate
 
@@ -2606,6 +2646,22 @@ If ProcBoss commands hang or return connection errors, the daemon may have died 
 rm -f ~/.pboss/daemon.sock ~/.pboss/daemon.pid
 pboss list
 ```
+
+### "the Bun runtime was not found on this system" — but bun IS installed
+
+This happens when Bun lives in a location the daemon cannot see on its `PATH` — typically `~/.bun/bin` (the default `curl bun.sh/install` location) while the daemon was started by systemd/launchd with a minimal service PATH. `which bun` in your shell finds it because YOUR shell has that directory on PATH; the daemon does not.
+
+pboss already searches `PATH`, `$BUN_INSTALL/bin`, `~/.bun/bin`, `/usr/local/bin`, `/usr/bin`, and `/opt/bun/bin` (plus `/opt/homebrew/bin` on macOS), so this error means Bun genuinely is not in any of them — for example a Bun installed only for a different user account than the one the daemon runs as. Check:
+
+```
+ls -l ~/.bun/bin/bun                 # the default location
+echo $BUN_INSTALL                     # set by the bun.sh installer
+sudo -u <daemon-user> ls ~/.bun/bin   # the daemon runs as YOU only when
+                                      # startup install set User= correctly
+pboss startup status                  # shows whose ~/.pboss the daemon uses
+```
+
+Fixes, in order of preference: install Bun for the daemon's user (`curl -fsSL https://bun.sh/install | bash`), set `BUN_INSTALL` in the unit (`systemctl edit pboss` → `Environment=BUN_INSTALL=/opt/bun`), or run the script under a different runtime (`--interpreter node`, `--interpreter none` for binaries). After installing Bun, restart the service (`sudo systemctl restart pboss`).
 
 ### Process keeps restarting
 

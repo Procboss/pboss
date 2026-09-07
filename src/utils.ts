@@ -17,10 +17,27 @@
 import { join } from "path";
 import { ALL_DIRS, PBOSS_HOME } from "./constants";
 import { mkdir } from "fs/promises";
+import { readFileSync } from "fs";
 import { ignore } from "./error-handling";
 import { totalmem, freemem, loadavg, platform, hostname, uptime } from "node:os";
 
 export const DUMP_FILE = join(PBOSS_HOME, "dump.json");
+
+/**
+ * Number of entries currently in the auto-saved dump (0 when absent or
+ * unreadable). The CLI reads this BEFORE `pboss start` to detect the
+ * fleet's first process — the moment the persistence onboarding hint
+ * becomes relevant.
+ */
+export function dumpEntryCount(): number {
+  try {
+    const parsed = JSON.parse(readFileSync(DUMP_FILE, "utf-8"));
+    return Array.isArray(parsed) ? parsed.length : 0;
+  } catch (err) {
+    ignore("count dump entries", err);
+    return 0;
+  }
+}
 
 export async function ensureDirs() {
   await Promise.all(

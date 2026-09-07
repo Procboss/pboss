@@ -469,7 +469,11 @@ export class ProcessContainer {
       } else {
         if (this.config.treekill !== false && this.pid) {
           await treeKill(this.pid, "SIGKILL");
-        } else {
+        } else if (this.process) {
+          // Guard: the process may have ALREADY exited (handleExit nulls
+          // this.process/pid) — force-stopping an exited process (e.g.
+          // `pboss delete` of a stopped entry after resurrect) must be a
+          // clean no-op, not a null deref.
           this.process.kill("SIGKILL" as any);
         }
         await this?.process?.exited;

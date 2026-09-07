@@ -1,6 +1,6 @@
 import { describe, test, expect, afterEach } from "bun:test";
-import { StartupManager } from "../src/startup-manager";
-import { mkdtempSync, rmSync, existsSync, readFileSync } from "node:fs";
+import { StartupManager, dumpBootSummary, bootServiceInstalled } from "../src/startup-manager";
+import { mkdtempSync, rmSync, existsSync, readFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -328,6 +328,160 @@ describe("StartupManager — macOS install() prerequisites (launchd open() fix)"
         Object.defineProperty(process, "platform", { value: origPlatform, configurable: true });
         rmSync(home, { recursive: true, force: true });
       }
+    }
+  );
+});
+
+describe("StartupManager — the unit PATH carries the target user's bun (the runtime-discovery fix)", () => {
+  test.skipIf(process.platform === "win32")(
+    "linux unit PATH starts with the target user's ~/.bun/bin when it exists",
+    async () => {
+      const home = mkdtempSync(join(tmpdir(), "pboss-unitpath-"));
+      const bunBin = join(home, ".bun", "bin");
+      mkdirSync(bunBin, { recursive: true });
+      setEnv({ HOME: home, SUDO_USER: undefined });
+      try {
+        const startup = new StartupManager();
+        const out = await startup.generate("linux");
+        const pathLine = out.match(/Environment=PATH=(.+)/)?.[1] ?? "";
+        expect(pathLine.startsWith(`${bunBin}:`)).toBe(true);
+        // And the standard system dirs are still all there.
+        for (const dir of ["/usr/local/bin", "/usr/bin", "/bin"]) {
+          expect(pathLine).toContain(dir);
+        }
+      } finally {
+        rmSync(home, { recursive: true, force: true });
+      }
+    }
+  );
+
+  test.skipIf(process.platform === "win32")(
+    "linux unit PATH omits ~/.bun/bin when the target user has none",
+    async () => {
+      const home = mkdtempSync(join(tmpdir(), "pboss-unitpath-none-"));
+      setEnv({ HOME: home, SUDO_USER: undefined });
+      try {
+        const startup = new StartupManager();
+        const out = await startup.generate("linux");
+        const pathLine = out.match(/Environment=PATH=(.+)/)?.[1] ?? "";
+        expect(pathLine.startsWith("/usr/local/sbin")).toBe(true);
+        expect(pathLine).not.toContain(".bun");
+      } finally {
+        rmSync(home, { recursive: true, force: true });
+      }
+    }
+  );
+
+  test.skipIf(process.platform === "win32")(
+    "launchd plist PATH also carries the target user's ~/.bun/bin",
+    async () => {
+      const home = mkdtempSync(join(tmpdir(), "pboss-plistpath-"));
+      const bunBin = join(home, ".bun", "bin");
+      mkdirSync(bunBin, { recursive: true });
+      setEnv({ HOME: home, SUDO_USER: undefined });
+      try {
+        const startup = new StartupManager();
+        const out = await startup.generate("darwin");
+        const pathString = out.match(/<key>PATH<\/key>\s*<string>([^<]+)<\/string>/)?.[1] ?? "";
+        expect(pathString.startsWith(`${bunBin}:`)).toBe(true);
+      } finally {
+        rmSync(home, { recursive: true, force: true });
+      }
+    }
+  );
+});
+
+describe("StartupManager.status() — the read-only boot-persistence report", () => {
+  test.skipIf(process.platform !== "linux")(
+    "not installed: honest report + exact install command + dump summary",
+    async () => {
+      const home = mkdtempSync(join(tmpdir(), "pboss-status-no-"));
+      // PBOSS_HOME must be unset: status() prefers an explicit env override,
+      // and another test file's module-top may have set it (shared process).
+      setEnv({ HOME: home, SUDO_USER: undefined, PBOSS_HOME: undefined });
+      try {
+        const startup = new StartupManager();
+        const report = await startup.status();
+        expect(report).toContain("Boot startup service (systemd)");
+        expect(report).toContain("Installed:  no");
+        expect(report).toContain('sudo env PATH="$PATH" pboss startup install');
+        expect(report).toContain("Reboot persistence:");
+        expect(report).toContain("nothing to restore yet");
+        // The dump path is the TARGET user's, not root's.
+        expect(report).toContain(join(home, ".pboss", "dump.json"));
+        expect(report).toContain("not answering");
+      } finally {
+        rmSync(home, { recursive: true, force: true });
+      }
+    }
+  );
+
+  test.skipIf(process.platform !== "linux")(
+    "installed + enabled + saved dump: full report with restore counts",
+    async () => {
+      const home = mkdtempSync(join(tmpdir(), "pboss-status-yes-"));
+      const unitDir = mkdtempSync(join(tmpdir(), "pboss-status-units-"));
+      setEnv({ HOME: home, SUDO_USER: undefined, PBOSS_HOME: undefined });
+      try {
+        // Unit file + enablement symlink, exactly where systemd puts them.
+        mkdirSync(join(unitDir, "multi-user.target.wants"), { recursive: true });
+        writeFileSync(join(unitDir, "pboss.service"), "[Unit]\n");
+        writeFileSync(
+          join(unitDir, "multi-user.target.wants", "pboss.service"),
+          "symlink-ish\n"
+        );
+        // Dump: 2 running + 1 stopped.
+        mkdirSync(join(home, ".pboss"), { recursive: true });
+        writeFileSync(
+          join(home, ".pboss", "dump.json"),
+          JSON.stringify([{ stopped: false }, { stopped: false }, { stopped: true }])
+        );
+
+        const startup = new StartupManager();
+        const report = await startup.status({ unitDir });
+        expect(report).toContain("Installed:  yes");
+        expect(report).toContain("Enabled:    yes");
+        expect(report).toContain("2 process(es) come back running");
+        expect(report).toContain("1 stopped");
+      } finally {
+        rmSync(home, { recursive: true, force: true });
+        rmSync(unitDir, { recursive: true, force: true });
+      }
+    }
+  );
+
+  test("dumpBootSummary counts running vs stopped and tolerates junk", () => {
+    const pbossHome = mkdtempSync(join(tmpdir(), "pboss-dumpsum-"));
+    try {
+      // No dump → null.
+      expect(dumpBootSummary(pbossHome)).toBeNull();
+
+      // The argument is the pboss home (the dir that CONTAINS dump.json).
+      writeFileSync(
+        join(pbossHome, "dump.json"),
+        JSON.stringify([{ stopped: true }, { stopped: false }, {}, null, "junk"])
+      );
+      const summary = dumpBootSummary(pbossHome)!;
+      expect(summary.total).toBe(5);
+      // stopped:true counts stopped; false/missing/non-objects count running.
+      expect(summary.stopped).toBe(1);
+      expect(summary.running).toBe(4);
+
+      // Corrupt JSON → null, never a throw.
+      writeFileSync(join(pbossHome, "dump.json"), "{broken");
+      expect(dumpBootSummary(pbossHome)).toBeNull();
+    } finally {
+      rmSync(pbossHome, { recursive: true, force: true });
+    }
+  });
+
+  test.skipIf(process.platform !== "linux" || process.getuid?.() === 0)(
+    "bootServiceInstalled() on a host without the unit: false + sudo install command",
+    async () => {
+      // Non-root sandbox/CI: /etc/systemd/system/pboss.service does not exist.
+      const presence = await bootServiceInstalled();
+      expect(presence.installed).toBe(false);
+      expect(presence.howToInstall).toContain("pboss startup install");
     }
   );
 });
