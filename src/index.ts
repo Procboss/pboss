@@ -493,7 +493,10 @@ class PBossCLI {
   async cmdSave() {
     try {
       await this.pboss.save();
-      console.log(colorize("✓ Process list saved", "green"));
+      console.log(
+        colorize("✓ Process list saved", "green") +
+          colorize("  (saved automatically after every change — this is just a manual re-save)", "gray"),
+      );
     } catch (err: any) {
       console.error(colorize(`Error: ${err.message}`, "red"));
       process.exit(1);
@@ -697,6 +700,11 @@ class PBossCLI {
 
 Manage the boot startup service for the pboss daemon.
 
+The boot service is normally set up automatically at install time (the
+one-line installer and global npm installs do it for you) — you only need
+these commands when that was not possible (e.g. no privileges at install
+time, or a host without systemd) or to remove it again.
+
 Commands:
   install               Install the boot startup service
                           Linux:    sudo env PATH="$PATH" pboss startup install
@@ -705,6 +713,10 @@ Commands:
   uninstall             Remove the boot startup service (alias: remove)
   generate [os]         Print the service config without installing
                           (os: linux, darwin, win32)
+
+With the boot service active, every process you start, stop, or delete is
+saved automatically, and the whole list is resurrected at boot — processes
+survive reboots and restarts by default.
 
 \`pboss startup\` alone does nothing — pass one of the options above.`);
   }
@@ -1283,15 +1295,20 @@ ${colorize("Notes:", "dim")}
     dashboard stop                Stop web dashboard
     prometheus                    Print Prometheus metrics
     
-    ${colorize("Persistence:", "cyan")}
-    save                          Save current process list
+    ${colorize("Persistence (on by default):", "cyan")}
+    save                          Manually re-save the process list
+                                  (it is saved automatically after every
+                                  start/stop/delete/scale — no need to run
+                                  this)
     resurrect                     Restore saved process list
                                   --wait <sec>: wait for an externally
                                   started daemon instead of spawning one
                                   (systemd unit ExecStartPost uses this)
     startup install               Install the boot startup service
-                                  (sudo env PATH="$PATH" pboss startup install
-                                  on Linux; macOS needs no sudo; Windows needs
+                                  (done automatically at install time; run
+                                  this only when it could not be — sudo env
+                                  PATH="$PATH" pboss startup install on
+                                  Linux; macOS needs no sudo; Windows needs
                                   an elevated shell)
     startup uninstall             Remove the boot startup service
                                   (alias: startup remove)

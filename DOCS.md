@@ -253,10 +253,17 @@ Output:
 📊 Prometheus metrics at http://localhost:9616/metrics
 ```
 
-### Save and auto-resurrect on reboot
+### Survive a reboot (default on)
 
 ```
-pboss save
+pboss start server.ts
+```
+
+That is the whole setup. The process list is saved automatically to `~/.pboss/dump.json` after **every** change (start, stop, restart, delete, scale), and the boot service — installed automatically by the one-line installer at install time — starts the daemon at boot and resurrects the list: running processes come back running, stopped ones come back stopped, deleted ones don't come back.
+
+If the boot service could not be installed automatically (user-level install without root, or a host without systemd), one command enables it:
+
+```
 sudo env PATH="$PATH" pboss startup install
 ```
 
@@ -1144,6 +1151,8 @@ pboss startup
 #   generate [os]  Print the service config without installing
 ```
 
+The boot service is normally installed **automatically** — the one-line installer does it as its final step, and global npm installs attempt it (printing the exact manual command when privileges are missing). These commands are for the cases the automation could not cover: a user-level install without root, a host without systemd at install time, or re-enabling after an uninstall.
+
 #### pboss startup install
 
 Install the boot startup service:
@@ -1189,29 +1198,37 @@ On Windows, `schtasks /delete` reporting "cannot find" is surfaced honestly ("No
 
 #### pboss save
 
-Save the current process list so it can be restored on daemon startup.
+Save the current process list to `~/.pboss/dump.json`:
 
 ```
 pboss save
 ```
 
+This is now a manual re-save of an **automatic** mechanism — the list is persisted after every change (start, stop, restart, reload, delete, scale), so the dump always mirrors the live process list. You only need `pboss save` if you edited `dump.json` by hand or want to be extra sure.
+
+The dump records whether each process was stopped. `pboss stop` means "keep it configured, but it should not run" — after a reboot it comes back in the stopped state, ready to `pboss restart <name>`. `pboss delete` removes the process from the list entirely — it never comes back. `pboss kill` (stopping the daemon itself) deliberately leaves the dump untouched, so the next boot (or `systemctl start pboss`) resurrects everything as it was.
+
 #### pboss resurrect
 
-Restore previously saved processes.
+Restore previously saved processes:
 
 ```
 pboss resurrect
 ```
 
-Recommended boot setup:
+Running processes are kept as-is (no duplicates); saved-stopped processes are restored stopped; everything else is started. The systemd unit's `ExecStartPost` runs this automatically after every daemon start, including systemd-triggered restarts — a crashed daemon comes back and takes its process list with it.
+
+#### What a reboot looks like
 
 ```
+# once, at install time (the one-line installer does all of this):
+curl -fsSL https://procboss.com/install.sh | sudo bash
+
+# then just use pboss — every change is already persisted:
 pboss start ecosystem.config.json
-pboss save
-sudo env PATH="$PATH" pboss startup install
 ```
 
-On reboot, systemd, launchd, or Task Scheduler starts the ProcBoss daemon, and the daemon automatically runs resurrect to restore your processes.
+On reboot (or `systemctl start pboss` after a stop), the OS service starts the ProcBoss daemon, immediately resurrects the saved process list, and supervises it from there.
 
 ---
 

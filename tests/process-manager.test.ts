@@ -4,6 +4,13 @@ import { existsSync } from "fs"; // Import existsSync from 'fs' instead
 import { join } from "path";
 import { tmpdir } from "os";
 
+// Isolate PBOSS_HOME BEFORE any src module is imported (constants.ts reads it
+// at import time). The process list is auto-saved after every mutation now,
+// so every pm.start()/stop() in these tests writes a dump — without this the
+// suite would clobber the developer's real ~/.pboss/dump.json.
+const TEST_HOME = join(tmpdir(), `pboss-test-pm-home-${process.pid}-${Date.now()}`);
+process.env.PBOSS_HOME = TEST_HOME;
+
 const TEST_DIR = join(tmpdir(), `pboss-test-pm-${Date.now()}`);
 const PROCESS_LIST_FILE = join(TEST_DIR, "processes.json");
 
@@ -29,6 +36,7 @@ beforeEach(async () => {
 
 afterEach(async () => {
   await rm(TEST_DIR, { recursive: true, force: true });
+  await rm(TEST_HOME, { recursive: true, force: true });
 });
 
 function createProcess(overrides: Partial<ProcessEntry> = {}): ProcessEntry {
@@ -270,12 +278,15 @@ describe("ProcessManager save() and resurrect() Full Configuration Round-Trip", 
     expect(dumpData).toHaveLength(1);
     expect(dumpData[0].restartCount).toBe(7);
     expect(dumpData[0].unstableRestarts).toBe(2);
+    expect(dumpData[0].stopped).toBe(false); // online at save time
 
-    // Stop and clear all processes to simulate daemon restart
-    await pm.deleteAll();
-    expect(pm.list()).toHaveLength(0);
+    // Simulate a daemon restart: stop the processes WITHOUT touching the
+    // dump — exactly what the daemon's kill path does (the dump keeps
+    // describing what SHOULD run so the next boot resurrects it). A
+    // persisted deleteAll here would empty the dump and resurrect nothing.
+    await pm.stopAll({ persist: false });
 
-    // Resurrect in a new ProcessManager instance
+    // Resurrect in a new ProcessManager instance (fresh daemon memory)
     const newPm = new ProcessManager();
     const resurrected = await newPm.resurrect();
 

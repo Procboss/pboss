@@ -30,7 +30,7 @@ ProcBoss (pboss) is free and open-source software built for the developer commun
 - **Log management** — automatic capture, size-based rotation, retention, and optional gzip compression.
 - **Health checks, cron restarts, file watching** — keep processes healthy and self-healing.
 - **Standalone cron jobs** — schedule any command with friendly syntax (`pboss cron run everyday@9:11 "bun backup.ts"`, `every-second` to `on-date@24-10-2026-23:10`), no managed process required; persists across reboots.
-- **Persistence** — `pboss save` + `pboss startup install` keeps your apps alive across daemon restarts and system reboots.
+- **Persistence (default on)** — the process list is saved automatically after every change, and the boot service (systemd / launchd / Task Scheduler) is installed automatically at install time — your apps survive daemon restarts and system reboots out of the box.
 - **Remote deployment** — SSH-based deploys with release directories, symlink rotation, and pre/post hooks.
 - **Tiny footprint** — a single machine-level daemon that starts in under 50ms and uses only ~12MB of RAM.
 
@@ -59,6 +59,8 @@ curl -fsSL https://procboss.com/install.cmd | cmd
 
 The installers check for the required privileges themselves and tell you exactly how to re-run them if `sudo` / Administrator rights are missing.
 
+The installer's final step enables **boot persistence automatically**: it installs the OS service, starts the daemon, and from then on every process you manage is saved after each change and resurrected at every reboot. Hosts without systemd (containers, minimal VMs) get a note instead of an error — run `sudo pboss startup install` there later if needed.
+
 ### Bun Global Install
 
 If you already use Bun, install pboss **system-wide** — `pboss startup install` needs sudo on Linux, and sudo's PATH does not include per-user directories like `~/.bun/bin` (that's why plain `sudo pboss` says "command not found"):
@@ -77,7 +79,7 @@ Update later with `sudo BUN_INSTALL=/usr/local bun update -g pboss`.
 
 Both `BUN_INSTALL=/usr/local` flags are load-bearing: the global `pboss` shim is a symlink whose target starts with `#!/usr/bin/env bun`, so `sudo pboss` must find the shim **and** bun itself on root's PATH. The variable puts bun in `/usr/local/bin` (installer line) and the shim in `$BUN_INSTALL/bin` (add/update lines); without it, everything sits in `~/.bun/bin`, invisible to sudo.
 
-A user-local install (`bun add -g pboss` without sudo) works too — whenever a command needs root, keep your PATH visible to sudo: `sudo env PATH="$PATH" pboss startup install`.
+A user-local install (`bun add -g pboss` without sudo) works too — the boot service cannot be installed without root, so pboss prints the one command to enable it; whenever a command needs root, keep your PATH visible to sudo: `sudo env PATH="$PATH" pboss startup install`.
 
 On Windows, elevated shells keep your user PATH, so a regular `bun add -g pboss` is fine — just open the shell as Administrator for `pboss startup install`.
 
@@ -140,15 +142,15 @@ pboss dashboard
 📊 Prometheus metrics at http://localhost:9616/metrics
 ```
 
-Save and auto-resurrect on reboot:
+Survive a reboot — nothing to do, it's the default:
 
 ```bash
-pboss save
-sudo env PATH="$PATH" pboss startup install   # Linux: install the systemd boot service
-pboss startup install                     # macOS: LaunchAgent (no sudo needed)
+pboss start server.ts            # saved automatically
+sudo env PATH="$PATH" pboss startup install   # only if the boot service could not be
+                                               # installed automatically (Linux)
 ```
 
-`pboss startup` with no option does not install — it prints the list of options (`install` / `uninstall` / `generate [os]`).
+The process list is saved to `~/.pboss/dump.json` after **every** change (start, stop, restart, delete, scale), and the boot service resurrects it at boot. Processes that were running come back running; processes you stopped come back stopped; deleted processes don't come back. `pboss startup` with no option does not install — it prints the list of options (`install` / `uninstall` / `generate [os]`).
 
 `pboss startup install` always returns: the systemd start is submitted with `--no-block` and verified against a hard deadline (unit state + a ping on the daemon's socket); an unhealthy unit prints the state, the socket probe result, and the recent journal output instead of hanging.
 

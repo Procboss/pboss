@@ -30,6 +30,8 @@
  import { Monitor } from "./monitor";
  import { GracefulReload } from "./graceful-reload";
  import { parseMemory, DUMP_FILE } from "./utils";
+ import { ignore } from "./error-handling";
+ import { mkdir } from "fs/promises";
  import {
    DEFAULT_KILL_TIMEOUT,
    DEFAULT_MAX_RESTARTS,
@@ -61,19 +63,19 @@ import type { ReadableStreamController } from "bun";
    }
  
   async start(options: StartOptions): Promise<ProcessState[]> {
-        
+
     const resolvedInstances = this.clusterManager.resolveInstances(options.instances);
     const isCluster = options.execMode === "cluster" || resolvedInstances > 1;
     const states: ProcessState[] = [];
-    
-    options.script = path.isAbsolute(options.script) 
+
+    options.script = path.isAbsolute(options.script)
       ? options.script
       : path.join(options.cwd || process.cwd(), options.script);
-    
-    
+
+
     if (!(await Bun.file(options.script).exists())) {
       throw new Error(`Script not found: ${options.script}`);
-    } 
+    }
 
     const existing = this.findExistingProcesses(options, options.script);
     if (existing.length > 0) {
@@ -119,6 +121,7 @@ import type { ReadableStreamController } from "bun";
         }
       }
 
+      await this.persist();
       return states;
     }
 
@@ -167,10 +170,69 @@ import type { ReadableStreamController } from "bun";
       states.push(container.getState());
     }
 
+    await this.persist();
     return states;
   }
- 
-   private buildConfig(
+
+  async stop(target: string | number): Promise<ProcessState[]> {
+    const containers = this.resolveTarget(target);
+    const states: ProcessState[] = [];
+    for (const c of containers) {
+      await c.stop();
+      states.push(c.getState());
+    }
+    await this.persist();
+    return states;
+  }
+
+  async restart(target: string | number): Promise<ProcessState[]> {
+    const containers = this.resolveTarget(target);
+    const states: ProcessState[] = [];
+    for (const c of containers) {
+      await c.restart();
+      states.push(c.getState());
+    }
+    await this.persist();
+    return states;
+  }
+
+  async reload(target: string | number): Promise<ProcessState[]> {
+    const containers = this.resolveTarget(target);
+    // Use graceful reload for zero downtime
+    await this.gracefulReload.reload(containers);
+    await this.persist();
+    return containers.map((c) => c.getState());
+  }
+
+  async del(target: string | number): Promise<ProcessState[]> {
+    const containers = this.resolveTarget(target);
+    const states: ProcessState[] = [];
+    for (const c of containers) {
+      await c.stop(true);
+      states.push(c.getState());
+      this.processes.delete(c.id);
+    }
+    await this.persist();
+    return states;
+  }
+
+    async stopAll(opts: { persist?: boolean } = {}): Promise<ProcessState[]> {
+      const states: ProcessState[] = [];
+      for (const c of this.processes.values()) {
+        await c.stop();
+        states.push(c.getState());
+      }
+      this.healthChecker.stopAll();
+      this.cronManager.cancelAll();
+      // Default: persist (a user's `pboss stop all` marks everything stopped
+      // in the dump). The daemon shutdown path (the `kill` RPC, systemd's
+      // ExecStop) opts OUT: the dump must keep describing what SHOULD run so
+      // the next boot resurrects everything as it was.
+      if (opts.persist !== false) await this.persist();
+      return states;
+    }
+
+  private buildConfig(
      id: number,
      name: string,
      options: StartOptions,
@@ -230,55 +292,6 @@ import type { ReadableStreamController } from "bun";
        treekill: true,
      };
    }
- 
-   async stop(target: string | number): Promise<ProcessState[]> {
-     const containers = this.resolveTarget(target);
-     const states: ProcessState[] = [];
-     for (const c of containers) {
-       await c.stop();
-       states.push(c.getState());
-     }
-     return states;
-   }
- 
-   async restart(target: string | number): Promise<ProcessState[]> {
-     const containers = this.resolveTarget(target);
-     const states: ProcessState[] = [];
-     for (const c of containers) {
-       await c.restart();
-       states.push(c.getState());
-     }
-     return states;
-   }
- 
-   async reload(target: string | number): Promise<ProcessState[]> {
-     const containers = this.resolveTarget(target);
-     // Use graceful reload for zero downtime
-     await this.gracefulReload.reload(containers);
-     return containers.map((c) => c.getState());
-   }
- 
-   async del(target: string | number): Promise<ProcessState[]> {
-     const containers = this.resolveTarget(target);
-     const states: ProcessState[] = [];
-     for (const c of containers) {
-       await c.stop(true);
-       states.push(c.getState());
-       this.processes.delete(c.id);
-     }
-     return states;
-   }
- 
-    async stopAll(): Promise<ProcessState[]> {
-      const states: ProcessState[] = [];
-      for (const c of this.processes.values()) {
-        await c.stop();
-        states.push(c.getState());
-      }
-      this.healthChecker.stopAll();
-      this.cronManager.cancelAll();
-      return states;
-    }
 
     async restartAll(): Promise<ProcessState[]> {
       const states: ProcessState[] = [];
@@ -286,12 +299,14 @@ import type { ReadableStreamController } from "bun";
         await c.restart();
         states.push(c.getState());
       }
+      await this.persist();
       return states;
     }
 
     async reloadAll(): Promise<ProcessState[]> {
       const containers = Array.from(this.processes.values());
       await this.gracefulReload.reload(containers);
+      await this.persist();
       return containers.map((c) => c.getState());
     }
 
@@ -305,6 +320,7 @@ import type { ReadableStreamController } from "bun";
       this.cronManager.cancelAll();
       this.processes.clear();
       this.nextId = 0;
+      await this.persist();
       return states;
     }
  
@@ -346,9 +362,11 @@ import type { ReadableStreamController } from "bun";
          await c.stop(true);
          this.processes.delete(c.id);
        }
+       await this.persist();
        return containers.slice(0, count).map((c) => c.getState());
      }
    
+     await this.persist();
      return containers.map((c) => c.getState());
    }
    
@@ -400,13 +418,47 @@ import type { ReadableStreamController } from "bun";
      }
    }
  
+  /**
+   * Persist the current process list to the dump file (`~/.pboss/dump.json`).
+   *
+   * Entries carry a `stopped` flag so a reboot can tell apart "was running"
+   * (resurrect it running) from "the user stopped it" (resurrect it stopped):
+   * anything whose live status is "stopped" — a user stop or a clean exit —
+   * comes back stopped; anything else (online, errored, launching, …) comes
+   * back running, because it was supposed to be running.
+   */
   async save(): Promise<void> {
     const data = Array.from(this.processes.values()).map((p) => ({
       config: p.config,
       restartCount: p.restartCount,
       unstableRestarts: p.unstableRestarts,
+      stopped: p.status === "stopped",
     }));
+    // The dump must be writable even when the daemon starts before
+    // ensureDirs() has run (a bare ProcessManager in tests, or the first
+    // command of a fresh install) — never let a missing directory fail a save.
+    await mkdir(path.dirname(DUMP_FILE), { recursive: true });
     await Bun.write(DUMP_FILE, JSON.stringify(data, null, 2));
+  }
+
+  /**
+   * Auto-save after every mutation of the process list (start, stop, restart,
+   * reload, delete, scale, reset). This is what makes processes survive
+   * reboots BY DEFAULT: the dump always mirrors the live list, so boot-time
+   * resurrect restores exactly what the user last had.
+   *
+   * Failures are reported, not thrown: a broken dump must never fail the
+   * process command that triggered the save.
+   */
+  private async persist(): Promise<void> {
+    try {
+      await this.save();
+    } catch (err) {
+      ignore("auto-save process list (dump not updated)", err);
+      console.warn(
+        `[pboss] could not persist the process list: ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
   }
 
   async resurrect(): Promise<ProcessState[]> {
@@ -458,8 +510,16 @@ import type { ReadableStreamController } from "bun";
         container.unstableRestarts = item.unstableRestarts ?? 0;
 
         this.processes.set(id, container);
-        await container.start();
-        states.push(container.getState());
+        // Entries saved while stopped (the user stopped them, or they exited
+        // cleanly) are restored as stopped containers — listed, ready to
+        // `pboss restart <name>`, but NOT auto-started. Everything else was
+        // supposed to be running, so start it.
+        if (item.stopped) {
+          states.push(container.getState());
+        } else {
+          await container.start();
+          states.push(container.getState());
+        }
       }
 
       return states;
@@ -475,6 +535,9 @@ import type { ReadableStreamController } from "bun";
        const result = await this.start(app);
        states.push(...result);
      }
+     // this.start() persisted per app; one final write keeps the dump in
+     // lockstep with the full ecosystem (e.g. apps whose start was a no-op).
+     await this.persist();
      return states;
    }
  
@@ -502,6 +565,7 @@ import type { ReadableStreamController } from "bun";
        c.restartCount = 0;
        c.unstableRestarts = 0;
      }
+     await this.persist();
      return containers.map((c) => c.getState());
    }
  

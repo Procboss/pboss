@@ -121,6 +121,28 @@ if ($pathEntries -notcontains $installDir) {
 
 $env:PATH = "$installDir;$env:PATH"
 
+# 6. Boot persistence — installed automatically.
+#    The whole point of pboss: processes survive reboots by default. The
+#    Scheduled Task (PBOSS_Daemon) starts the daemon at THIS user's logon,
+#    and the daemon resurrects the saved process list (auto-saved after every
+#    pboss start/stop/delete). Best-effort: a failure prints the manual
+#    command instead of failing the install.
+Write-Host "Enabling boot persistence..." -ForegroundColor Cyan
+try {
+    # USERNAME identifies the invoking user even in the elevated session, so
+    # the task fires at THEIR logon, running under their profile.
+    & "$installDir\pboss.exe" startup install
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host "✓ Boot persistence enabled — pboss starts at logon and resurrects saved processes." -ForegroundColor Green
+    } else {
+        Write-Host "⚠ Boot persistence could not be configured automatically (exit $LASTEXITCODE)." -ForegroundColor Yellow
+        Write-Host "  Run it yourself from an elevated shell:  pboss startup install" -ForegroundColor Cyan
+    }
+} catch {
+    Write-Host "⚠ Boot persistence could not be configured automatically." -ForegroundColor Yellow
+    Write-Host "  Run it yourself from an elevated shell:  pboss startup install" -ForegroundColor Cyan
+}
+
 Write-Host ""
 Write-Host "✓ ProcBoss (pboss) successfully installed to $installDir\pboss.exe!" -ForegroundColor Green
 Write-Host "Open a NEW terminal (so the PATH refreshes) and run 'pboss --version' to verify." -ForegroundColor Cyan

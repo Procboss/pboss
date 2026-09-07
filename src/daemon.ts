@@ -427,7 +427,13 @@ export default class Daemon {
           };
         }
         case "kill": {
-          await pm.stopAll();
+          // persist:false is load-bearing: `pboss kill` (and the systemd
+          // unit's ExecStop) stops the daemon AND its processes, but the dump
+          // must keep describing what was SUPPOSED to run — the next boot (or
+          // `systemctl start pboss`) resurrects everything from it. A
+          // persisted stop here would resurrect the whole machine as
+          // "stopped" after every reboot.
+          await pm.stopAll({ persist: false });
           dashboard.stop();
           this.cronJobManager!.stop();
           if (this.cloudAgent) await this.cloudAgent.stop({ revoke: false, quiet: true });

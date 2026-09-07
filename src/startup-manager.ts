@@ -303,7 +303,15 @@ ${programArgs}
 ${plist}`;
   }
 
-  async install(): Promise<string> {
+  /**
+   * Install the boot startup service (systemd unit / launchd agent / Windows
+   * scheduled task) and bring it up.
+   *
+   * @param opts.verifyTimeoutMs hard deadline for the post-install health
+   *   verification (Linux). Default 30s; the npm postinstall hook passes a
+   *   shorter one so a failing unit cannot stretch a package install.
+   */
+  async install(opts: { verifyTimeoutMs?: number } = {}): Promise<string> {
     const os = process.platform;
     const content = await this.generate(os);
 
@@ -335,6 +343,7 @@ ${plist}`;
         servicePath,
         targetUser: target.user,
         targetHome: target.home,
+        verifyTimeoutMs: opts.verifyTimeoutMs,
       });
     } else if (os === "darwin") {
       // LaunchAgents are per-user and need no root.

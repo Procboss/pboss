@@ -136,6 +136,30 @@ if [[ ":$PATH:" != *":$INSTALL_DIR:"* ]]; then
   echo -e "${YELLOW}Note: ${INSTALL_DIR} is not on the current PATH. Add it to your shell profile if 'pboss' is not found.${RESET}"
 fi
 
+# 7. Boot persistence — installed automatically.
+#    The whole point of pboss: processes survive reboots by default. The boot
+#    service (systemd unit / launchd agent) makes the daemon start at boot,
+#    and the daemon resurrects the saved process list (auto-saved after every
+#    pboss start/stop/delete). SUDO_USER is honored, so a
+#    `curl | sudo bash` install targets the invoking user's ~/.pboss, not
+#    root's. Best-effort: hosts without systemd (containers, WSL1) get a note
+#    instead of an error.
+echo -e "${CYAN}Enabling boot persistence...${RESET}"
+if [ "$(uname -s)" = "Linux" ] && { ! command -v systemctl >/dev/null 2>&1 || [ ! -d /run/systemd/system ]; }; then
+  echo -e "${YELLOW}⚠ systemd is not running on this host — skipping the boot service.${RESET}"
+  echo -e "  (Containers and minimal VMs usually have no systemd. On a systemd host, run:)"
+  echo -e "  ${CYAN}sudo ${INSTALL_DIR}/pboss startup install${RESET}"
+else
+  # SUDO_USER must survive into pboss: the service generator resolves the
+  # invoking user from it (User= and PBOSS_HOME=), so keep the env explicit.
+  if SUDO_USER="${SUDO_USER:-}" "$INSTALL_DIR/pboss" startup install; then
+    echo -e "${GREEN}✓ Boot persistence enabled — pboss starts at boot and resurrects saved processes.${RESET}"
+  else
+    echo -e "${YELLOW}⚠ Boot persistence could not be configured automatically.${RESET}"
+    echo -e "  Run it yourself:  ${CYAN}sudo env PATH="$PATH" pboss startup install${RESET}"
+  fi
+fi
+
 echo -e "${GREEN}${BOLD}"
 echo "✓ ProcBoss (pboss) successfully installed to ${INSTALL_DIR}/pboss!"
 echo -e "${RESET}"
