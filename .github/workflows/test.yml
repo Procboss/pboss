@@ -15,9 +15,10 @@ jobs:
     runs-on: ubuntu-latest
     
     steps:
-      # Checkout your repository
+      # Checkout your repository (v5: node24 runtime — v4 triggers the
+      # "Node.js 20 is deprecated" runner warning)
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       # Setup Bun
       - name: Setup Bun
