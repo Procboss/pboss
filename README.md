@@ -24,6 +24,7 @@ ProcBoss (pboss) is free and open-source software built for the developer commun
 
 - **Universal runtime support** — auto-detection for Node.js, Bun, Go, Python, Rust, Ruby, PHP, Java JARs, shell scripts, and compiled binaries.
 - **Cluster mode** — multiple instances with per-worker env injection, automatic port assignment, and zero-downtime rolling reloads.
+- **Namespaces** — group related processes (`--namespace my-app`) and operate on the whole group: `pboss restart my-app`, `pboss stop my-app`, `pboss start my-app`, `pboss delete my-app` (confirmed; `--force` skips). Unknown targets are clear errors, and group operations say what they touched.
 - **Foreground mode** — `--no-daemon` blocks as PID 1, purpose-built for Docker, Kubernetes, and containers.
 - **Web dashboard** — self-contained, live WebSocket updates, CPU/memory charts, process controls, and a log viewer. No external dependencies.
 - **Prometheus metrics** — dedicated `/metrics` endpoint, ready for scraping and Grafana dashboards.
@@ -112,6 +113,16 @@ Start with a name, 4 instances, and a base port:
 
 ```bash
 pboss start app.ts --name my-api --instances 4 --port 3000
+```
+
+Group processes into a namespace and manage them as one unit:
+
+```bash
+pboss start web.ts --name web --namespace my-app
+pboss start worker.ts --name worker --namespace my-app
+pboss restart my-app     # the whole group at once
+pboss stop my-app
+pboss start my-app       # resume every stopped member
 ```
 
 List all processes:

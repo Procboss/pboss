@@ -350,6 +350,13 @@ Start a new process or processes.
 pboss start server.ts
 ```
 
+`pboss start <name|namespace>` (when the positional is not an existing script or config file) **resumes** processes that already exist: every stopped member of the group comes back online, online ones are untouched, nothing new is created.
+
+```
+pboss start stellarforge   # resume every stopped process in the namespace
+pboss start api            # resume one stopped process by name
+```
+
 ```
 pboss start server.ts --name api -- --port 8080 --host 0.0.0.0
 ```
@@ -430,6 +437,8 @@ pboss stop my-namespace
 pboss stop all
 ```
 
+When the target is a **namespace**, every process in that namespace stops (and only those), with a one-line summary naming the group. Operating on an unknown name or namespace is a clear error — `Process or namespace "x" not found — nothing to stop` — instead of a silent empty table; `all` on an empty list stays a no-op.
+
 ---
 
 #### pboss restart
@@ -438,8 +447,11 @@ Stop and restart a process. The process is fully stopped and then re-spawned.
 
 ```
 pboss restart my-api
+pboss restart my-namespace
 pboss restart all
 ```
+
+A namespace target restarts every member of the group — including members that were stopped (restart on a stopped process starts it).
 
 ---
 
@@ -449,6 +461,7 @@ Graceful zero-downtime reload. New instances start before old ones are killed, e
 
 ```
 pboss reload my-api
+pboss reload my-namespace
 pboss reload all
 ```
 
@@ -463,8 +476,37 @@ Stop and remove a process from ProcBoss's management.
 ```
 pboss delete 0
 pboss delete my-api
+pboss delete my-namespace
+pboss delete my-namespace --force
 pboss delete all
 ```
+
+Deleting a **namespace** removes every process in the group. Because that can take several processes at once, pboss asks for confirmation first — `[y/N]` in a terminal, and a hard refusal with a `--force` hint when stdin is not a TTY (scripts, CI, pipes). Name and cluster deletes keep their old unconfirmed behavior, as does `delete all`.
+
+---
+
+#### Namespaces — group-level lifecycle
+
+A namespace is a first-class grouping mechanism, not just metadata. Assign one at start (`--namespace stellarforge` or the `namespace` field in an ecosystem file), and every lifecycle verb accepts it as a target:
+
+```
+pboss start ./web.ts      --name web    --namespace stellarforge
+pboss start ./collab.ts   --name collab --namespace stellarforge
+pboss start ./lsp.ts      --name lsp    --namespace stellarforge
+pboss start ./worker.ts   --name worker --namespace stellarforge
+
+pboss restart stellarforge   # the whole group, in one command
+pboss stop stellarforge
+pboss start stellarforge     # resume every stopped member (online ones untouched)
+pboss delete stellarforge    # confirmed, or --force
+```
+
+Resolution rules:
+
+- A target that matches a **process name** (or its cluster instances, `name-0`, `name-1`, …) always wins — existing per-process commands behave exactly as before, even if a namespace shares the name.
+- Otherwise the target operates on every process in the **namespace**.
+- Unknown targets are clear errors: `Process or namespace "x" not found — nothing to <verb>`. Run `pboss list` to see registered names and namespaces (the table has a namespace column).
+- Group operations report what they touched — `✓ Stopped 4 processes in namespace "stellarforge"` — above the usual process table, and the auto-saved dump follows immediately, so the group state survives reboots by default.
 
 ---
 
@@ -1875,6 +1917,17 @@ const procs = await start({
   maxMemoryRestart: "256M",
 });
 console.log(`Started ${procs.length} instances`);
+```
+
+#### `startTarget(target: string | number): Promise<ProcessState[]>`
+
+Start (resume) processes that **already exist**, by id, name, or namespace — the group-level counterpart of `start`. Every matched process that is not running comes back online; online ones are untouched; nothing is created from a script. Throws a clear error when nothing matches the target (except `"all"`).
+
+```ts
+import { startTarget } from "pboss";
+
+await startTarget("stellarforge"); // every stopped member of the namespace
+await startTarget("api");          // one process, by name
 ```
 
 #### `startEcosystem(config: EcosystemConfig): Promise<ProcessState[]>`

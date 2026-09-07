@@ -16,6 +16,7 @@
  */
 
 import path, { resolve, extname } from "path";
+import readline from "node:readline";
 import {
   APP_NAME,
   VERSION,
@@ -290,6 +291,40 @@ class PBossCLI {
           await new Promise(() => {});
         }
       } else {
+        // Issue #27: `pboss start <namespace>` (or an existing process name
+        // / id) resumes processes that already exist. The reroute fires ONLY
+        // when the positional is not an existing file — a real script
+        // always wins, so `pboss start ./index.ts` behaves exactly as
+        // before.
+        const scriptAbs = resolve(firstPositional);
+        if (!(await Bun.file(scriptAbs).exists())) {
+          try {
+            const states = await this.pboss.startTarget(firstPositional);
+            this.printNamespaceSummary("Started", states, firstPositional);
+            printProcessTable(states);
+
+            if (this.noDaemon) {
+              // Same contract as a script start under --no-daemon: the
+              // workers live in THIS process, so it must not exit.
+              await new Promise(() => {});
+            }
+            return;
+          } catch (err: any) {
+            const msg: string = err?.message ?? "";
+            if (!msg.includes("not found")) throw err; // daemon/transport errors keep their honest message
+            // Neither a script nor a registered process/namespace. Report
+            // BOTH misses — a bare script-not-found would hide the resume
+            // feature from exactly the user who needs the hint.
+            console.error(
+              colorize(
+                `Error: no script at ${scriptAbs} and no process or namespace named "${firstPositional}" is registered (run 'pboss list' to see them).`,
+                "red"
+              )
+            );
+            process.exit(1);
+          }
+        }
+
         const opts = this.parseStartFlags(args);
         if (!opts.script) {
           console.error(colorize("Error: no script specified", "red"));
@@ -343,6 +378,7 @@ class PBossCLI {
     const target = args[0] || "all";
     try {
       const states = await this.pboss.stop(target);
+      this.printNamespaceSummary("Stopped", states, target);
       printProcessTable(states);
     } catch (err: any) {
       console.error(colorize(`Error: ${err.message}`, "red"));
@@ -354,6 +390,7 @@ class PBossCLI {
     const target = args[0] || "all";
     try {
       const states = await this.pboss.restart(target);
+      this.printNamespaceSummary("Restarted", states, target);
       printProcessTable(states);
     } catch (err: any) {
       console.error(colorize(`Error: ${err.message}`, "red"));
@@ -365,6 +402,7 @@ class PBossCLI {
     const target = args[0] || "all";
     try {
       const states = await this.pboss.reload(target);
+      this.printNamespaceSummary("Reloaded", states, target);
       printProcessTable(states);
     } catch (err: any) {
       console.error(colorize(`Error: ${err.message}`, "red"));
@@ -374,14 +412,91 @@ class PBossCLI {
 
   async cmdDelete(args: string[]) {
     const target = args[0] || "all";
+    const force = args.some((a) => ["--force", "-f", "--yes", "-y"].includes(a));
     try {
+      // Issue #27 safety: deleting a whole NAMESPACE can remove many
+      // processes at once, so preview first and confirm when the target
+      // resolves as a namespace group. Name/cluster deletes keep their old
+      // unconfirmed behavior — a process name is the unit users expect to
+      // control precisely; a namespace is a group they may only half-remember.
+      if (target !== "all" && !force) {
+        const existing = await this.pboss.describe(target);
+        if (this.isNamespaceGroup(existing, target) && existing.length > 1) {
+          const names = existing.map((s) => s.name).join(", ");
+          const ok = await this.confirm(
+            `Delete ${existing.length} processes in namespace "${target}" (${names})?`
+          );
+          if (!ok) {
+            console.log(colorize("Aborted — nothing was deleted.", "yellow"));
+            process.exit(1);
+          }
+        }
+      }
       const states = await this.pboss.delete(target);
+      this.printNamespaceSummary("Deleted", states, target);
       console.log(colorize("✓ Deleted", "green"));
       printProcessTable(states);
     } catch (err: any) {
       console.error(colorize(`Error: ${err.message}`, "red"));
       process.exit(1);
     }
+  }
+
+  /**
+   * True when `states` is exactly a namespace group: every process belongs
+   * to the target namespace AND the target is not itself a process name
+   * (name/cluster targets keep their per-process semantics — a process
+   * named "api" wins over a namespace also called "api", which is the
+   * backward-compatible reading of the old resolver).
+   */
+  private isNamespaceGroup(states: ProcessState[], target: string): boolean {
+    if (target === "all" || states.length === 0) return false;
+    const nameMatch = states.some(
+      (s) => s.name === target || s.name.startsWith(`${target}-`)
+    );
+    const nsMatch = states.every((s) => (s.namespace || "default") === target);
+    return nsMatch && !nameMatch;
+  }
+
+  /**
+   * Issue #27: namespace-level operations should SAY what they touched —
+   * one green line naming the group and its size, above the process table.
+   */
+  private printNamespaceSummary(verb: string, states: ProcessState[], target: string) {
+    if (!this.isNamespaceGroup(states, target)) return;
+    console.log(
+      colorize(
+        `✓ ${verb} ${states.length} process${states.length > 1 ? "es" : ""} in namespace "${target}"`,
+        "green"
+      )
+    );
+  }
+
+  /**
+   * Interactive [y/N] prompt. Non-TTY stdin (scripts, CI, pipes) can never
+   * answer — that counts as "no", with a hint that --force exists so
+   * scripted namespace deletes stay possible without a pty.
+   */
+  private async confirm(question: string): Promise<boolean> {
+    if (!process.stdin.isTTY) {
+      console.error(
+        colorize(
+          "Refusing without a terminal — re-run with --force to skip this confirmation.",
+          "yellow"
+        )
+      );
+      return false;
+    }
+    return new Promise<boolean>((resolvePromise) => {
+      const rl = readline.createInterface({
+        input: process.stdin,
+        output: process.stdout,
+      });
+      rl.question(`${question} [y/N] `, (answer) => {
+        rl.close();
+        resolvePromise(/^(y|yes)$/i.test(answer.trim()));
+      });
+    });
   }
 
   async cmdList(args: string[]) {
@@ -1316,11 +1431,15 @@ ${colorize("Notes:", "dim")}
     ${colorize("Usage:", "bold")} pboss <command> [options]
     
     ${colorize("Process Management:", "cyan")}
-    start <script|config> [opts]  Start a process or ecosystem config
-    stop [id|name|all]            Stop process(es)
-    restart [id|name|all]         Restart process(es)
-    reload [id|name|all]          Graceful zero-downtime reload
-    delete [id|name|all]          Stop and remove process(es)
+    start <script|config|ns> [opts]  Start a process, an ecosystem config,
+                                  or resume a stopped name/namespace
+    stop [id|name|namespace|all]  Stop process(es) — a namespace stops
+                                  its whole group
+    restart [id|name|namespace|all]  Restart process(es) or a namespace
+    reload [id|name|namespace|all]  Graceful zero-downtime reload
+    delete [id|name|namespace|all]  Stop and remove process(es) or a
+                                  whole namespace (--force skips the
+                                  namespace confirmation)
     scale <id|name> <count>       Scale to N instances
     list | ls | status            List all processes
     describe <id|name>            Show detailed process info
@@ -1429,6 +1548,10 @@ ${colorize("Notes:", "dim")}
     pboss cron run everyday@2:00 "bun /srv/backup.ts"
     pboss cron run every-sunday@10:10 "sh cleanup.sh" --name cleanup
     pboss restart api
+    pboss restart stellarforge        (whole namespace)
+    pboss stop stellarforge
+    pboss start stellarforge          (resume stopped namespace)
+    pboss delete stellarforge --force
     pboss scale api 8
     pboss logs api --lines 100
     pboss monit

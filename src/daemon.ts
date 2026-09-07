@@ -260,6 +260,12 @@ export default class Daemon {
           const states = await pm.start(msg.data);
           return { type: "start", data: states, success: true, id: msg.id };
         }
+        case "startTarget": {
+          // Resume existing processes by id/name/namespace (issue #27) —
+          // distinct from "start", which creates a process from a script.
+          const states = await pm.startTarget(msg.data.target);
+          return { type: "startTarget", data: states, success: true, id: msg.id };
+        }
         case "stop": {
           const states = await pm.stop(msg.data.target);
           return { type: "stop", data: states, success: true, id: msg.id };

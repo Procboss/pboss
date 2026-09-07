@@ -175,7 +175,7 @@ import type { ReadableStreamController } from "bun";
   }
 
   async stop(target: string | number): Promise<ProcessState[]> {
-    const containers = this.resolveTarget(target);
+    const containers = this.resolveTargetOrThrow(target, "stop");
     const states: ProcessState[] = [];
     for (const c of containers) {
       await c.stop();
@@ -186,7 +186,7 @@ import type { ReadableStreamController } from "bun";
   }
 
   async restart(target: string | number): Promise<ProcessState[]> {
-    const containers = this.resolveTarget(target);
+    const containers = this.resolveTargetOrThrow(target, "restart");
     const states: ProcessState[] = [];
     for (const c of containers) {
       await c.restart();
@@ -197,7 +197,7 @@ import type { ReadableStreamController } from "bun";
   }
 
   async reload(target: string | number): Promise<ProcessState[]> {
-    const containers = this.resolveTarget(target);
+    const containers = this.resolveTargetOrThrow(target, "reload");
     // Use graceful reload for zero downtime
     await this.gracefulReload.reload(containers);
     await this.persist();
@@ -205,7 +205,7 @@ import type { ReadableStreamController } from "bun";
   }
 
   async del(target: string | number): Promise<ProcessState[]> {
-    const containers = this.resolveTarget(target);
+    const containers = this.resolveTargetOrThrow(target, "delete");
     const states: ProcessState[] = [];
     for (const c of containers) {
       await c.stop(true);
@@ -569,6 +569,53 @@ import type { ReadableStreamController } from "bun";
      return containers.map((c) => c.getState());
    }
  
+   /**
+    * The issue-#27 lifecycle entry point: start (resume) processes that
+    * ALREADY exist in the list — by id, name, cluster prefix, or namespace.
+    *
+    * Every matched process that is not already running is started; online
+    * ones are left untouched (no restart bump, same pid). New processes are
+    * never created here — creating stays `start(options)` with a script.
+    * The dump is re-saved so a stopped namespace resumed here survives the
+    * next reboot as running (the Task-37 default-persistence contract).
+    */
+   async startTarget(target: string | number): Promise<ProcessState[]> {
+     const containers = this.resolveTargetOrThrow(target, "start");
+     const states: ProcessState[] = [];
+     for (const c of containers) {
+       if (
+         c.status !== "online" &&
+         c.status !== "launching" &&
+         c.status !== "waiting-restart"
+       ) {
+         // Same resume semantics as the existing-process branch of
+         // start(): a fresh attempt clears the unstable-restart debt.
+         c.unstableRestarts = 0;
+         await c.start();
+       }
+       states.push(c.getState());
+     }
+     await this.persist();
+     return states;
+   }
+
+   /**
+    * resolveTarget with the not-found contract the CLI needs: operating on
+    * an unknown name or namespace must be a CLEAR error, not a silent empty
+    * table that reads as success. "all" is exempt — an empty fleet is a
+    * legitimate no-op there, not a mistake to report.
+    */
+   private resolveTargetOrThrow(target: string | number, verb: string): ProcessContainer[] {
+     const containers = this.resolveTarget(target);
+     if (target !== "all" && containers.length === 0) {
+       throw new Error(
+         `Process or namespace "${target}" not found — nothing to ${verb}. ` +
+           `Run 'pboss list' to see registered names and namespaces.`
+       );
+     }
+     return containers;
+   }
+
    private resolveTarget(target: string | number): ProcessContainer[] {
      
      if (target === "all") {

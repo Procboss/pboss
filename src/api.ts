@@ -355,6 +355,27 @@ export class PBoss extends EventEmitter<PBossEvents> {
   }
 
   /**
+   * Start (resume) processes that already exist, by id, name, or
+   * **namespace** — the issue-#27 group operation.
+   *
+   * ```ts
+   * await pboss.startTarget("stellarforge"); // every process in the namespace
+   * ```
+   *
+   * Existing processes only — nothing is created from a script here.
+   * Throws when nothing matches `target` (a clear error, not a silent
+   * no-op).
+   */
+  async startTarget(target: string | number): Promise<ProcessState[]> {
+    const res = await this.sendOrThrow({
+      type: "startTarget",
+      data: { target: String(target) },
+    });
+    this.emit("process:start", res.data);
+    return res.data;
+  }
+
+  /**
    * Start an ecosystem configuration object.
    *
    * ```ts
@@ -381,6 +402,7 @@ export class PBoss extends EventEmitter<PBossEvents> {
   /**
    * Stop one or more processes.
    * @param target Process id, name, namespace, or `"all"`.
+   *   Throws a clear error when nothing matches (except `"all"`).
    */
   async stop(target: string | number = "all"): Promise<ProcessState[]> {
     const type = target === "all" ? "stopAll" : "stop";
@@ -391,7 +413,9 @@ export class PBoss extends EventEmitter<PBossEvents> {
   }
 
   /**
-   * Restart one or more processes (hard restart).
+   * Restart one or more processes (hard restart) — a namespace target
+   * restarts the whole group. Throws a clear error when nothing matches
+   * (except `"all"`).
    */
   async restart(target: string | number = "all"): Promise<ProcessState[]> {
     const type = target === "all" ? "restartAll" : "restart";
@@ -402,7 +426,8 @@ export class PBoss extends EventEmitter<PBossEvents> {
   }
 
   /**
-   * Graceful zero-downtime reload.
+   * Graceful zero-downtime reload. Throws a clear error when nothing
+   * matches (except `"all"`).
    */
   async reload(target: string | number = "all"): Promise<ProcessState[]> {
     const type = target === "all" ? "reloadAll" : "reload";
@@ -413,7 +438,9 @@ export class PBoss extends EventEmitter<PBossEvents> {
   }
 
   /**
-   * Stop and remove one or more processes from pboss's list.
+   * Stop and remove one or more processes from pboss's list — a namespace
+   * target deletes the whole group (the CLI confirms first; --force
+   * skips). Throws a clear error when nothing matches (except `"all"`).
    */
   async delete(target: string | number = "all"): Promise<ProcessState[]> {
     const type = target === "all" ? "deleteAll" : "delete";
@@ -1166,7 +1193,8 @@ export class PBoss extends EventEmitter<PBossEvents> {
   }
 
   /**
-   * Graceful zero-downtime reload.
+   * Graceful zero-downtime reload. Throws a clear error when nothing
+   * matches (except `"all"`).
    */
   static async reload(target: string | number = "all"): Promise<ProcessState[]> {
     return PBoss.getDefaultInstance().reload(target);
