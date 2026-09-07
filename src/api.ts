@@ -226,8 +226,8 @@ export async function waitForDaemon(timeoutMs: number): Promise<boolean> {
 }
 
 /**
- * Ask a running daemon to shut down — used by `pboss startup` before the
- * systemd unit takes over, so a leftover detached daemon (spawned by an
+ * Ask a running daemon to shut down — used by `pboss startup install` before
+ * the systemd unit takes over, so a leftover detached daemon (spawned by an
  * earlier CLI command) cannot hold the socket the unit needs. Never
  * spawns. Returns true if a daemon was found and asked to stop.
  */

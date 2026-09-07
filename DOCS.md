@@ -160,7 +160,7 @@ The installers check for the required privileges themselves and tell you exactly
 
 ### Bun Global Install
 
-If you already use Bun, install pboss **system-wide** — `pboss startup` needs sudo on Linux, and sudo's PATH does not include per-user directories like `~/.bun/bin` (that's why plain `sudo pboss` says "command not found"):
+If you already use Bun, install pboss **system-wide** — `pboss startup install` needs sudo on Linux, and sudo's PATH does not include per-user directories like `~/.bun/bin` (that's why plain `sudo pboss` says "command not found"):
 
 ```bash
 sudo BUN_INSTALL=/usr/local bun add -g pboss
@@ -176,9 +176,9 @@ Update later with `sudo BUN_INSTALL=/usr/local bun update -g pboss`.
 
 Both `BUN_INSTALL=/usr/local` flags are load-bearing: the global `pboss` shim is a symlink whose target starts with `#!/usr/bin/env bun`, so `sudo pboss` must find the shim **and** bun itself on root's PATH. The variable puts bun in `/usr/local/bin` (installer line) and the shim in `$BUN_INSTALL/bin` (add/update lines); without it, everything sits in `~/.bun/bin`, invisible to sudo.
 
-A user-local install (`bun add -g pboss` without sudo) works too — whenever a command needs root, keep your PATH visible to sudo: `sudo env PATH="$PATH" pboss startup`.
+A user-local install (`bun add -g pboss` without sudo) works too — whenever a command needs root, keep your PATH visible to sudo: `sudo env PATH="$PATH" pboss startup install`.
 
-On Windows, elevated shells keep your user PATH, so a regular `bun add -g pboss` is fine — just open the shell as Administrator for `pboss startup`.
+On Windows, elevated shells keep your user PATH, so a regular `bun add -g pboss` is fine — just open the shell as Administrator for `pboss startup install`.
 
 ---
 
@@ -257,10 +257,10 @@ Output:
 
 ```
 pboss save
-sudo env PATH="$PATH" pboss startup
+sudo env PATH="$PATH" pboss startup install
 ```
 
-(The env form keeps your PATH visible to sudo; on macOS plain `pboss startup` works, and on a compiled one-line install plain `sudo pboss startup` is enough.)
+(The env form keeps your PATH visible to sudo; on macOS plain `pboss startup install` works, and on a compiled one-line install plain `sudo pboss startup install` is enough.)
 
 ---
 
@@ -1134,25 +1134,35 @@ pboss cron run everyday@3 "bun report.ts | mail -s 'daily report' ops@example.co
 
 ### Startup Scripts
 
-#### pboss startup
+`pboss startup` requires an option — bare `pboss startup` prints the list instead of guessing:
 
-Install the boot startup service directly — no `install` subcommand needed:
+```bash
+pboss startup
+# Usage: pboss startup <install | uninstall> [generate [os]]
+#   install      Install the boot startup service
+#   uninstall    Remove the boot startup service (alias: remove)
+#   generate [os]  Print the service config without installing
+```
 
-- **Linux:** writes and enables a `systemd` service (`/etc/systemd/system/pboss.service`). Requires root — when run without sudo, pboss exits with the exact command to re-run, `sudo env PATH="$PATH" pboss startup`. The env form keeps your PATH visible to sudo, so it finds pboss even in per-user locations like `~/.bun/bin` (plain `sudo pboss` cannot see those directories).
-- **macOS:** writes and loads a `launchd` LaunchAgent (`~/Library/LaunchAgents/com.pboss.daemon.plist`). No root needed.
-- **Windows:** registers a Scheduled Task (`PBOSS_Daemon`) that starts the daemon at logon with highest privileges. Requires an elevated shell (Run as Administrator) — pboss checks and tells you when the shell is not elevated.
+#### pboss startup install
+
+Install the boot startup service:
+
+- **Linux:** writes and enables a `systemd` service (`/etc/systemd/system/pboss.service`). Requires root — when run without sudo, pboss exits with the exact command to re-run, `sudo env PATH="$PATH" pboss startup install`. The env form keeps your PATH visible to sudo, so it finds pboss even in per-user locations like `~/.bun/bin` (plain `sudo pboss` cannot see those directories). After starting the unit, pboss verifies it became healthy (is-active + socket probe + recent journal output if not).
+- **macOS:** writes and loads a `launchd` LaunchAgent (`~/Library/LaunchAgents/com.pboss.daemon.plist`). No root needed — and if you do use sudo, pboss targets the `SUDO_USER`'s home, creates their `~/.pboss/logs` (launchd opens the log paths before starting the program), and loads the agent as that user. The plist pins `PATH`, `HOME`, and `PBOSS_HOME` so the daemon resolves the same `~/.pboss` as your interactive commands.
+- **Windows:** registers a Scheduled Task (`PBOSS_Daemon`) that starts the daemon at **this user's logon** with highest privileges. Requires an elevated shell (Run as Administrator) — pboss checks and tells you when the shell is not elevated. Registration goes through PowerShell's `Register-ScheduledTask`, which passes the executable and its arguments as separate values (no `schtasks /tr` nested-quoting to break on paths with spaces).
 
 When installed with sudo on Linux/macOS, the generated service runs as the invoking user (resolved from `SUDO_USER`), not as root — the boot daemon then uses the same `~/.pboss` data as your daily `pboss` commands instead of silently splitting off into `/root/.pboss`.
 
 ```bash
 # Linux (script installs — keeps your PATH visible to sudo)
-sudo env PATH="$PATH" pboss startup
+sudo env PATH="$PATH" pboss startup install
 
 # Linux (compiled one-line install — pboss is already system-wide)
-sudo pboss startup
+sudo pboss startup install
 
 # macOS / Windows (elevated shell)
-pboss startup
+pboss startup install
 ```
 
 The generated file detects how pboss was installed and adapts the daemon command accordingly. On a **compiled standalone install** (one-line installer, `build:bin`) the service re-executes the pboss binary itself (`ExecStart=/usr/local/bin/pboss __daemon`) — the Bun runtime is embedded in the binary and is **not required** on the system. On a **script install** (`bun add -g pboss`, npm) the service runs the source on the system Bun runtime (`ExecStart=/usr/local/bin/bun run .../daemon.ts`). The generated file's header comment states which mode was detected.
@@ -1166,13 +1176,16 @@ pboss startup generate
 pboss startup generate win32   # generate for another OS
 ```
 
-#### pboss startup remove
+#### pboss startup uninstall (alias: pboss startup remove)
 
-Remove the installed startup service (root on Linux — `sudo env PATH="$PATH" pboss startup remove`):
+Remove the installed startup service (root on Linux — `sudo env PATH="$PATH" pboss startup uninstall`):
 
 ```bash
-pboss startup remove
+pboss startup uninstall
+pboss startup remove   # same thing
 ```
+
+On Windows, `schtasks /delete` reporting "cannot find" is surfaced honestly ("No PBOSS_Daemon scheduled task found — nothing to remove") instead of a fake success line.
 
 #### pboss save
 
@@ -1195,7 +1208,7 @@ Recommended boot setup:
 ```
 pboss start ecosystem.config.json
 pboss save
-sudo env PATH="$PATH" pboss startup
+sudo env PATH="$PATH" pboss startup install
 ```
 
 On reboot, systemd, launchd, or Task Scheduler starts the ProcBoss daemon, and the daemon automatically runs resurrect to restore your processes.
@@ -2478,7 +2491,7 @@ CMD ["pboss", "start", "--no-daemon", "./server.ts"]
 ```
 pboss start ecosystem.config.json
 pboss save
-sudo env PATH="$PATH" pboss startup
+sudo env PATH="$PATH" pboss startup install
 pboss dashboard
 pboss list
 ```

@@ -27,6 +27,7 @@
 
 import { join } from "path";
 import { readFileSync } from "fs";
+import { mkdir } from "fs/promises";
 import { $ } from "bun";
 import { ignore } from "./error-handling";
 import { waitForDaemon, stopDaemonIfRunning } from "./api";
@@ -41,12 +42,12 @@ import {
 /**
  * The user the generated service should run as.
  *
- * `pboss startup` needs root on Linux (to write /etc/systemd/system), so it is
- * typically invoked with sudo — but the daemon itself should keep running as
- * the *invoking* human, not as root: their daemon data lives in their own
- * ~/.pboss, and a root daemon would silently split off into /root/.pboss.
- * When SUDO_USER is present we resolve that user's home and use it for the
- * service's User= and PBOSS_HOME.
+ * `pboss startup install` needs root on Linux (to write /etc/systemd/system),
+ * so it is typically invoked with sudo — but the daemon itself should keep
+ * running as the *invoking* human, not as root: their daemon data lives in
+ * their own ~/.pboss, and a root daemon would silently split off into
+ * /root/.pboss. When SUDO_USER is present we resolve that user's home and
+ * use it for the service's User= and PBOSS_HOME.
  */
 function targetUserContext(): { user: string; home: string } {
   const sudoUser = process.env.SUDO_USER;
@@ -96,7 +97,7 @@ function homeForUser(user: string): string | null {
  * why `sudo pboss` reports "command not found" on Bun-global installs.
  */
 function sudoRetryHint(): string {
-  return 'sudo env PATH="$PATH" pboss startup';
+  return 'sudo env PATH="$PATH" pboss startup install';
 }
 
 /** True when the current process has root privileges on Linux/macOS. */
@@ -144,7 +145,10 @@ export class StartupManager {
     const taskName = "PBOSS_Daemon";
     // schtasks /tr takes a single command line — quote it as a whole, and
     // quote individual tokens only when they contain spaces (paths like
-    // "C:\Program Files\...").
+    // "C:\Program Files\..."). `/ru` restricts the onlogon trigger to THIS
+    // user's logon — without it the task fires at anyone's logon while
+    // running as the creating account, which is wrong for a per-user daemon
+    // (its state lives in the creating user's %USERPROFILE%\.pboss).
     const trValue = daemonCmd.map(quoteWindowsToken).join(" ");
     const resurrectCmd = cliSpawnCommand("resurrect").join(" ");
     return `# PBOSS Windows Startup Configuration
@@ -153,14 +157,15 @@ export class StartupManager {
 # To install as a Scheduled Task that starts automatically on user logon,
 # simply run this from an elevated shell (Run as Administrator):
 #
-# pboss startup
+# pboss startup install
 #
 # Equivalent manual commands:
-# schtasks /create /tn "${taskName}" /tr "${trValue}" /sc onlogon /f /rl highest
+# schtasks /create /tn "${taskName}" /tr "${trValue}" /sc onlogon /ru "%USERNAME%" /f /rl highest
 #
-# Or run with PowerShell:
+# Or run with PowerShell (what \`pboss startup install\` itself uses — no
+# nested /tr quoting to get wrong):
 # $Action = New-ScheduledTaskAction -Execute "${daemonCmd[0]}" -Argument "${daemonCmd.slice(1).join(" ")}"
-# $Trigger = New-ScheduledTaskTrigger -AtLogOn
+# $Trigger = New-ScheduledTaskTrigger -AtLogOn -User "$env:USERNAME"
 # $Principal = New-ScheduledTaskPrincipal -UserId "$env:USERNAME" -LogonType Interactive -RunLevel Highest
 # Register-ScheduledTask -TaskName "${taskName}" -Action $Action -Trigger $Trigger -Principal $Principal -Force
 #
@@ -253,15 +258,17 @@ ${programArgs}
     <key>KeepAlive</key>
     <true/>
     <key>StandardOutPath</key>
-    <string>${join(home, ".pboss", "logs", "daemon-out.log")}</string>
+    <string>${escapeXml(join(home, ".pboss", "logs", "daemon-out.log"))}</string>
     <key>StandardErrorPath</key>
-    <string>${join(home, ".pboss", "logs", "daemon-error.log")}</string>
+    <string>${escapeXml(join(home, ".pboss", "logs", "daemon-error.log"))}</string>
     <key>EnvironmentVariables</key>
     <dict>
         <key>PATH</key>
-        <string>${this.servicePath()}</string>
+        <string>${escapeXml(this.servicePath())}</string>
         <key>HOME</key>
-        <string>${home}</string>
+        <string>${escapeXml(home)}</string>
+        <key>PBOSS_HOME</key>
+        <string>${escapeXml(join(home, ".pboss"))}</string>
     </dict>
 </dict>
 </plist>`;
@@ -272,6 +279,9 @@ ${programArgs}
 # Install mode: ${installModeDescription()}
 # Runs as user: ${target.user}
 # Save to: ${plistPath}
+# Or install it directly with:  pboss startup install   (LaunchAgents are
+# per-user — no sudo needed; if you must use sudo, pboss targets the
+# SUDO_USER's home and loads the agent as that user)
 # Then run:
 # launchctl load -w ${plistPath}
 
@@ -366,13 +376,25 @@ ${plist}`;
       const plistContent = content.substring(plistStart);
       await Bun.write(plistPath, plistContent);
 
+      // launchd opens StandardOut/StandardErrorPath BEFORE starting the
+      // program: if the target user's ~/.pboss/logs does not exist yet, the
+      // agent refuses to start with a cryptic "Path had bad permissions"
+      // error. The CLI's own ensureDirs() ran for the INVOKING user's home —
+      // under sudo that is /root/.pboss, not the target user's, so create
+      // the directory explicitly for the user the agent will run as.
+      await mkdir(join(target.home, ".pboss", "logs"), { recursive: true });
+
+      // launchctl is per-user: under sudo, run it AS the SUDO_USER so the
+      // agent is loaded into their session domain — root's launchctl would
+      // load it into the system domain and it would never start at login.
+      const asUser = this.launchctlAsUser();
       try {
-        await $`launchctl unload ${plistPath}`; // reload if it was already loaded
+        await $`${asUser} launchctl unload ${plistPath}`; // reload if it was already loaded
       } catch (err) {
         ignore(`launchctl unload ${plistPath} (first install)`, err);
       }
       try {
-        await $`launchctl load -w ${plistPath}`;
+        await $`${asUser} launchctl load -w ${plistPath}`;
         return `Plist installed and loaded: ${plistPath}`;
       } catch (err) {
         ignore(`launchctl load -w ${plistPath}`, err);
@@ -383,35 +405,39 @@ ${plist}`;
         throw new Error(
           `Administrator rights are required to register the startup task.\n` +
             `Open a terminal as Administrator (Windows Terminal → right-click →\n` +
-            ` Run as Administrator) and re-run:  pboss startup`
+            ` Run as Administrator) and re-run:  pboss startup install`
         );
       }
 
-      // Daemon command resolved from the install mode, same as generate().
+      // Registration goes through PowerShell's Register-ScheduledTask
+      // (built into Windows 8+), not `schtasks /create`: the daemon command
+      // line regularly contains quoted paths ("C:\Program Files\..."), and
+      // schtasks' /tr quoting rules mangle nested quotes into a broken
+      // command line. PowerShell takes -Execute/-Argument as separate
+      // values, so no shell layer ever re-parses them.
       const daemonCmd = daemonSpawnCommand();
       const taskName = "PBOSS_Daemon";
-      const trValue = daemonCmd.map(quoteWindowsToken).join(" ");
+      const script = buildWindowsTaskRegistrationScript(daemonCmd, taskName);
 
       try {
         const proc = Bun.spawn(
-          [
-            "schtasks",
-            "/create",
-            "/tn",
-            taskName,
-            "/tr",
-            `"${trValue}"`,
-            "/sc",
-            "onlogon",
-            "/f",
-            "/rl",
-            "highest",
-          ],
+          ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
           { stdout: "pipe", stderr: "pipe" }
         );
-        const code = await proc.exited;
+        const [code, errText] = await Promise.all([
+          proc.exited,
+          new Response(proc.stderr).text().catch((err: unknown) => {
+            ignore("read powershell stderr (task registration)", err);
+            return "";
+          }),
+        ]);
         if (code !== 0) {
-          return `Failed to create the scheduled task (schtasks exit code ${code}). Try running as Administrator.`;
+          const detail = errText.trim();
+          return (
+            `Failed to create the scheduled task (powershell exit code ${code}).` +
+            (detail ? `\n${detail}` : "") +
+            `\nTry running as Administrator.`
+          );
         }
 
         return `Windows Scheduled Task "${taskName}" installed successfully.\nRun on demand: schtasks /run /tn "${taskName}"`;
@@ -432,10 +458,25 @@ ${plist}`;
         stdin: "ignore",
       });
       return (await proc.exited) === 0;
-    } catch {
-      // Can't tell — let schtasks surface the real error instead.
+    } catch (err) {
+      // Can't tell — let the task registration surface the real error
+      // instead. Recorded so PBOSS_DEBUG=1 shows why the probe was skipped.
+      ignore("net session (admin probe)", err);
       return true;
     }
+  }
+
+  /**
+   * Prefix that makes launchctl act on the SUDO_USER's session domain when
+   * `pboss startup install|uninstall` was run through sudo on macOS.
+   * LaunchAgents are per-user, so running launchctl as root would load the
+   * agent into the wrong (system) domain and it would never start at login.
+   */
+  private launchctlAsUser(): string[] {
+    if (isRoot() && process.env.SUDO_USER && process.env.SUDO_USER !== "root") {
+      return ["sudo", "-u", process.env.SUDO_USER];
+    }
+    return [];
   }
 
   async uninstall(): Promise<string> {
@@ -445,7 +486,7 @@ ${plist}`;
       if (!isRoot()) {
         throw new Error(
           `Root is required to remove the system service.\n` +
-            `Re-run:  sudo env PATH="$PATH" pboss startup remove`
+            `Re-run:  sudo env PATH="$PATH" pboss startup uninstall`
         );
       }
       // Best-effort — tolerate hosts where systemd is not the init.
@@ -458,8 +499,10 @@ ${plist}`;
     } else if (os === "darwin") {
       const target = targetUserContext();
       const plistPath = join(target.home, "Library", "LaunchAgents", "com.pboss.daemon.plist");
+      // Same domain rule as install(): launchctl as the SUDO_USER under sudo.
+      const asUser = this.launchctlAsUser();
 
-      try { await $`launchctl unload ${plistPath}`; } catch (err) { ignore(`launchctl unload ${plistPath} (uninstall)`, err); }
+      try { await $`${asUser} launchctl unload ${plistPath}`; } catch (err) { ignore(`launchctl unload ${plistPath} (uninstall)`, err); }
       try { await $`rm -f ${plistPath}`; } catch (err) { ignore(`rm ${plistPath} (uninstall)`, err); }
       return "PBOSS launch agent removed";
     } else if (os === "win32") {
@@ -469,8 +512,25 @@ ${plist}`;
           stdout: "pipe",
           stderr: "pipe",
         });
-        await proc.exited;
-        return `Windows Scheduled Task "${taskName}" removed.`;
+        const [code, errText] = await Promise.all([
+          proc.exited,
+          new Response(proc.stderr).text().catch((err: unknown) => {
+            ignore("read schtasks stderr (task delete)", err);
+            return "";
+          }),
+        ]);
+        if (code === 0) {
+          return `Windows Scheduled Task "${taskName}" removed.`;
+        }
+        // "The system cannot find the file specified" = no such task —
+        // report that honestly instead of fake success.
+        if (/cannot find|does not exist|not exist/i.test(errText)) {
+          return `No "${taskName}" scheduled task found — nothing to remove.`;
+        }
+        return (
+          `Failed to remove scheduled task (schtasks exit code ${code}).` +
+          (errText.trim() ? `\n${errText.trim()}` : "")
+        );
       } catch (err: any) {
         return `Failed to remove scheduled task: ${err.message}`;
       }
@@ -493,4 +553,52 @@ function escapeXml(value: string): string {
 /** Quote a single command token for a Windows command line when needed. */
 function quoteWindowsToken(token: string): string {
   return /\s/.test(token) ? `"${token}"` : token;
+}
+
+/** Quote a value for a PowerShell single-quoted string ('' escapes '). */
+function psQuote(value: string): string {
+  return `'${value.replace(/'/g, "''")}'`;
+}
+
+/**
+ * PowerShell script that registers the pboss daemon as a per-user Scheduled
+ * Task firing at the current user's logon. Kept as a pure function so it can
+ * be unit-tested off-Windows.
+ *
+ * Why Register-ScheduledTask instead of `schtasks /create`: the daemon
+ * command line often contains quoted paths ("C:\Program Files\..."), and
+ * schtasks' /tr quoting rules mangle nested quotes into a broken command
+ * line. PowerShell receives -Execute / -Argument as separate values, so no
+ * shell layer ever re-parses them.
+ *
+ * The trigger is restricted to the current user's logon (`-User`) — the
+ * daemon's state is per-user (~/.pboss), so it must not start for other
+ * accounts. `-RunLevel Highest` mirrors the admin shell that registers it.
+ */
+export function buildWindowsTaskRegistrationScript(
+  daemonCmd: string[],
+  taskName = "PBOSS_Daemon"
+): string {
+  const exeToken = daemonCmd[0];
+  if (!exeToken) throw new Error("daemon command must start with an executable path");
+  const exe = psQuote(exeToken);
+  // Tokens with spaces (script-install paths) are double-quoted inside the
+  // single-quoted -Argument value; PowerShell passes them through verbatim.
+  const argument = psQuote(daemonCmd.slice(1).map(quoteWindowsToken).join(" "));
+  const user = process.env.USERNAME; // set by Windows for interactive sessions
+  const trigger = user
+    ? `New-ScheduledTaskTrigger -AtLogOn -User ${psQuote(user)}`
+    : "New-ScheduledTaskTrigger -AtLogOn";
+  const principal = user
+    ? `New-ScheduledTaskPrincipal -UserId ${psQuote(user)} -LogonType Interactive -RunLevel Highest`
+    : "New-ScheduledTaskPrincipal -LogonType Interactive -RunLevel Highest";
+  return [
+    // Without this, cmdlet failures are non-terminating and the exit code
+    // stays 0 — the CLI would report success for a failed registration.
+    "$ErrorActionPreference = 'Stop'",
+    `$Action = New-ScheduledTaskAction -Execute ${exe} -Argument ${argument}`,
+    `$Trigger = ${trigger}`,
+    `$Principal = ${principal}`,
+    `Register-ScheduledTask -TaskName ${psQuote(taskName)} -Action $Action -Trigger $Trigger -Principal $Principal -Force | Out-Null`,
+  ].join("\n");
 }

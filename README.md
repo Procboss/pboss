@@ -30,7 +30,7 @@ ProcBoss (pboss) is free and open-source software built for the developer commun
 - **Log management** — automatic capture, size-based rotation, retention, and optional gzip compression.
 - **Health checks, cron restarts, file watching** — keep processes healthy and self-healing.
 - **Standalone cron jobs** — schedule any command with friendly syntax (`pboss cron run everyday@9:11 "bun backup.ts"`, `every-second` to `on-date@24-10-2026-23:10`), no managed process required; persists across reboots.
-- **Persistence** — `pboss save` + `pboss startup` keeps your apps alive across daemon restarts and system reboots.
+- **Persistence** — `pboss save` + `pboss startup install` keeps your apps alive across daemon restarts and system reboots.
 - **Remote deployment** — SSH-based deploys with release directories, symlink rotation, and pre/post hooks.
 - **Tiny footprint** — a single machine-level daemon that starts in under 50ms and uses only ~12MB of RAM.
 
@@ -61,7 +61,7 @@ The installers check for the required privileges themselves and tell you exactly
 
 ### Bun Global Install
 
-If you already use Bun, install pboss **system-wide** — `pboss startup` needs sudo on Linux, and sudo's PATH does not include per-user directories like `~/.bun/bin` (that's why plain `sudo pboss` says "command not found"):
+If you already use Bun, install pboss **system-wide** — `pboss startup install` needs sudo on Linux, and sudo's PATH does not include per-user directories like `~/.bun/bin` (that's why plain `sudo pboss` says "command not found"):
 
 ```bash
 sudo BUN_INSTALL=/usr/local bun add -g pboss
@@ -77,9 +77,9 @@ Update later with `sudo BUN_INSTALL=/usr/local bun update -g pboss`.
 
 Both `BUN_INSTALL=/usr/local` flags are load-bearing: the global `pboss` shim is a symlink whose target starts with `#!/usr/bin/env bun`, so `sudo pboss` must find the shim **and** bun itself on root's PATH. The variable puts bun in `/usr/local/bin` (installer line) and the shim in `$BUN_INSTALL/bin` (add/update lines); without it, everything sits in `~/.bun/bin`, invisible to sudo.
 
-A user-local install (`bun add -g pboss` without sudo) works too — whenever a command needs root, keep your PATH visible to sudo: `sudo env PATH="$PATH" pboss startup`.
+A user-local install (`bun add -g pboss` without sudo) works too — whenever a command needs root, keep your PATH visible to sudo: `sudo env PATH="$PATH" pboss startup install`.
 
-On Windows, elevated shells keep your user PATH, so a regular `bun add -g pboss` is fine — just open the shell as Administrator for `pboss startup`.
+On Windows, elevated shells keep your user PATH, so a regular `bun add -g pboss` is fine — just open the shell as Administrator for `pboss startup install`.
 
 ### Build From Source
 
@@ -144,9 +144,11 @@ Save and auto-resurrect on reboot:
 
 ```bash
 pboss save
-sudo env PATH="$PATH" pboss startup   # Linux: install the systemd boot service
-                                      # macOS: plain `pboss startup` (no sudo needed)
+sudo env PATH="$PATH" pboss startup install   # Linux: install the systemd boot service
+pboss startup install                     # macOS: LaunchAgent (no sudo needed)
 ```
+
+`pboss startup` with no option does not install — it prints the list of options (`install` / `uninstall` / `generate [os]`).
 
 Schedule a command — backups, reports, cleanups — without a managed process:
 

@@ -1,5 +1,5 @@
-import { describe, test, expect } from "bun:test";
-import { StartupManager } from "../src/startup-manager";
+import { describe, test, expect, afterEach } from "bun:test";
+import { StartupManager, buildWindowsTaskRegistrationScript } from "../src/startup-manager";
 import { ClusterManager } from "../src/cluster-manager";
 import { LogManager } from "../src/log-manager";
 import { treeKill } from "../src/utils";
@@ -7,6 +7,13 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { mkdir, rm, writeFile, readFile } from "fs/promises";
 import type { ProcessDescription } from "../src/types";
+
+const SAVED_USERNAME = process.env.USERNAME;
+
+afterEach(() => {
+  if (SAVED_USERNAME === undefined) delete process.env.USERNAME;
+  else process.env.USERNAME = SAVED_USERNAME;
+});
 
 describe("Windows Support & Cross-Platform Compatibility", () => {
   describe("StartupManager for Windows", () => {
@@ -19,6 +26,82 @@ describe("Windows Support & Cross-Platform Compatibility", () => {
       expect(output).toContain("PBOSS_Daemon");
       expect(output).toContain("Register-ScheduledTask");
       expect(output).toContain("resurrect");
+      expect(output).toContain("# pboss startup install");
+      // The onlogon trigger is restricted to THIS user's logon.
+      expect(output).toContain('/sc onlogon /ru "%USERNAME%"');
+      expect(output).toContain("New-ScheduledTaskTrigger -AtLogOn -User");
+    });
+  });
+
+  describe("Windows task registration script (what install() executes)", () => {
+    // buildWindowsTaskRegistrationScript is a pure function — the exact
+    // PowerShell that `pboss startup install` runs on Windows — so it can
+    // be pinned here without a Windows host.
+
+    test("compiled install: binary + __daemon, per-user trigger, fail-fast", () => {
+      delete process.env.USERNAME;
+      process.env.USERNAME = "zak";
+      try {
+        const script = buildWindowsTaskRegistrationScript([
+          "C:\\Program Files\\pboss\\pboss.exe",
+          "__daemon",
+        ]);
+        // Execute/Argument are separate values — no /tr quoting hell.
+        expect(script).toContain(
+          "-Execute 'C:\\Program Files\\pboss\\pboss.exe' -Argument '__daemon'"
+        );
+        // Trigger + principal are bound to the invoking user.
+        expect(script).toContain("New-ScheduledTaskTrigger -AtLogOn -User 'zak'");
+        expect(script).toContain(
+          "New-ScheduledTaskPrincipal -UserId 'zak' -LogonType Interactive -RunLevel Highest"
+        );
+        // Failures must be terminating or the exit code stays 0.
+        expect(script).toContain("$ErrorActionPreference = 'Stop'");
+        expect(script).toContain("Register-ScheduledTask -TaskName 'PBOSS_Daemon'");
+        expect(script).toContain("-Force");
+      } finally {
+        process.env.USERNAME = SAVED_USERNAME;
+      }
+    });
+
+    test("script install: paths with spaces are double-quoted inside -Argument", () => {
+      delete process.env.USERNAME;
+      process.env.USERNAME = "zak";
+      try {
+        const script = buildWindowsTaskRegistrationScript([
+          "C:\\Program Files\\Bun\\bun.exe",
+          "run",
+          "C:\\Users\\zak b\\daemon.ts",
+        ]);
+        expect(script).toContain("-Execute 'C:\\Program Files\\Bun\\bun.exe'");
+        expect(script).toContain("-Argument 'run \"C:\\Users\\zak b\\daemon.ts\"'");
+      } finally {
+        process.env.USERNAME = SAVED_USERNAME;
+      }
+    });
+
+    test("single quotes in values are escaped PowerShell-style ('')", () => {
+      delete process.env.USERNAME;
+      process.env.USERNAME = "za'k";
+      try {
+        const script = buildWindowsTaskRegistrationScript(["pboss.exe", "__daemon"], "PBO'SS");
+        expect(script).toContain("-User 'za''k'");
+        expect(script).toContain("-TaskName 'PBO''SS'");
+        // Task name default is untouched.
+        expect(buildWindowsTaskRegistrationScript(["pboss.exe", "__daemon"])).toContain(
+          "-TaskName 'PBOSS_Daemon'"
+        );
+      } finally {
+        process.env.USERNAME = SAVED_USERNAME;
+      }
+    });
+
+    test("no USERNAME: still registers, just without a user-restricted trigger", () => {
+      delete process.env.USERNAME;
+      const script = buildWindowsTaskRegistrationScript(["pboss.exe", "__daemon"]);
+      expect(script).toContain("New-ScheduledTaskTrigger -AtLogOn");
+      expect(script).not.toContain("-User ");
+      expect(script).toContain("New-ScheduledTaskPrincipal -LogonType Interactive -RunLevel Highest");
     });
   });
 

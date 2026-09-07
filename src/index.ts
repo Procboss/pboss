@@ -687,6 +687,28 @@ class PBossCLI {
     }
   }
 
+  /**
+   * The shared option guidance. Bare `pboss startup` deliberately does NOT
+   * pick a side: installing a boot service changes the machine, and the
+   * matching way back out is `uninstall` — so the user chooses.
+   */
+  printStartupUsage(): void {
+    console.log(`Usage: pboss startup <install | uninstall> [generate [os]]
+
+Manage the boot startup service for the pboss daemon.
+
+Commands:
+  install               Install the boot startup service
+                          Linux:    sudo env PATH="$PATH" pboss startup install
+                          macOS:    pboss startup install   (no sudo needed)
+                          Windows:  pboss startup install   (elevated shell)
+  uninstall             Remove the boot startup service (alias: remove)
+  generate [os]         Print the service config without installing
+                          (os: linux, darwin, win32)
+
+\`pboss startup\` alone does nothing — pass one of the options above.`);
+  }
+
   async cmdStartup(args: string[]) {
     const startup = new StartupManager();
     const sub = args[0];
@@ -701,6 +723,11 @@ class PBossCLI {
     };
 
     try {
+      if (sub === "install") {
+        console.log(await startup.install());
+        return;
+      }
+
       if (sub === "remove" || sub === "uninstall") {
         console.log(await startup.uninstall());
         return;
@@ -716,10 +743,15 @@ class PBossCLI {
         return;
       }
 
-      // Bare "pboss startup" (and legacy "pboss startup install") install the
-      // boot service directly — generating a file to save by hand is what
-      // `startup generate` is for.
-      console.log(await startup.install());
+      // No implicit install: bare `pboss startup` tells the user to choose
+      // (install or uninstall); an unknown option says so and shows the same
+      // guidance. Generating a file to save by hand is what `startup
+      // generate` is for.
+      if (sub) {
+        console.error(colorize(`Unknown startup option: "${sub}"`, "red"));
+      }
+      this.printStartupUsage();
+      if (sub) process.exit(1);
     } catch (err: any) {
       console.error(colorize(err?.message ?? String(err), "red"));
       process.exit(1);
@@ -1257,10 +1289,14 @@ ${colorize("Notes:", "dim")}
                                   --wait <sec>: wait for an externally
                                   started daemon instead of spawning one
                                   (systemd unit ExecStartPost uses this)
-    startup                       Install the boot startup service
-                                  (sudo env PATH="$PATH" pboss startup on Linux)
+    startup install               Install the boot startup service
+                                  (sudo env PATH="$PATH" pboss startup install
+                                  on Linux; macOS needs no sudo; Windows needs
+                                  an elevated shell)
+    startup uninstall             Remove the boot startup service
+                                  (alias: startup remove)
     startup generate [os]         Print the service config without installing
-    startup remove                Remove the boot startup service
+                                  (bare \`pboss startup\` shows these options)
     
     ${colorize("Scheduling:", "cyan")}
     cron run <when> <command>     Schedule a command (everyday@9:11, every-second, …)
