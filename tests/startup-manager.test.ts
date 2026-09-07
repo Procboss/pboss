@@ -402,12 +402,18 @@ describe("StartupManager.status() — the read-only boot-persistence report", ()
     "not installed: honest report + exact install command + dump summary",
     async () => {
       const home = mkdtempSync(join(tmpdir(), "pboss-status-no-"));
+      const unitDir = mkdtempSync(join(tmpdir(), "pboss-status-units-no-"));
       // PBOSS_HOME must be unset: status() prefers an explicit env override,
       // and another test file's module-top may have set it (shared process).
       setEnv({ HOME: home, SUDO_USER: undefined, PBOSS_HOME: undefined });
       try {
+        // Empty unitDir fixture: "not installed" by CONSTRUCTION, never by
+        // host state. The old version consulted the real /etc/systemd/system
+        // and failed on any machine that had actually run
+        // `pboss startup install` (the docs' own setup instruction) — green
+        // in CI, red on the developer's box.
         const startup = new StartupManager();
-        const report = await startup.status();
+        const report = await startup.status({ unitDir });
         expect(report).toContain("Boot startup service (systemd)");
         expect(report).toContain("Installed:  no");
         expect(report).toContain('sudo env PATH="$PATH" pboss startup install');
@@ -418,6 +424,7 @@ describe("StartupManager.status() — the read-only boot-persistence report", ()
         expect(report).toContain("not answering");
       } finally {
         rmSync(home, { recursive: true, force: true });
+        rmSync(unitDir, { recursive: true, force: true });
       }
     }
   );
@@ -481,13 +488,38 @@ describe("StartupManager.status() — the read-only boot-persistence report", ()
     }
   });
 
-  test.skipIf(process.platform !== "linux" || process.getuid?.() === 0)(
-    "bootServiceInstalled() on a host without the unit: false + sudo install command",
+  test.skipIf(process.platform !== "linux")( // hermetic: runs as any uid
+    "bootServiceInstalled() without the unit: false + sudo install command",
     async () => {
-      // Non-root sandbox/CI: /etc/systemd/system/pboss.service does not exist.
-      const presence = await bootServiceInstalled();
-      expect(presence.installed).toBe(false);
-      expect(presence.howToInstall).toContain("pboss startup install");
+      // An empty fixture unitDir STANDS IN for "a host without the unit".
+      // The old version asserted the real /etc/systemd/system had no
+      // pboss.service — true in CI and sandboxes, false on any machine that
+      // followed the install docs, which is exactly the reported failure.
+      const unitDir = mkdtempSync(join(tmpdir(), "pboss-boot-none-"));
+      try {
+        const presence = await bootServiceInstalled({ unitDir });
+        expect(presence.installed).toBe(false);
+        expect(presence.howToInstall).toContain("pboss startup install");
+      } finally {
+        rmSync(unitDir, { recursive: true, force: true });
+      }
+    }
+  );
+
+  test.skipIf(process.platform !== "linux")( // hermetic: runs as any uid
+    "bootServiceInstalled() with the unit present: true",
+    async () => {
+      // The developer-machine state after `pboss startup install`: the unit
+      // file exists, so presence flips to true (status() then reports
+      // "Installed:  yes" — the other test in this block pins that branch).
+      const unitDir = mkdtempSync(join(tmpdir(), "pboss-boot-yes-"));
+      try {
+        writeFileSync(join(unitDir, "pboss.service"), "[Unit]\n");
+        const presence = await bootServiceInstalled({ unitDir });
+        expect(presence.installed).toBe(true);
+      } finally {
+        rmSync(unitDir, { recursive: true, force: true });
+      }
     }
   );
 });

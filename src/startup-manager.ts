@@ -888,12 +888,21 @@ export interface BootServicePresence {
  * Cheap read-only check for the boot service: file existence on
  * Linux/macOS, a bounded schtasks query on Windows. Safe to call from
  * anywhere — the first-start persistence hint runs this after `pboss start`.
+ *
+ * `opts.unitDir` redirects where the systemd unit is looked up
+ * (default /etc/systemd/system) so tests can point it at a fixture
+ * directory. The real path stays the default for production callers, but
+ * tests must never let the developer's own machine decide the outcome: a
+ * host that followed the install docs genuinely has the unit.
  */
-export async function bootServiceInstalled(): Promise<BootServicePresence> {
+export async function bootServiceInstalled(
+  opts: { unitDir?: string } = {}
+): Promise<BootServicePresence> {
   const os = process.platform;
   if (os === "linux") {
+    const unitDir = opts.unitDir ?? "/etc/systemd/system";
     return {
-      installed: existsSync("/etc/systemd/system/pboss.service"),
+      installed: existsSync(join(unitDir, "pboss.service")),
       howToInstall: sudoRetryHint(),
     };
   }
