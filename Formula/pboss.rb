@@ -2,7 +2,7 @@ class Pboss < Formula
   desc "Universal, production-grade process manager built on Bun native APIs"
   homepage "https://procboss.com"
   url "https://github.com/procboss/pboss/archive/refs/heads/main.tar.gz"
-  version "1.1.0"
+  version "1.1.1"
   license "GPL-3.0-only"
 
   depends_on "bun" => :build

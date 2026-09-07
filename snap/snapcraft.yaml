@@ -1,7 +1,7 @@
 name: pboss
 title: ProcBoss
 base: core24
-version: '1.1.0'
+version: '1.1.1'
 summary: Universal production process manager for any software stack
 description: |
   ProcBoss (pboss) is a universal, production-grade process manager built on Bun native APIs.
