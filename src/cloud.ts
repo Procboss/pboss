@@ -143,7 +143,9 @@ export function mapProcessState(p: ProcessState): CloudProcessReport {
     mem: Math.round((p.monit?.memory ?? 0) / (1024 * 1024)),
     restarts: env?.restart_time ?? 0,
     crashes: env?.unstable_restarts ?? 0,
-    uptimeSec: Math.round((env?.pm_uptime ?? 0) / 1000),
+    // pm_uptime is the epoch-ms START timestamp (process-container sets it to
+    // startedAt) — same math the CLI's own uptime column uses: now - start.
+    uptimeSec: Math.max(0, Math.round((Date.now() - (env?.pm_uptime ?? Date.now())) / 1000)),
   };
 }
 
