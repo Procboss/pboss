@@ -44,6 +44,12 @@ ProcBoss (pboss) is free and open-source software built for the developer commun
   - [Startup Scripts](#startup-scripts)
   - [Modules](#modules)
   - [Daemon Control](#daemon-control)
+- [ProcBoss Cloud](#procboss-cloud)
+  - [Linking a server — the device-code flow](#linking-a-server--the-device-code-flow)
+  - [User login (pboss login / whoami / logout)](#user-login-pboss-login--whoami--logout)
+  - [What the cloud link does](#what-the-cloud-link-does)
+  - [Cloud security model](#cloud-security-model)
+  - [Self-hosting / custom cloud endpoint](#self-hosting--custom-cloud-endpoint)
 - [Foreground Mode (Docker & Containers)](#foreground-mode-docker--containers)
 - [Configuration Reference](#configuration-reference)
   - [Ecosystem File Format](#ecosystem-file-format)
@@ -1385,6 +1391,80 @@ Stop all processes and kill the daemon.
 ```
 pboss kill
 ```
+
+---
+
+## ProcBoss Cloud
+
+ProcBoss Cloud (procboss.com) is the optional hosted layer on top of pboss. Link a machine once and it streams live state to your dashboard — fleet view, CPU/memory, process lists, crash alerts — and accepts remote process commands. Every local feature keeps working without an account; the connection is **outbound-only** (the cloud can never reach into your network — the agent opens an SSE stream and posts state over HTTPS, and commands ride that same stream back).
+
+### Linking a server — the device-code flow
+
+Servers are headless, so the login can't be "open a browser here." Instead it's an RFC-8628-style device code, approved from **any** device:
+
+```bash
+sudo pboss cloud connect
+
+# ⚡ ProcBoss Cloud — connect this server
+#
+#   Open:  https://procboss.com/connect
+#   Code:  F7KD-92XM
+#
+#   No browser here — open the URL on any device (laptop/phone) and enter the code.
+# Waiting for authorization… (code expires in 10 min)
+# ✓ Server authorized and connected
+```
+
+What happens: the CLI requests a device code (`POST /api/device/code`, carrying hostname/OS/arch/agent version — the approval card shows exactly these facts), prints the URL plus the short human code, and polls. You open the URL anywhere, sign in with GitHub or Google, and approve or deny the card. On approval the cloud links (or re-links) the Server row, and the CLI's next poll claims the per-server credential — minted at that moment, handed over **exactly once**. The CLI then hands it to the daemon via the local socket: the daemon writes `~/.pboss/cloud.json` (0600) and owns the connection from there on. Denials, expiries (10 minutes), and the single-claim rule are all honest errors at the terminal.
+
+Flags: `--url <cloud>` overrides the endpoint (else `PBOSS_CLOUD_URL`, else `https://procboss.com`); `--no-browser` (or `PBOSS_NO_BROWSER=1`) skips the auto-open attempt. On a machine with a desktop session the CLI tries to open the tab for you — over SSH without `DISPLAY` it stays print-only, which is exactly right for servers.
+
+The legacy pasted-token flow still works: mint a single-use token in the dashboard and run `pboss cloud connect pbc_…` — useful when the terminal can't reach the approval URL interactively.
+
+Other commands:
+
+```bash
+pboss cloud status              # link state: connected / backoff, server id, last report
+pboss cloud servers             # the fleet this account sees, with live presence
+pboss cloud reconnect           # retry the link now (resets backoff)
+pboss cloud disconnect          # unlink: revoke the credential + remove cloud.json
+```
+
+### User login (pboss login / whoami / logout)
+
+Machine identity (cloud.json) and user identity (cloud-user.json) are deliberately separate. `pboss login` runs the same device flow with **user scope** and stores a CLI token in `~/.pboss/cloud-user.json` (0600) — whoami/logout work from any machine and never link the daemon:
+
+```bash
+pboss login                     # device flow, user scope
+pboss whoami                    # email, name, provider, cloud URL
+pboss logout                    # revokes the CLI token server-side (this device only)
+```
+
+Revoking a server in the dashboard never logs you out of your CLI, and logging out never unlinks a server — each credential dies alone.
+
+### What the cloud link does
+
+Once linked, the daemon's cloud agent:
+
+- opens an **SSE command stream** to the cloud and keeps it alive (keepalives, automatic reconnect with exponential backoff, reset on success);
+- posts a **full state report** every 10 seconds (and immediately after every command): server metrics (CPU, memory, uptime) and the process list with per-process CPU/mem/restarts/crashes/uptime;
+- derives **events** from consecutive snapshots — crashes, restarts, on/offline transitions — which the cloud turns into alerts;
+- executes **remote commands** from the dashboard: `process.list`, `process.start`, `process.stop`, `process.restart`, `process.delete`, `process.logs`, `server.info` — each answered with a result and followed by a fresh state report;
+- answers `pboss cloud servers` with the fleet view (fetched daemon-side with the machine credential — the CLI never holds the secret).
+
+If the credential is revoked from the dashboard, the next stream handshake fails with 401: the agent stops, clears `cloud.json`, and says so — re-link with `pboss cloud connect`.
+
+### Cloud security model
+
+- **No inbound anything.** The agent makes outbound HTTPS/SSE connections only; there is no port to open and no attack surface facing the internet.
+- **Secrets never rest in plaintext server-side.** Machine secrets and CLI tokens are stored as sha256 hashes; raw forms exist only in the local 0600 files and in memory.
+- **Single-claim device codes.** A credential is minted at claim time and handed over exactly once; a raced second poller gets nothing. Codes expire in 10 minutes and are denied on the approval card.
+- **Separate revocable identities.** Server credentials, CLI tokens, and browser sessions are three independent credential spaces — revoke one, the others don't flinch.
+- **Approval shows the machine facts.** The /connect card displays hostname, OS, arch, and agent version before you approve, so you always know what you're linking.
+
+### Self-hosting / custom cloud endpoint
+
+Everything cloud-related resolves through one knob: `--url` on `connect`/`login`, else the `PBOSS_CLOUD_URL` environment variable, else `https://procboss.com`. The full HTTP contract the agent and CLI speak (device flow, agent stream, state, commands) is documented at [docs.procboss.com/cloud](https://docs.procboss.com/cloud) — point `PBOSS_CLOUD_URL` at a compatible implementation and pboss won't know the difference.
 
 ---
 

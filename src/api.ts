@@ -697,6 +697,25 @@ export class PBoss extends EventEmitter<PBossEvents> {
     return res.data;
   }
 
+  /**
+   * Hand a device-flow credential (claimed by the CLI after the human
+   * approved in a browser) to the daemon — it owns cloud.json and the
+   * outbound connection from here on. Counterpart of the interactive
+   * `pboss cloud connect` (no token) path.
+   */
+  async cloudLink(
+    cloudUrl: string,
+    serverId: string,
+    serverSecret: string,
+    serverName?: string
+  ): Promise<{ serverId: string; serverName: string }> {
+    const res = await this.sendOrThrow({
+      type: "cloudLink",
+      data: { cloudUrl, serverId, serverSecret, serverName },
+    });
+    return res.data;
+  }
+
   /** Live cloud-link status (connection state, last report, server id). */
   async cloudStatus(): Promise<{
     configured: boolean;
@@ -712,6 +731,35 @@ export class PBoss extends EventEmitter<PBossEvents> {
     lastError: string | null;
   }> {
     const res = await this.sendOrThrow({ type: "cloudStatus" });
+    return res.data;
+  }
+
+  /**
+   * The fleet this machine's owner sees in the dashboard, fetched by the
+   * daemon with the machine credential (never exposed to this process).
+   */
+  async cloudServers(): Promise<{
+    servers: Array<{
+      id: string;
+      name: string;
+      host: string;
+      status: string;
+      os: string;
+      agentVersion: string;
+      cpu: number;
+      memUsed: number;
+      memTotal: number;
+      lastSeen: string;
+      enrolled: boolean;
+    }>;
+  }> {
+    const res = await this.sendOrThrow({ type: "cloudServers" });
+    return res.data;
+  }
+
+  /** Force an immediate reconnect attempt (resets the agent's backoff). */
+  async cloudReconnect(): Promise<{ ok: boolean }> {
+    const res = await this.sendOrThrow({ type: "cloudReconnect" });
     return res.data;
   }
 

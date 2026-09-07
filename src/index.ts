@@ -44,6 +44,18 @@ import { statusColor } from "./colors";
 import { liveWatchProcess, printProcessTable, printCronTable } from "./process-table";
 import Daemon from "./daemon";
 import chalk from "chalk";
+import {
+  requestDeviceCode,
+  pollDeviceToken,
+  browserPlausible,
+  openBrowser,
+  loadCloudUser,
+  saveCloudUser,
+  clearCloudUser,
+  cloudUserMe,
+  cloudUserRevoke,
+} from "./cloud-auth";
+import { resolveCloudUrl } from "./cloud";
 
 // ---------------------------------------------------------------------------
 // PBossCLI class — Delegates all process engine operations to PBoss API
@@ -1145,31 +1157,78 @@ Examples:
         case "connect": {
           let token = "";
           let url: string | undefined;
+          let noBrowser = false;
           for (let i = 0; i < rest.length; i++) {
             if (rest[i] === "--url" && rest[i + 1]) {
               url = rest[i + 1];
               i++;
+            } else if (rest[i] === "--no-browser") {
+              noBrowser = true;
             } else if (!token && !rest[i]!.startsWith("-")) {
               token = rest[i]!;
             }
           }
-          if (!token) {
-            console.error(
-              colorize("Usage: pboss cloud connect <token> [--url <cloud>]", "red")
+          if (token) {
+            // legacy path: dashboard-minted single-use enrollment token
+            console.log(colorize("☁  Linking this machine to ProcBoss Cloud…", "cyan"));
+            const info = await this.pboss.cloudConnect(token, url);
+            console.log("");
+            console.log(colorize(`✓ Server registered and connected`, "green"));
+            console.log(`  Server:    ${info.serverName} (${info.serverId})`);
+            console.log(
+              `  Dashboard: ${colorize(resolveCloudUrl(url), "cyan")}`
             );
-            console.error(
-              "Mint a token in the ProcBoss dashboard: Servers → Connect server."
+            console.log("");
+            console.log(
+              colorize("The daemon now streams state and accepts commands from your dashboard.", "dim")
             );
-            process.exit(1);
+            console.log(
+              colorize("Credential stored in ~/.pboss/cloud.json (0600). Reconnects are automatic.", "dim")
+            );
+            break;
           }
-          console.log(colorize("☁  Linking this machine to ProcBoss Cloud…", "cyan"));
-          const info = await this.pboss.cloudConnect(token, url);
+
+          // device-code flow — the headless default. No token to paste:
+          // the CLI prints a URL + short code, a human approves in a
+          // browser on ANY device, the CLI picks up the credential.
+          const cloudUrl = resolveCloudUrl(url);
+          console.log(colorize("☁  ProcBoss Cloud — connect this server", "cyan"));
           console.log("");
-          console.log(colorize(`✓ Server registered and connected`, "green"));
-          console.log(`  Server:    ${info.serverName} (${info.serverId})`);
+          const grant = await requestDeviceCode(cloudUrl, "machine");
+          console.log(`  Open:  ${colorize(grant.verificationUrl, "cyan")}`);
+          console.log(`  Code:  ${colorize(grant.userCode, "bold")}`);
+          console.log("");
+          if (!noBrowser && browserPlausible()) {
+            const opened = await openBrowser(grant.verificationUrl);
+            if (opened) {
+              console.log(
+                colorize("(opening your browser — if it didn't, open the URL and enter the code)", "dim")
+              );
+            }
+          } else {
+            console.log(
+              colorize("No browser here — open the URL on any device (laptop/phone) and enter the code.", "dim")
+            );
+          }
           console.log(
-            `  Dashboard: ${colorize((url || process.env.PBOSS_CLOUD_URL || "https://procboss.com").replace(/\/+$/, ""), "cyan")}`
+            colorize(
+              `Waiting for authorization… (code expires in ${Math.ceil(grant.expiresInMs / 60000)} min)`,
+              "dim"
+            )
           );
+          const claim = await pollDeviceToken(cloudUrl, grant);
+          if (claim.scope !== "machine") {
+            throw new Error("the cloud returned a user credential — this is a `pboss login` flow, not a server link");
+          }
+          const info = await this.pboss.cloudLink(
+            cloudUrl,
+            claim.serverId,
+            claim.serverSecret,
+            claim.serverName
+          );
+          console.log("");
+          console.log(colorize("✓ Server authorized and connected", "green"));
+          console.log(`  Server:    ${info.serverName} (${info.serverId})`);
           console.log("");
           console.log(
             colorize("The daemon now streams state and accepts commands from your dashboard.", "dim")
@@ -1188,7 +1247,7 @@ Examples:
           if (!st.configured) {
             console.log(`  Status:    ${colorize("not linked", "yellow")}`);
             console.log(
-              `  Link with: ${colorize("pboss cloud connect <token>", "cyan")} (mint one in the dashboard)`
+              `  Link with: ${colorize("pboss cloud connect", "cyan")} (prints a code — approve it at ${resolveCloudUrl()}/connect)`
             );
           } else {
             const state =
@@ -1215,6 +1274,56 @@ Examples:
             }
           }
           console.log("");
+          break;
+        }
+
+        case "servers":
+        case "fleet": {
+          const { servers } = await this.pboss.cloudServers();
+          console.log("");
+          console.log(colorize(`☁  Fleet (${servers.length} server${servers.length === 1 ? "" : "s"})`, "bold"));
+          console.log("");
+          if (servers.length === 0) {
+            console.log("  No servers linked yet.");
+          } else {
+            const rows = servers.map((s) => [
+              s.name,
+              s.status,
+              `${s.cpu}%`,
+              s.memTotal ? `${(s.memUsed / 1024).toFixed(1)}/${(s.memTotal / 1024).toFixed(1)}GB` : "—",
+              s.os,
+              s.agentVersion,
+            ]);
+            const widths = [0, 1, 2, 3, 4, 5].map((c) =>
+              Math.max(...rows.map((r) => r[c]!.length))
+            );
+            const header = ["NAME", "STATUS", "CPU", "MEM", "OS", "AGENT"]
+              .map((h, i) => padRight(h, widths[i]!))
+              .join("  ");
+            console.log(colorize(`  ${header}`, "dim"));
+            for (const s of servers) {
+              const row = [
+                s.name,
+                s.status,
+                `${s.cpu}%`,
+                s.memTotal ? `${(s.memUsed / 1024).toFixed(1)}/${(s.memTotal / 1024).toFixed(1)}GB` : "—",
+                s.os,
+                s.agentVersion,
+              ]
+                .map((c, i) => padRight(c, widths[i]!))
+                .join("  ");
+              const color = s.status === "online" ? "green" : s.status === "degraded" ? "yellow" : "red";
+              const colored = row.replace(s.status, colorize(s.status, color));
+              console.log(`  ${colored}`);
+            }
+          }
+          console.log("");
+          break;
+        }
+
+        case "reconnect": {
+          await this.pboss.cloudReconnect();
+          console.log(colorize("✓ Reconnect triggered — the daemon retries immediately (backoff reset)", "green"));
           break;
         }
 
@@ -1250,15 +1359,128 @@ Examples:
     console.log(`Usage: pboss cloud <command>
 
 ${colorize("Commands:", "cyan")}
-  connect <token> [--url <cloud>]   Link this machine (token from the dashboard)
-  status                            Show link status, server id, last report
-  disconnect                        Unlink: revoke credential + stop the agent
+  connect [--url <cloud>] [--no-browser]  Link this machine — prints a code you
+                                          approve at <cloud>/connect (any device).
+                                          Legacy: connect <token> (dashboard-minted).
+  status                                 Link status, server id, last report
+  servers                                The fleet this account sees (live presence)
+  reconnect                              Retry the cloud link now (resets backoff)
+  disconnect                             Unlink: revoke credential + stop the agent
 
 ${colorize("Notes:", "dim")}
-  Tokens are single-use, expire in 15 minutes, and are minted in the
-  ProcBoss dashboard (Servers → Connect server).
   The connection is outbound-only — no ports to open, ever.
+  Credentials live in ~/.pboss/cloud.json (0600) and belong to the daemon.
   Set PBOSS_CLOUD_URL to override the cloud endpoint.`);
+  }
+
+  /**
+   * `pboss login` — USER identity for the CLI (device flow, scope "user"):
+   * whoami/logout work from any machine; this never links the machine's
+   * daemon (that's `pboss cloud connect`). PBOSS_NO_BROWSER=1 or
+   * --no-browser to skip the tab-open attempt on desktops.
+   */
+  async cmdLogin(args: string[]) {
+    let url: string | undefined;
+    let noBrowser = false;
+    for (let i = 0; i < args.length; i++) {
+      if (args[i] === "--url" && args[i + 1]) {
+        url = args[i + 1];
+        i++;
+      } else if (args[i] === "--no-browser") {
+        noBrowser = true;
+      }
+    }
+    try {
+      const cloudUrl = resolveCloudUrl(url);
+      const existing = loadCloudUser();
+      if (existing) {
+        const me = await cloudUserMe(existing);
+        if (me) {
+          console.log(
+            colorize(`Already logged in as ${me.email} — run \`pboss logout\` first to switch accounts.`, "yellow")
+          );
+          return;
+        }
+        clearCloudUser(); // revoked server-side — treat as logged out
+      }
+
+      console.log(colorize("☁  ProcBoss Cloud — user login", "cyan"));
+      console.log("");
+      const grant = await requestDeviceCode(cloudUrl, "user");
+      console.log(`  Open:  ${colorize(grant.verificationUrl, "cyan")}`);
+      console.log(`  Code:  ${colorize(grant.userCode, "bold")}`);
+      console.log("");
+      if (!noBrowser && browserPlausible()) {
+        const opened = await openBrowser(grant.verificationUrl);
+        if (opened) {
+          console.log(colorize("(opening your browser — if it didn't, open the URL and enter the code)", "dim"));
+        }
+      } else {
+        console.log(
+          colorize("No browser here — open the URL on any device and enter the code.", "dim")
+        );
+      }
+      console.log(colorize("Waiting for authorization…", "dim"));
+      const claim = await pollDeviceToken(cloudUrl, grant);
+      if (claim.scope !== "user") {
+        throw new Error("the cloud returned a server credential — this flow is `pboss cloud connect`, not a user login");
+      }
+      saveCloudUser({
+        cloudUrl,
+        token: claim.token,
+        tokenName: claim.tokenName,
+        user: claim.user,
+      });
+      console.log("");
+      console.log(colorize(`✓ Logged in as ${claim.user.email}`, "green"));
+      console.log(
+        `  ${claim.user.name}${claim.user.handle ? ` (@${claim.user.handle})` : ""} · ${claim.user.provider}`
+      );
+      console.log(
+        colorize("Token: ~/.pboss/cloud-user.json (0600) — `pboss whoami`, `pboss logout`", "dim")
+      );
+    } catch (err: any) {
+      console.error(colorize(`Error: ${err.message}`, "red"));
+      process.exit(1);
+    }
+  }
+
+  async cmdLogout() {
+    const cred = loadCloudUser();
+    if (!cred) {
+      console.log(colorize("Not logged in.", "yellow"));
+      return;
+    }
+    const revoked = await cloudUserRevoke(cred);
+    clearCloudUser();
+    console.log(
+      colorize(
+        revoked
+          ? "✓ Logged out — the CLI token was revoked server-side"
+          : "✓ Logged out locally (the cloud was unreachable — revoke from the dashboard if this machine is compromised)",
+        "green"
+      )
+    );
+  }
+
+  async cmdWhoami() {
+    const cred = loadCloudUser();
+    if (!cred) {
+      console.log(colorize("Not logged in — run `pboss login`.", "yellow"));
+      process.exit(1);
+    }
+    const me = await cloudUserMe(cred);
+    if (!me) {
+      console.log(
+        colorize("The saved login was revoked or the cloud is unreachable — run `pboss login` again.", "yellow")
+      );
+      process.exit(1);
+    }
+    console.log(colorize("☁  ProcBoss Cloud", "bold"));
+    console.log(`  User:   ${me.email}${me.handle ? ` (@${me.handle})` : ""}`);
+    console.log(`  Name:   ${me.name}`);
+    console.log(`  Via:    ${me.provider}`);
+    console.log(`  Cloud:  ${cred.cloudUrl}`);
   }
 
   async cmdEnv(args: string[]) {
@@ -1487,9 +1709,13 @@ ${colorize("Notes:", "dim")}
     cron trigger <id|name>        Run a job immediately
     
     ${colorize("Cloud:", "cyan")}
-    cloud connect <token>         Link this machine to ProcBoss Cloud
+    cloud connect                 Link this machine (code + browser approval)
     cloud status                  Show the cloud link status
+    cloud servers                 List the fleet this account sees
     cloud disconnect              Unlink (revokes this machine's credential)
+    login                         Log in as YOU (for whoami — device flow)
+    logout                        Revoke the CLI login
+    whoami                        Who is logged in on this CLI
     
     ${colorize("Deploy:", "cyan")}
     deploy <config> <env> [setup] Deploy using ecosystem config
@@ -1656,6 +1882,15 @@ ${colorize("Notes:", "dim")}
         break;
       case "cloud":
         await this.cmdCloud(commandArgs);
+        break;
+      case "login":
+        await this.cmdLogin(commandArgs);
+        break;
+      case "logout":
+        await this.cmdLogout();
+        break;
+      case "whoami":
+        await this.cmdWhoami();
         break;
       case "env":
         await this.cmdEnv(commandArgs);

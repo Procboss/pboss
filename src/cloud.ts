@@ -69,6 +69,48 @@ export function resolveCloudUrl(explicit?: string): string {
   return url.replace(/\/+$/, "");
 }
 
+/* ── fleet view (`pboss cloud servers`, via the daemon's machine credential) ── */
+
+export interface CloudFleetServer {
+  id: string;
+  name: string;
+  host: string;
+  status: string;
+  os: string;
+  agentVersion: string;
+  cpu: number;
+  memUsed: number;
+  memTotal: number;
+  lastSeen: string;
+  enrolled: boolean;
+}
+
+/**
+ * GET /api/agent/servers with the machine credential — the linked server's
+ * owner's fleet with live presence. Runs inside the daemon (the CLI asks
+ * over the socket): the machine secret never leaves this process except
+ * toward the cloud itself.
+ */
+export async function fetchFleet(cfg: CloudConfig): Promise<CloudFleetServer[]> {
+  const res = await fetch(`${cfg.cloudUrl}/api/agent/servers`, {
+    headers: {
+      Authorization: `Bearer ${cfg.serverId}.${cfg.serverSecret}`,
+      "Content-Type": "application/json",
+    },
+  });
+  if (res.status === 401) {
+    throw new Error("the machine credential was revoked — re-link with `pboss cloud connect`");
+  }
+  if (!res.ok) {
+    throw new Error(`fleet request failed (HTTP ${res.status})`);
+  }
+  const body = (await res.json().catch((err: unknown) => {
+    ignore("parse fleet response", err);
+    return {};
+  })) as { servers?: CloudFleetServer[] };
+  return Array.isArray(body.servers) ? body.servers : [];
+}
+
 /* ── wire types (mirror of the cloud's protocol.ts) ───────────────────── */
 
 export type CloudProcessStatus = "online" | "stopped" | "errored";

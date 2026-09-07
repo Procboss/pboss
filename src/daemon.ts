@@ -18,7 +18,7 @@ import { ProcessManager } from "./process-manager";
 import { Dashboard } from "./dashboard";
 import { ModuleManager } from "./module-manager";
 import { CronJobManager } from "./cron-jobs";
-import { CloudAgent, loadCloudConfig, resolveCloudUrl } from "./cloud";
+import { CloudAgent, loadCloudConfig, saveCloudConfig, resolveCloudUrl, fetchFleet, type CloudConfig } from "./cloud";
 import {
   DAEMON_SOCKET,
   DAEMON_PID_FILE,
@@ -419,9 +419,62 @@ export default class Daemon {
           this.cloudAgent!.start(cfg);
           return { type: "cloudConnect", data: info, success: true, id: msg.id };
         }
+        case "cloudLink": {
+          // The CLI finished the device-code handshake (code printed, human
+          // approved in a browser, credential claimed over HTTPS). The
+          // DAEMON takes ownership from here: writes cloud.json (0600) and
+          // starts the outbound connection — the CLI never stores the
+          // machine secret itself.
+          const { cloudUrl, serverId, serverSecret, serverName } = msg.data ?? {};
+          if (!cloudUrl || !serverId || !serverSecret) {
+            return { type: "error", error: "cloudLink requires cloudUrl, serverId, serverSecret", success: false, id: msg.id };
+          }
+          const cfg: CloudConfig = {
+            cloudUrl: resolveCloudUrl(cloudUrl),
+            serverId: String(serverId),
+            serverSecret: String(serverSecret),
+            serverName: serverName ? String(serverName) : undefined,
+          };
+          saveCloudConfig(cfg);
+          this.cloudAgent!.start(cfg);
+          return {
+            type: "cloudLink",
+            data: { serverId: cfg.serverId, serverName: cfg.serverName ?? cfg.serverId },
+            success: true,
+            id: msg.id,
+          };
+        }
         case "cloudStatus": {
           const status = this.cloudAgent!.status();
           return { type: "cloudStatus", data: status, success: true, id: msg.id };
+        }
+        case "cloudServers": {
+          // Fleet list through the MACHINE credential — daemon-mediated by
+          // design: the secret stays in this process, the CLI just renders.
+          const cfg = this.cloudAgent?.config ?? loadCloudConfig();
+          if (!cfg) {
+            return {
+              type: "error",
+              error: "this machine is not linked to ProcBoss Cloud — run `pboss cloud connect` first",
+              success: false,
+              id: msg.id,
+            };
+          }
+          const servers = await fetchFleet(cfg);
+          return { type: "cloudServers", data: { servers }, success: true, id: msg.id };
+        }
+        case "cloudReconnect": {
+          const cfg = this.cloudAgent?.config ?? loadCloudConfig();
+          if (!cfg) {
+            return {
+              type: "error",
+              error: "this machine is not linked to ProcBoss Cloud — run `pboss cloud connect` first",
+              success: false,
+              id: msg.id,
+            };
+          }
+          this.cloudAgent!.start(cfg); // start() stops the old loops first (no revoke)
+          return { type: "cloudReconnect", data: { ok: true }, success: true, id: msg.id };
         }
         case "cloudDisconnect": {
           await this.cloudAgent!.stop({ revoke: true });
