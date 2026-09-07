@@ -49,7 +49,9 @@ function fakeState(overrides: Partial<ProcessState> = {}): ProcessState {
       created_at: Date.now(),
       restart_time: 2,
       unstable_restarts: 1,
-      pm_uptime: 45_000,
+      // pm_uptime is the epoch-ms START timestamp — a 45-second-old process
+      // started 45s ago (mapProcessState computes now - start).
+      pm_uptime: Date.now() - 45_000,
       status: "online",
       pm_id: 0,
     },

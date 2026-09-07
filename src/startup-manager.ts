@@ -28,6 +28,8 @@
 import { join } from "path";
 import { readFileSync } from "fs";
 import { $ } from "bun";
+import { ignore } from "./error-handling";
+import { waitForDaemon, stopDaemonIfRunning } from "./api";
 import {
   IS_COMPILED,
   findBun,
@@ -65,19 +67,25 @@ function homeForUser(user: string): string | null {
     const line = passwd.split("\n").find((l) => l.startsWith(`${user}:`));
     const home = line?.split(":")[5];
     if (home) return home;
-  } catch {}
+  } catch (err) {
+    ignore(`resolve home for ${user} via /etc/passwd`, err);
+  }
   try {
     const r = Bun.spawnSync(["dscl", ".", "-read", `/Users/${user}`, "NFSHomeDirectory"]);
     const out = new TextDecoder().decode(r.stdout ?? new Uint8Array()).trim();
     const m = out.match(/NFSHomeDirectory:\s*(.+)/);
     if (m?.[1]) return m[1].trim();
-  } catch {}
+  } catch (err) {
+    ignore(`resolve home for ${user} via dscl`, err);
+  }
   try {
     const r = Bun.spawnSync(["getent", "passwd", user]);
     const out = new TextDecoder().decode(r.stdout ?? new Uint8Array()).trim();
     const home = out.split(":")[5];
     if (home) return home;
-  } catch {}
+  } catch (err) {
+    ignore(`resolve home for ${user} via getent`, err);
+  }
   return null;
 }
 
@@ -163,7 +171,11 @@ export class StartupManager {
 
   private generateSystemd(daemonCmd: string[]): string {
     const execStart = daemonCmd.join(" ");
-    const execStartPost = cliSpawnCommand("resurrect").join(" ");
+    // --wait: poll for the ExecStart daemon instead of spawning a competing
+    // one (resurrect's auto-spawn raced ExecStart for the socket; the loser
+    // exited 1 and the unit looped into "Start request repeated too
+    // quickly").
+    const execStartPost = cliSpawnCommand("resurrect", "--wait", "30").join(" ");
     const execReload = cliSpawnCommand("reload", "all").join(" ");
     const execStop = cliSpawnCommand("kill").join(" ");
     const target = targetUserContext();
@@ -182,6 +194,10 @@ LimitCORE=infinity
 Environment=PATH=${this.servicePath()}
 Environment=PBOSS_HOME=${join(target.home, ".pboss")}
 Restart=on-failure
+# Exit 81 = another daemon already owns the socket (leftover detached
+# daemon). Retrying cannot fix that — without this, systemd restart-loops
+# into "Start request repeated too quickly".
+RestartPreventExitStatus=81
 
 ExecStart=${execStart}
 ExecStartPost=${execStartPost}
@@ -277,11 +293,17 @@ ${plist}`;
 
       try {
         await Bun.write(servicePath, unitContent);
-      } catch {
+      } catch (err) {
         throw new Error(
-          `Failed to write ${servicePath}. Re-run with root:  ${sudoRetryHint()}`
+          `Failed to write ${servicePath} (${err instanceof Error ? err.message : String(err)}). Re-run with root:  ${sudoRetryHint()}`
         );
       }
+
+      // A detached daemon from an earlier CLI command would hold the socket
+      // the unit's ExecStart needs — the loser used to exit 1 and the unit
+      // restart-looped. Ask any stray to stop BEFORE enabling the unit.
+      // (Never spawns: it only acts when a daemon already answers.)
+      await stopDaemonIfRunning();
 
       // Best-effort enablement — on hosts without a running systemd (some
       // containers) these fail; the file is still installed, so tell the user
@@ -294,7 +316,8 @@ ${plist}`;
       ] as const) {
         try {
           await $`systemctl ${args}`;
-        } catch {
+        } catch (err) {
+          ignore(`systemctl ${args.join(" ")}`, err);
           manual.push(`systemctl ${args.join(" ")}`);
         }
       }
@@ -304,6 +327,27 @@ ${plist}`;
           `Service file installed at ${servicePath}, but systemd could not be\n` +
           `controlled from here. Finish enabling it with:\n  ` +
           manual.map((c) => `sudo ${c}`).join("\n  ")
+        );
+      }
+
+      // Verify the unit actually came up instead of reporting blind success.
+      const active =
+        (await $`systemctl is-active pboss`.text().catch((err: unknown) => {
+          ignore("systemctl is-active pboss (verification)", err);
+          return "";
+        })).trim() === "active";
+      const responsive = await waitForDaemon(15_000);
+      if (!active || !responsive) {
+        const journal = await $`journalctl -u pboss -n 25 --no-pager`
+          .text()
+          .catch((err: unknown) => {
+            ignore("journalctl -u pboss (verification)", err);
+            return "";
+          });
+        return (
+          `Service installed but did not become healthy (active: ${active}, daemon responsive: ${responsive}).\n` +
+          `Recent unit output:\n${journal || "  (journalctl unavailable)"}\n` +
+          `Inspect with:  systemctl status pboss  ·  journalctl -u pboss -n 50 --no-pager`
         );
       }
       return `Service installed and started: ${servicePath}`;
@@ -318,11 +362,14 @@ ${plist}`;
 
       try {
         await $`launchctl unload ${plistPath}`; // reload if it was already loaded
-      } catch {}
+      } catch (err) {
+        ignore(`launchctl unload ${plistPath} (first install)`, err);
+      }
       try {
         await $`launchctl load -w ${plistPath}`;
         return `Plist installed and loaded: ${plistPath}`;
-      } catch {
+      } catch (err) {
+        ignore(`launchctl load -w ${plistPath}`, err);
         return `Plist installed at ${plistPath}\nLoad it:  launchctl load -w ${plistPath}`;
       }
     } else if (os === "win32") {
@@ -396,18 +443,18 @@ ${plist}`;
         );
       }
       // Best-effort — tolerate hosts where systemd is not the init.
-      try { await $`systemctl stop pboss`; } catch {}
-      try { await $`systemctl disable pboss`; } catch {}
-      try { await $`rm -f /etc/systemd/system/pboss.service`; } catch {}
-      try { await $`systemctl daemon-reload`; } catch {}
+      try { await $`systemctl stop pboss`; } catch (err) { ignore("systemctl stop pboss (uninstall)", err); }
+      try { await $`systemctl disable pboss`; } catch (err) { ignore("systemctl disable pboss (uninstall)", err); }
+      try { await $`rm -f /etc/systemd/system/pboss.service`; } catch (err) { ignore("rm service file (uninstall)", err); }
+      try { await $`systemctl daemon-reload`; } catch (err) { ignore("systemctl daemon-reload (uninstall)", err); }
 
       return "PBOSS service removed";
     } else if (os === "darwin") {
       const target = targetUserContext();
       const plistPath = join(target.home, "Library", "LaunchAgents", "com.pboss.daemon.plist");
 
-      try { await $`launchctl unload ${plistPath}`; } catch {}
-      try { await $`rm -f ${plistPath}`; } catch {}
+      try { await $`launchctl unload ${plistPath}`; } catch (err) { ignore(`launchctl unload ${plistPath} (uninstall)`, err); }
+      try { await $`rm -f ${plistPath}`; } catch (err) { ignore(`rm ${plistPath} (uninstall)`, err); }
       return "PBOSS launch agent removed";
     } else if (os === "win32") {
       const taskName = "PBOSS_Daemon";

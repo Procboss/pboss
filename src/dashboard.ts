@@ -17,6 +17,7 @@
 import { ProcessManager } from "./process-manager";
 import { getDashboardHTML } from "./dashboard-ui";
 import { DASHBOARD_PORT, METRICS_PORT } from "./constants";
+import { ignore } from "./error-handling";
 import type { Server, ServerWebSocket } from "bun";
 
 export class Dashboard {
@@ -88,7 +89,10 @@ export class Dashboard {
           try {
             const msg = JSON.parse(String(message));
             await this.handleWsMessage(ws, msg);
-          } catch {}
+          } catch (err) {
+            // Malformed/mid-disconnect client frames are noise, not errors.
+            ignore("handle dashboard ws message", err);
+          }
         },
         close: (ws) => {
           this.clients.delete(ws);

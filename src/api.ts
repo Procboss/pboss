@@ -30,6 +30,8 @@ import {
 } from "./constants";
 import { ensureDirs, generateId } from "./utils";
 import { daemonSpawnCommand } from "./install-mode";
+import { ignore } from "./error-handling";
+import { probeDaemon } from "./daemon-probe";
 import Daemon from "./daemon";
 import type {
   DaemonMessage,
@@ -192,7 +194,11 @@ export async function getProcesses(): Promise<ProcessState[]> {
   if (defaultClient.isDaemonRunning() && (await defaultClient.isDaemonAlive())) {
     try {
       return await defaultClient.list();
-    } catch {}
+    } catch (err) {
+      // Live list failed — fall through to the saved dump, but record it:
+      // silent here would look like "no processes" instead of a daemon error.
+      ignore("list processes from live daemon (falling back to dump)", err);
+    }
   }
   return readSavedProcesses();
 }
@@ -200,6 +206,57 @@ export async function getProcesses(): Promise<ProcessState[]> {
 // 
 // Main API class
 // 
+
+/**
+ * Wait for a daemon that someone ELSE is starting (a systemd unit's
+ * ExecStart, a supervisor). NEVER spawns — `resurrect --wait` uses this so
+ * the CLI cannot race the unit's daemon for the socket (the loser's
+ * EADDRINUSE exit code 1 was what sent the unit into systemd's restart
+ * storm: "Start request repeated too quickly").
+ *
+ * Returns true once a live daemon answers pings, false on timeout.
+ */
+export async function waitForDaemon(timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await probeDaemon()) return true;
+    await Bun.sleep(200);
+  }
+  return await probeDaemon() !== null;
+}
+
+/**
+ * Ask a running daemon to shut down — used by `pboss startup` before the
+ * systemd unit takes over, so a leftover detached daemon (spawned by an
+ * earlier CLI command) cannot hold the socket the unit needs. Never
+ * spawns. Returns true if a daemon was found and asked to stop.
+ */
+export async function stopDaemonIfRunning(timeoutMs: number = 15_000): Promise<boolean> {
+  const live = await probeDaemon();
+  if (!live) return false;
+
+  try {
+    await fetch("http://localhost/", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ type: "kill", id: "startup-stop" }),
+      unix: DAEMON_SOCKET,
+    });
+    // The daemon may exit before responding — that IS the success path.
+  } catch (err) {
+    ignore("stopDaemonIfRunning: send kill", err);
+  }
+
+  // Wait until it is actually gone so the unit's daemon can bind cleanly.
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (!(await probeDaemon())) return true;
+    await Bun.sleep(200);
+  }
+  // Still alive after the grace period — leave it; the unit's daemon will
+  // surface a clear DaemonConflictError (exit 81) instead of a restart loop.
+  return true;
+}
 
 export class PBoss extends EventEmitter<PBossEvents> {
   public readonly noDaemon: boolean;
@@ -447,7 +504,10 @@ export class PBoss extends EventEmitter<PBossEvents> {
             try {
               const data = JSON.parse(chunk.replace(/^data:\s*/, "").trim()) as LogItem;
               callback(data);
-            } catch {}
+            } catch (err) {
+              // Non-JSON frames (keepalives, partial writes) — skip the line.
+              ignore("parse in-process log line", err);
+            }
           }
         },
         close: () => {},
@@ -496,7 +556,10 @@ export class PBoss extends EventEmitter<PBossEvents> {
         try {
           const result = JSON.parse(line) as LogItem;
           callback(result);
-        } catch {}
+        } catch (err) {
+          // Non-JSON frames (keepalives, partial writes) — skip the line.
+          ignore("parse streamed log line", err);
+        }
       }
     }
   }
@@ -913,13 +976,14 @@ export class PBoss extends EventEmitter<PBossEvents> {
   async kill(): Promise<void> {
     try {
       await this.send({ type: "kill" });
-    } catch {
+    } catch (err) {
       // Expected — daemon exits before responding
+      ignore("send kill to daemon (exits before responding)", err);
     }
 
     // Clean up leftover files
-    try { if (existsSync(DAEMON_SOCKET)) unlinkSync(DAEMON_SOCKET); } catch {}
-    try { if (existsSync(DAEMON_PID_FILE)) unlinkSync(DAEMON_PID_FILE); } catch {}
+    try { if (existsSync(DAEMON_SOCKET)) unlinkSync(DAEMON_SOCKET); } catch (err) { ignore(`unlink ${DAEMON_SOCKET} after kill`, err); }
+    try { if (existsSync(DAEMON_PID_FILE)) unlinkSync(DAEMON_PID_FILE); } catch (err) { ignore(`unlink ${DAEMON_PID_FILE} after kill`, err); }
 
     this._connected = false;
     this._daemonPid = null;

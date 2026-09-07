@@ -26,6 +26,7 @@ import { ClusterManager } from "./cluster-manager";
 import { HealthChecker } from "./health-checker";
 import { CronManager } from "./cron-manager";
 import { treeKill } from "./utils";
+import { ignore, warn } from "./error-handling";
 import { join } from "path";
 import {
   PID_DIR,
@@ -269,7 +270,9 @@ export class ProcessContainer {
       }
     } catch {
       if (remainder.trim().length > 0) {
-        await this.logManager.appendJSONLog(filePath, remainder).catch(() => {});
+        await this.logManager.appendJSONLog(filePath, remainder).catch((err: unknown) =>
+          warn(`append structured log ${filePath}`, err),
+        );
       }
     }
   }
@@ -294,7 +297,10 @@ export class ProcessContainer {
           if (process.platform === "linux") {
             try {
               this.handles = (await readdir(`/proc/${this.pid}/fd`)).length;
-            } catch {}
+            } catch (err) {
+              // Expected when the process exits between metric ticks.
+              ignore(`read /proc/${this.pid}/fd (process may have exited)`, err);
+            }
           }
   
           // 3. Max memory restart
@@ -303,7 +309,10 @@ export class ProcessContainer {
             await this.restart();
           }
           
-        } catch {}
+        } catch (err) {
+          // Metrics degrade to the last known values; recorded for diagnosis.
+          ignore(`metrics tick for ${this.name} (pid ${this.pid})`, err);
+        }
       }, MONITOR_INTERVAL);
   }
 
@@ -348,7 +357,11 @@ export class ProcessContainer {
           }
         );
         this.watchers.push(w);
-      } catch {}
+      } catch (err) {
+        // A failed watcher silently disabled watch-mode restarts — the user
+        // asked for watch and thinks it works. Warn, don't swallow.
+        warn(`start file watcher for ${this.name} (watch-mode restarts inactive)`, err);
+      }
     }
   }
 
@@ -361,7 +374,7 @@ export class ProcessContainer {
   
     this.cleanupTimers();
     if (oldPid) {
-      try { (pidusage as any).clear(oldPid); } catch {}
+      try { (pidusage as any).clear(oldPid); } catch (err) { ignore(`pidusage.clear(${oldPid}) on exit`, err); }
     }
   
     const uptime = Date.now() - this.startedAt;
@@ -425,7 +438,7 @@ export class ProcessContainer {
     this.cleanupTimers();
 
     for (const w of this.watchers) {
-      try { w.close(); } catch {}
+      try { w.close(); } catch (err) { ignore(`close watcher for ${this.name}`, err); }
     }
     this.watchers = [];
 
@@ -464,7 +477,7 @@ export class ProcessContainer {
     }
 
     if (oldPid) {
-      try { (pidusage as any).clear(oldPid); } catch {}
+      try { (pidusage as any).clear(oldPid); } catch (err) { ignore(`pidusage.clear(${oldPid}) on stop`, err); }
     }
 
     // Clean up cluster workers
@@ -507,8 +520,11 @@ export class ProcessContainer {
         } else {
           oldProcess.kill("SIGTERM" as any);
         }
-      } catch {}
-      try { (pidusage as any).clear(oldPid); } catch {}
+      } catch (err) {
+        // Old process already gone — reload continues with the new one.
+        ignore(`SIGTERM old pid ${oldPid} during reload`, err);
+      }
+      try { (pidusage as any).clear(oldPid); } catch (err) { ignore(`pidusage.clear(${oldPid}) on reload`, err); }
     }
 
     this.isRestarting = false;

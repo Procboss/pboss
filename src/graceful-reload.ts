@@ -15,6 +15,7 @@
  */
 import type { ProcessContainer } from "./process-container";
 import { treeKill } from "./utils";
+import { ignore } from "./error-handling";
 
 export class GracefulReload {
   async reload(
@@ -63,7 +64,10 @@ export class GracefulReload {
           } else {
             process.kill(oldPid, "SIGTERM" as any);
           }
-        } catch {}
+        } catch (err) {
+          // Old process already gone — reload continues with the new one.
+          ignore(`SIGTERM old pid ${oldPid} during reload`, err);
+        }
       }
   
       if (i < containers.length - 1) {

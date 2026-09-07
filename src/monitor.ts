@@ -17,6 +17,7 @@
 import type { MetricSnapshot, ProcessState } from "./types";
 import { getSystemInfo } from "./utils";
 import { METRICS_DIR } from "./constants";
+import { ignore } from "./error-handling";
 import { join } from "path";
 import pidusage from "pidusage";
 import { readdirSync } from "node:fs";
@@ -46,7 +47,10 @@ export class Monitor {
           // Count file descriptors
           try {
             handles = readdirSync(`/proc/${pid}/fd`).length;
-          } catch {}
+          } catch (err) {
+            // Expected when the process exits between the /proc reads.
+            ignore(`read /proc/${pid}/fd (process may have exited)`, err);
+          }
         }
 
         if (await statFile.exists()) {
@@ -69,7 +73,11 @@ export class Monitor {
           cpu: stats.cpu,
         };
       }
-    } catch {}
+    } catch (err) {
+      // Metrics degrade to zeros — recorded so a probe of recentSuppressed()
+      // can tell a dead process from a broken pidusage install.
+      ignore(`get metrics for pid ${pid}`, err);
+    }
 
     return { memory: 0, cpu: 0 };
   }

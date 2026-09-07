@@ -29,6 +29,7 @@
 import { mkdirSync, appendFileSync, openSync, closeSync, existsSync } from "node:fs";
 import { join } from "path";
 import { CRON_FILE, CRON_LOG_DIR, CRON_LATE_WINDOW_MS, CRON_WATCHDOG_INTERVAL_MS } from "./constants";
+import { warn } from "./error-handling";
 import { parseSchedule, nextCronRun, nextCronRuns } from "./cron-expr";
 import type { CronJob, CronJobConfig } from "./types";
 
@@ -384,7 +385,11 @@ export class CronJobManager {
       job.lastError = err?.message ?? String(err);
       try {
         appendFileSync(logFile, `[${stamp(Date.now())}] ✖ spawn failed: ${job.lastError}\n`);
-      } catch {}
+      } catch (logErr) {
+        // The cron execution log itself is unwritable — job.lastError above
+        // still carries the failure, and this is now visible too.
+        warn(`append cron log ${logFile}`, logErr);
+      }
     }
 
     job.lastExitCode = exitCode;

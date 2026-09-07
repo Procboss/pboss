@@ -17,6 +17,7 @@
 import { join } from "path";
 import { ALL_DIRS, PBOSS_HOME } from "./constants";
 import { mkdir } from "fs/promises";
+import { ignore } from "./error-handling";
 import { totalmem, freemem, loadavg, platform, hostname, uptime } from "node:os";
 
 export const DUMP_FILE = join(PBOSS_HOME, "dump.json");
@@ -113,10 +114,13 @@ export function treeKill(pid: number, signal: string = "SIGTERM"): Promise<void>
             stderr: "ignore",
           });
           await proc.exited;
-        } catch {
+        } catch (err) {
+          ignore(`taskkill ${pid} on Windows`, err);
           try {
             process.kill(pid);
-          } catch {}
+          } catch (err2) {
+            ignore(`process.kill(${pid}) after taskkill failure`, err2);
+          }
         }
         resolve();
         return;
@@ -131,12 +135,20 @@ export function treeKill(pid: number, signal: string = "SIGTERM"): Promise<void>
         for (const childPid of childPids) {
           await treeKill(childPid, signal);
         }
-      } catch {}
+      } catch (err) {
+        // No pgrep (rare minimal systems) — fall through to direct kill.
+        ignore(`pgrep -P ${pid} (children may survive)`, err);
+      }
 
       try {
         process.kill(pid, signal as any);
-      } catch {}
-    } catch {}
+      } catch (err) {
+        // Already-dead processes are the normal case during teardown.
+        ignore(`kill(${pid}, ${signal}) — process already gone`, err);
+      }
+    } catch (err) {
+      ignore(`treeKill(${pid}, ${signal})`, err);
+    }
     resolve();
   });
 }

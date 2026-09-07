@@ -25,6 +25,12 @@ import {
   DASHBOARD_PORT,
   METRICS_PORT,
 } from "./constants";
+import {
+  DaemonConflictError,
+  EXIT_DAEMON_CONFLICT,
+  ignore,
+} from "./error-handling";
+import { probeDaemon } from "./daemon-probe";
 import { ensureDirs } from "./utils";
 import type { DaemonMessage, DaemonResponse } from "./types";
 import type { ReadableStreamController, Server } from "bun";
@@ -71,33 +77,43 @@ export default class Daemon {
     this.debugMode = this.args.includes("--debug");
 
     if (_daemonEnabled) {
-      // Check if an existing daemon is already alive on this machine
-      if (existsSync(DAEMON_PID_FILE)) {
-        try {
-          const pidText = readFileSync(DAEMON_PID_FILE, "utf-8").trim();
-          if (pidText) {
-            const existingPid = parseInt(pidText);
-            if (existingPid !== process.pid) {
-              process.kill(existingPid, 0); // throws if process does not exist
-              if (existsSync(DAEMON_SOCKET)) {
-                // Another daemon process is already active on this machine
-                return;
-              }
-            }
-          }
-        } catch {
-          // Stale PID file, safe to overwrite
-        }
+      // A RESPONSIVE socket is the authoritative "another daemon is live"
+      // signal — PID files can lie (PID reuse after a reboot), so conflict
+      // decisions are made on the probe, not the PID file. The old code
+      // silently returned here and then failed binding the socket with an
+      // opaque EADDRINUSE; now the conflict is loud and typed, and the
+      // systemd unit restarts nothing (RestartPreventExitStatus=81).
+      const live = await probeDaemon();
+      if (live) {
+        throw new DaemonConflictError(DAEMON_SOCKET, live.pid);
       }
 
-      // Clean up existing socket
+      // Stale leftovers from a crash / reboot — take them over.
+      try {
+        if (existsSync(DAEMON_PID_FILE)) {
+          const pidText = readFileSync(DAEMON_PID_FILE, "utf-8").trim();
+          const existingPid = parseInt(pidText);
+          if (pidText && existingPid !== process.pid) {
+            process.kill(existingPid, 0);
+          }
+        }
+      } catch (err) {
+        // Stale PID file (process gone / PID reused) — safe to overwrite.
+        ignore(`read/verify PID file ${DAEMON_PID_FILE} (stale)`, err);
+      }
+
+      // Clean up stale socket so Bun.serve can bind cleanly
       try {
         if (existsSync(DAEMON_SOCKET)) unlinkSync(DAEMON_SOCKET);
-      } catch {}
+      } catch (err) {
+        ignore(`unlink stale socket ${DAEMON_SOCKET}`, err);
+      }
       try {
         const sock = Bun.file(DAEMON_SOCKET);
         if (await sock.exists()) await sock.delete();
-      } catch {}
+      } catch (err) {
+        ignore(`delete stale socket file ${DAEMON_SOCKET}`, err);
+      }
 
       // Write PID file
       await Bun.write(DAEMON_PID_FILE, String(process.pid));
@@ -416,7 +432,13 @@ export default class Daemon {
           this.cronJobManager!.stop();
           if (this.cloudAgent) await this.cloudAgent.stop({ revoke: false, quiet: true });
           clearInterval(metricsInterval);
-          setTimeout(() => process.exit(0), 200);
+          setTimeout(() => {
+            // Remove our own runtime files so a stale socket/PID can never
+            // block the next start (client-side cleanup stays as fallback).
+            try { unlinkSync(DAEMON_PID_FILE); } catch (err) { ignore("unlink PID file on kill", err); }
+            try { if (existsSync(DAEMON_SOCKET)) unlinkSync(DAEMON_SOCKET); } catch (err) { ignore("unlink socket on kill", err); }
+            process.exit(0);
+          }, 200);
           return { type: "kill", success: true, id: msg.id };
         }
         default:
@@ -448,6 +470,10 @@ if (import.meta.main) {
     dm.startServer();
     console.log(`Daemon listening on ${DAEMON_SOCKET}`);
   })().catch((err) => {
+    if (err instanceof DaemonConflictError) {
+      console.error(`[pboss] cannot start daemon: ${err.message}`);
+      process.exit(EXIT_DAEMON_CONFLICT);
+    }
     console.error("Daemon startup error:", err);
     process.exit(1);
   });

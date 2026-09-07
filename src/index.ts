@@ -24,10 +24,11 @@ import {
   METRICS_PORT,
 } from "./constants";
 import { ensureDirs, formatBytes, formatUptime, colorize, padRight } from "./utils";
-import { PBoss, loadEcosystemConfig } from "./api";
+import { PBoss, loadEcosystemConfig, waitForDaemon } from "./api";
 import { DeployManager } from "./deploy";
 import { StartupManager } from "./startup-manager";
 import { EnvManager } from "./env-manager";
+import { DaemonConflictError, EXIT_DAEMON_CONFLICT } from "./error-handling";
 import type {
   StartOptions,
   ProcessState,
@@ -42,6 +43,23 @@ import chalk from "chalk";
 // ---------------------------------------------------------------------------
 // PBossCLI class — Delegates all process engine operations to PBoss API
 // ---------------------------------------------------------------------------
+
+/** Parse a `--wait <sec>` / `--wait=<sec>` flag. Returns the seconds (default
+ *  30 when the flag is bare) or null when the flag is absent. */
+function parseWaitFlag(args: string[]): number | null {
+  const i = args.indexOf("--wait");
+  if (i !== -1) {
+    const next = args[i + 1];
+    if (next !== undefined && /^\d+$/.test(next)) return parseInt(next, 10);
+    return 30;
+  }
+  const eq = args.find((a) => a.startsWith("--wait="));
+  if (eq) {
+    const v = parseInt(eq.slice("--wait=".length), 10);
+    return Number.isFinite(v) && v > 0 ? v : 30;
+  }
+  return null;
+}
 
 class PBossCLI {
   public pboss: PBoss;
@@ -482,7 +500,21 @@ class PBossCLI {
     }
   }
 
-  async cmdResurrect() {
+  async cmdResurrect(args: string[]) {
+    // `--wait <sec>` (or `--wait=<sec>`, default 30): poll for a daemon that
+    // someone ELSE is starting (systemd's ExecStart=pboss __daemon). NEVER
+    // spawns one — the spawned daemon would race the unit's daemon for the
+    // socket and the loser's EADDRINUSE exit was what restarted the unit in
+    // a loop ("Start request repeated too quickly").
+    const waitSec = parseWaitFlag(args);
+    if (waitSec !== null) {
+      if (!(await waitForDaemon(waitSec * 1000))) {
+        console.error(
+          colorize(`✗ Daemon did not become ready within ${waitSec}s`, "red"),
+        );
+        process.exit(1);
+      }
+    }
     try {
       const states = await this.pboss.resurrect();
       printProcessTable(states);
@@ -599,8 +631,13 @@ class PBossCLI {
   async cmdKill() {
     try {
       await this.pboss.kill();
-    } catch {}
-    console.log(colorize("✓ Daemon killed", "green"));
+      console.log(colorize("✓ Daemon killed", "green"));
+    } catch (err: any) {
+      // Honest failure — the old empty catch printed the success line even
+      // when nothing was killed.
+      console.error(colorize(`✗ Kill failed: ${err?.message ?? err}`, "red"));
+      process.exit(1);
+    }
   }
 
   async cmdDeploy(args: string[]) {
@@ -1200,6 +1237,9 @@ ${colorize("Notes:", "dim")}
     ${colorize("Persistence:", "cyan")}
     save                          Save current process list
     resurrect                     Restore saved process list
+                                  --wait <sec>: wait for an externally
+                                  started daemon instead of spawning one
+                                  (systemd unit ExecStartPost uses this)
     startup                       Install the boot startup service
                                   (sudo env PATH="$PATH" pboss startup on Linux)
     startup generate [os]         Print the service config without installing
@@ -1352,7 +1392,7 @@ ${colorize("Notes:", "dim")}
         break;
       case "resurrect":
       case "restore":
-        await this.cmdResurrect();
+        await this.cmdResurrect(commandArgs);
         break;
       case "reset":
         await this.cmdReset(commandArgs);
@@ -1395,11 +1435,29 @@ ${colorize("Notes:", "dim")}
         break;
       case "__daemon":
       case "daemon-server": {
-        const dm = new Daemon();
-        await dm.initialize(true);
-        dm.startServer();
-        console.log(`Daemon listening on ${DAEMON_SOCKET}`);
-        await new Promise(() => {});
+        // The systemd unit's ExecStart (and the CLI daemonizer) run this.
+        // Failure handling is explicit: a conflict with a live daemon exits
+        // 81 (systemd units set RestartPreventExitStatus=81 — a restart
+        // cannot help while the other daemon owns the socket); anything
+        // else exits 1 with the actual error instead of an unhandled
+        // rejection, so `journalctl -u pboss` shows something actionable.
+        try {
+          const dm = new Daemon();
+          await dm.initialize(true);
+          dm.startServer();
+          console.log(`Daemon listening on ${DAEMON_SOCKET}`);
+          await new Promise(() => {});
+        } catch (err) {
+          if (err instanceof DaemonConflictError) {
+            console.error(`[pboss] cannot start daemon: ${err.message}`);
+            console.error(
+              "[pboss] it is probably a leftover detached daemon — stop it with `pboss kill` and restart the service.",
+            );
+            process.exit(EXIT_DAEMON_CONFLICT);
+          }
+          console.error("Daemon startup error:", err);
+          process.exit(1);
+        }
         break;
       }
       case "help":

@@ -16,6 +16,7 @@ import { existsSync, readFileSync, writeFileSync, chmodSync, unlinkSync } from "
 import { platform, arch, hostname, totalmem, freemem, loadavg, cpus } from "node:os";
 import { VERSION, CLOUD_FILE, CLOUD_DEFAULT_URL, CLOUD_REPORT_INTERVAL_MS } from "./constants";
 import { getSystemInfo, colorize } from "./utils";
+import { ignore } from "./error-handling";
 import type { ProcessManager } from "./process-manager";
 import type { ProcessState, StartOptions, LogItem } from "./types";
 
@@ -56,7 +57,9 @@ export function saveCloudConfig(cfg: CloudConfig): void {
 export function clearCloudConfig(): void {
   try {
     if (existsSync(CLOUD_FILE)) unlinkSync(CLOUD_FILE);
-  } catch {}
+  } catch (err) {
+    ignore(`unlink cloud config ${CLOUD_FILE}`, err);
+  }
 }
 
 export function resolveCloudUrl(explicit?: string): string {
@@ -357,7 +360,10 @@ export class CloudAgent {
         pbossVersion: VERSION,
       }),
     });
-    const body = (await res.json().catch(() => ({}))) as {
+    const body = (await res.json().catch((err: unknown) => {
+      ignore("parse enrollment response JSON", err);
+      return {} as Record<string, string>;
+    })) as {
       serverId?: string;
       serverSecret?: string;
       serverName?: string;
@@ -388,8 +394,8 @@ export class CloudAgent {
     );
     void this.runStream();
     this.reportTimer = setInterval(() => this.reportNow?.(), CLOUD_REPORT_INTERVAL_MS);
-    this.reportNow = () => void this.reportState().catch(() => undefined);
-    void this.reportState().catch(() => undefined);
+    this.reportNow = () => void this.reportState().catch((err: unknown) => ignore("cloud state report (interval)", err));
+    void this.reportState().catch((err: unknown) => ignore("cloud state report (initial)", err));
   }
 
   /** Stop the agent. `revoke` also kills the credential server-side. */
@@ -527,7 +533,7 @@ export class CloudAgent {
         this.retry409Armed = true;
         setTimeout(() => {
           this.retry409Armed = false;
-          void this.reportState().catch(() => undefined);
+          void this.reportState().catch((err: unknown) => ignore("cloud state report (409 retry)", err));
         }, 1500);
         return;
       }
@@ -555,11 +561,13 @@ export class CloudAgent {
         headers: this.authHeader(cfg),
         body: JSON.stringify(result),
       });
-    } catch {
-      /* the dashboard request will time out on its own */
+    } catch (err) {
+      // The dashboard's command dispatch times out on its own — but record
+      // why the result never arrived.
+      ignore("post command result to cloud", err);
     }
     // the dashboard expects fresh state right after a command
-    await this.reportState().catch(() => undefined);
+    await this.reportState().catch((err: unknown) => ignore("cloud state report (post-command)", err));
   }
 
   private async executeCommand(cmd: CloudCommand): Promise<unknown> {

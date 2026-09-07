@@ -16,6 +16,7 @@
  
 import { join } from "path";
 import { PBOSS_HOME } from "./constants";
+import { warn } from "./error-handling";
 
 export class EnvManager {
   private envFile = join(PBOSS_HOME, "env-registry.json");
@@ -24,7 +25,11 @@ export class EnvManager {
     try {
       const file = Bun.file(this.envFile);
       if (await file.exists()) return await file.json();
-    } catch {}
+    } catch (err) {
+      // A present-but-unreadable registry is a real problem (corrupt JSON,
+      // permissions) — the user should see it, not silently lose all envs.
+      warn(`read env registry ${this.envFile}`, err);
+    }
     return {};
   }
 

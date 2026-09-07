@@ -108,6 +108,22 @@ describe("StartupManager — generated unit shape", () => {
     expect(out).toContain("Restart=on-failure");
   });
 
+  test.skipIf(process.platform === "win32")(
+    "linux unit waits for the ExecStart daemon and never restart-loops on conflict",
+    async () => {
+      const startup = new StartupManager();
+      const out = await startup.generate("linux");
+
+      // ExecStartPost must WAIT for the unit's own daemon instead of
+      // auto-spawning a competing one (the socket race that ended in
+      // "Start request repeated too quickly").
+      expect(out).toContain("resurrect --wait 30");
+      // Exit 81 = another daemon owns the socket — restarting cannot fix
+      // that; without this directive systemd restart-loops.
+      expect(out).toContain("RestartPreventExitStatus=81");
+    }
+  );
+
   test("win32 config mentions the simple install command", async () => {
     const startup = new StartupManager();
     const out = await startup.generate("win32");

@@ -196,8 +196,16 @@ describe("CronJobManager — execution", () => {
     const mgr = freshManager();
     const job = await mgr.add({ schedule: "every-second", command: "echo tick", name: "autotick" });
 
-    // Let the real scheduler fire it a few times.
-    await new Promise((r) => setTimeout(r, 3_000));
+    // Let the real scheduler fire it — poll instead of sleeping a fixed 3s so
+    // a loaded CI box (or a machine running the dev fleet) can be a few
+    // scheduler ticks late without flaking the suite. Bounded at 8s.
+    const deadline = Date.now() + 8_000;
+    while (Date.now() < deadline && (job.runCount ?? 0) < 1) {
+      await new Promise((r) => setTimeout(r, 250));
+    }
+    while (Date.now() < deadline && job.lastExitCode === null) {
+      await new Promise((r) => setTimeout(r, 250));
+    }
 
     expect(job.runCount).toBeGreaterThanOrEqual(1);
     expect(job.lastExitCode).toBe(0);

@@ -17,6 +17,7 @@
 import { join, dirname, basename } from "path";
 import { appendFile, rename, unlink, readdir } from "fs/promises";
 import { LOG_DIR, DEFAULT_LOG_MAX_SIZE, DEFAULT_LOG_RETAIN } from "./constants";
+import { ignore, warn } from "./error-handling";
 import type {  LogEntry, LogRotateOptions } from "./types";
 import { watch } from "fs";
 import type { ReadableStreamController } from "bun";
@@ -250,7 +251,11 @@ export class LogManager {
                 await Bun.write(`${dst}.gz`, compressed);
                 await unlink(dst);
               }
-            } catch {}
+            } catch (err) {
+              // Lost compression leaves the rotated file on disk (not lost,
+              // just uncompressed) — visible, not silent.
+              warn(`compress rotated log ${dst}`, err);
+            }
           })());
         }
       }
@@ -266,19 +271,21 @@ export class LogManager {
       readdir(dir).then(files =>
         Promise.all(
           files.filter(f => f.startsWith(`${baseName}.`)).sort().reverse()
-            .slice(options.retain).map(f => unlink(join(dir, f)).catch(() => {}))
+            .slice(options.retain).map(f =>
+              unlink(join(dir, f)).catch(err => ignore(`delete old rotated log ${f}`, err))
+            )
         )
-      ).catch(() => {})
+      ).catch(err => ignore(`readdir ${dir} during rotation cleanup`, err))
     );
   
     // Let Bun handle the heavy lifting in the background!
-    Promise.all(bgTasks).catch(() => {}); 
+    Promise.all(bgTasks).catch(err => ignore("log rotation background tasks", err)); 
   }
 
   async flush(name: string, id: number, customOut?: string, customErr?: string) {
     const paths = this.getLogPaths(name, id, customOut, customErr);
-    try { await Bun.write(paths.outFile, ""); } catch {}
-    try { await Bun.write(paths.errFile, ""); } catch {}
+    try { await Bun.write(paths.outFile, ""); } catch (err) { warn(`truncate ${paths.outFile}`, err); }
+    try { await Bun.write(paths.errFile, ""); } catch (err) { warn(`truncate ${paths.errFile}`, err); }
   }
 
   async checkRotation(
