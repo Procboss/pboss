@@ -18,7 +18,7 @@ artifact /usr/local/bin/pboss holds on a real host).
 
 Scenarios:
   A.  clean ExecStart under systemd-like env -> daemon must come up and stay
-  B.  ExecStartPost 'resurrect --wait 30' with a live daemon          -> 0
+  B.  ExecStartPost 'resurrect --wait 10' with a live daemon          -> 0
   B2. ExecStartPost fired IMMEDIATELY at a cold ExecStart (unit race)  -> daemon
       survives, resurrect exits 0
   C.  conflict: stray daemon + ExecStart -> exit 81 (RestartPreventExitStatus)
@@ -111,9 +111,9 @@ peer.setblocking(True)
 alive = proc.poll() is None
 report("A: daemon stays up under systemd env", alive, f"rc so far={proc.poll()}, stdout={out.decode(errors='replace').strip()[:200]!r}")
 
-# ── Scenario B: ExecStartPost resurrect --wait 30 while daemon is live ────
-print("=== B: ExecStartPost resurrect --wait 30 (daemon live) ===", flush=True)
-rc, out = systemd_run([BIN, "resurrect", "--wait", "30"], timeout=40)
+# ── Scenario B: ExecStartPost resurrect --wait 10 while daemon is live ────
+print("=== B: ExecStartPost resurrect --wait 10 (daemon live) ===", flush=True)
+rc, out = systemd_run([BIN, "resurrect", "--wait", "10"], timeout=40)
 report("B: resurrect --wait exits 0 with live daemon", rc == 0, f"rc={rc}, out={out.strip()[:300]!r}")
 
 # ── Scenario B2: ExecStartPost fired IMMEDIATELY at ExecStart (the race) ──
@@ -122,7 +122,7 @@ cleanup_daemons()
 wipe_home()
 dproc, dpeer = systemd_run([BIN, "__daemon"], wait=False)
 # fire ExecStartPost ~instantly like systemd does (ExecStart just forked)
-rc, out = systemd_run([BIN, "resurrect", "--wait", "30"], timeout=40)
+rc, out = systemd_run([BIN, "resurrect", "--wait", "10"], timeout=40)
 d_alive = dproc.poll() is None
 report("B2: cold-start race, ExecStart daemon survives", d_alive, f"daemon rc={dproc.poll()}")
 report("B2: cold-start race, resurrect exit code", rc == 0, f"rc={rc}, out={out.strip()[:300]!r}")

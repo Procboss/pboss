@@ -230,9 +230,17 @@ export async function waitForDaemon(timeoutMs: number): Promise<boolean> {
  * the systemd unit takes over, so a leftover detached daemon (spawned by an
  * earlier CLI command) cannot hold the socket the unit needs. Never
  * spawns. Returns true if a daemon was found and asked to stop.
+ *
+ * The socket defaults to the CLI's own PBOSS_HOME, but under `sudo pboss
+ * startup install` the unit's daemon runs as the SUDO_USER with THEIR
+ * ~/.pboss — callers pass that path explicitly so a stray there is stopped
+ * too (otherwise the unit's daemon would hit EADDRINUSE and exit 81).
  */
-export async function stopDaemonIfRunning(timeoutMs: number = 15_000): Promise<boolean> {
-  const live = await probeDaemon();
+export async function stopDaemonIfRunning(
+  timeoutMs: number = 15_000,
+  socketPath: string = DAEMON_SOCKET,
+): Promise<boolean> {
+  const live = await probeDaemon(socketPath);
   if (!live) return false;
 
   try {
@@ -240,7 +248,7 @@ export async function stopDaemonIfRunning(timeoutMs: number = 15_000): Promise<b
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ type: "kill", id: "startup-stop" }),
-      unix: DAEMON_SOCKET,
+      unix: socketPath,
     });
     // The daemon may exit before responding — that IS the success path.
   } catch (err) {
@@ -250,7 +258,7 @@ export async function stopDaemonIfRunning(timeoutMs: number = 15_000): Promise<b
   // Wait until it is actually gone so the unit's daemon can bind cleanly.
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    if (!(await probeDaemon())) return true;
+    if (!(await probeDaemon(socketPath))) return true;
     await Bun.sleep(200);
   }
   // Still alive after the grace period — leave it; the unit's daemon will

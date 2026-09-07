@@ -26,11 +26,13 @@
  */
 
 import { join } from "path";
-import { readFileSync } from "fs";
+import { readFileSync, rmSync } from "fs";
 import { mkdir } from "fs/promises";
 import { $ } from "bun";
 import { ignore } from "./error-handling";
-import { waitForDaemon, stopDaemonIfRunning } from "./api";
+import { stopDaemonIfRunning } from "./api";
+import { probeDaemon } from "./daemon-probe";
+import { DAEMON_SOCKET } from "./constants";
 import {
   IS_COMPILED,
   findBun,
@@ -179,8 +181,10 @@ export class StartupManager {
     // --wait: poll for the ExecStart daemon instead of spawning a competing
     // one (resurrect's auto-spawn raced ExecStart for the socket; the loser
     // exited 1 and the unit looped into "Start request repeated too
-    // quickly").
-    const execStartPost = cliSpawnCommand("resurrect", "--wait", "30").join(" ");
+    // quickly"). 10s is generous for a compiled binary to bind its socket;
+    // it also keeps each FAILED start cycle short, which matters for the
+    // start-rate limiter below.
+    const execStartPost = cliSpawnCommand("resurrect", "--wait", "10").join(" ");
     const execReload = cliSpawnCommand("reload", "all").join(" ");
     const execStop = cliSpawnCommand("kill").join(" ");
     const target = targetUserContext();
@@ -189,6 +193,14 @@ export class StartupManager {
 Description=ProcBoss Process Manager
 Documentation=https://procboss.com
 After=network.target
+# Explicit start-rate limiting. The systemd default is 5 starts / 10s —
+# but one failed cycle here takes >=10s (ExecStartPost polls for the
+# daemon), so the default window NEVER fills: a failing daemon
+# restart-loops forever, which also leaves the queued start job pending
+# forever and hangs systemctl start (and therefore
+# "pboss startup install"). 5 starts / 120s always terminates.
+StartLimitIntervalSec=120
+StartLimitBurst=5
 
 [Service]
 Type=simple
@@ -199,6 +211,9 @@ LimitCORE=infinity
 Environment=PATH=${this.servicePath()}
 Environment=PBOSS_HOME=${join(target.home, ".pboss")}
 Restart=on-failure
+# Bound the whole start (including ExecStartPost) so a hung start is a
+# failure systemd can act on, not a forever-activating unit.
+TimeoutStartSec=20
 # Exit 81 = another daemon already owns the socket (leftover detached
 # daemon). Retrying cannot fix that — without this, systemd restart-loops
 # into "Start request repeated too quickly".
@@ -315,58 +330,12 @@ ${plist}`;
         );
       }
 
-      // A detached daemon from an earlier CLI command would hold the socket
-      // the unit's ExecStart needs — the loser used to exit 1 and the unit
-      // restart-looped. Ask any stray to stop BEFORE enabling the unit.
-      // (Never spawns: it only acts when a daemon already answers.)
-      await stopDaemonIfRunning();
-
-      // Best-effort enablement — on hosts without a running systemd (some
-      // containers) these fail; the file is still installed, so tell the user
-      // which commands to run instead of crashing.
-      const manual: string[] = [];
-      for (const args of [
-        ["daemon-reload"],
-        ["enable", "pboss"],
-        ["start", "pboss"],
-      ] as const) {
-        try {
-          await $`systemctl ${args}`;
-        } catch (err) {
-          ignore(`systemctl ${args.join(" ")}`, err);
-          manual.push(`systemctl ${args.join(" ")}`);
-        }
-      }
-
-      if (manual.length > 0) {
-        return (
-          `Service file installed at ${servicePath}, but systemd could not be\n` +
-          `controlled from here. Finish enabling it with:\n  ` +
-          manual.map((c) => `sudo ${c}`).join("\n  ")
-        );
-      }
-
-      // Verify the unit actually came up instead of reporting blind success.
-      const active =
-        (await $`systemctl is-active pboss`.text().catch((err: unknown) => {
-          ignore("systemctl is-active pboss (verification)", err);
-          return "";
-        })).trim() === "active";
-      const responsive = await waitForDaemon(15_000);
-      if (!active || !responsive) {
-        const journal = await $`journalctl -u pboss -n 25 --no-pager`
-          .text()
-          .catch((err: unknown) => {
-            ignore("journalctl -u pboss (verification)", err);
-            return "";
-          });
-        return (
-          `Service installed but did not become healthy (active: ${active}, daemon responsive: ${responsive}).\n` +
-          `Recent unit output:\n${journal || "  (journalctl unavailable)"}\n` +
-          `Inspect with:  systemctl status pboss  ·  journalctl -u pboss -n 50 --no-pager`
-        );
-      }
-      return `Service installed and started: ${servicePath}`;
+      const target = targetUserContext();
+      return bringUpSystemdUnit({
+        servicePath,
+        targetUser: target.user,
+        targetHome: target.home,
+      });
     } else if (os === "darwin") {
       // LaunchAgents are per-user and need no root.
       const target = targetUserContext();
@@ -489,11 +458,30 @@ ${plist}`;
             `Re-run:  sudo env PATH="$PATH" pboss startup uninstall`
         );
       }
-      // Best-effort — tolerate hosts where systemd is not the init.
-      try { await $`systemctl stop pboss`; } catch (err) { ignore("systemctl stop pboss (uninstall)", err); }
-      try { await $`systemctl disable pboss`; } catch (err) { ignore("systemctl disable pboss (uninstall)", err); }
-      try { await $`rm -f /etc/systemd/system/pboss.service`; } catch (err) { ignore("rm service file (uninstall)", err); }
-      try { await $`systemctl daemon-reload`; } catch (err) { ignore("systemctl daemon-reload (uninstall)", err); }
+      // Stop with --no-block + our own bounded wait: a plain `systemctl stop`
+      // waits on the stop job, and a unit stuck in a restart loop (or with a
+      // D-state process) can hold that job — and the whole uninstall — for
+      // minutes. Also best-effort, to tolerate hosts without systemd.
+      const stop = await runSystemctl(["--no-block", "stop", "pboss"]);
+      if (stop.code === 0) {
+        const deadline = Date.now() + 15_000;
+        while (Date.now() < deadline) {
+          const state = (await runSystemctl(["is-active", "pboss"])).out;
+          if (state === "inactive" || state === "failed" || state === "") break;
+          await Bun.sleep(300);
+        }
+      } else {
+        ignore("systemctl --no-block stop pboss (uninstall)", stop.err);
+      }
+      const disable = await runSystemctl(["disable", "pboss"]);
+      if (disable.code !== 0) ignore("systemctl disable pboss (uninstall)", disable.err);
+      try {
+        rmSync("/etc/systemd/system/pboss.service", { force: true });
+      } catch (err) {
+        ignore("rm service file (uninstall)", err);
+      }
+      const reload = await runSystemctl(["daemon-reload"]);
+      if (reload.code !== 0) ignore("systemctl daemon-reload (uninstall)", reload.err);
 
       return "PBOSS service removed";
     } else if (os === "darwin") {
@@ -538,6 +526,171 @@ ${plist}`;
 
     return "Unsupported platform";
   }
+}
+
+// ---------------------------------------------------------------------------
+// systemd bring-up — the post-install half of `pboss startup install`
+// (Linux). Kept as module-level functions with systemctl resolved through
+// PATH so tests can drive them with a shim and no real systemd.
+// ---------------------------------------------------------------------------
+
+/** One systemctl invocation: exit code plus trimmed stdout/stderr. */
+export interface SystemctlResult {
+  code: number;
+  out: string;
+  err: string;
+}
+
+/**
+ * Run systemctl WITHOUT throwing. Ordinary systemctl states exit non-zero
+ * ("is-active" exits 3 for "activating"), which is information here, not
+ * failure. systemctl is resolved through PATH; a missing binary comes back
+ * as code 127 so callers can fall back to manual instructions.
+ */
+export async function runSystemctl(args: string[]): Promise<SystemctlResult> {
+  try {
+    // env: process.env (the LIVE object) — Bun resolves the executable
+    // through the PATH of the env passed at spawn time, so tests can
+    // substitute a systemctl shim by mutating PATH in-process.
+    const proc = Bun.spawn(["systemctl", ...args], {
+      stdout: "pipe",
+      stderr: "pipe",
+      env: process.env,
+    });
+    const [code, out, err] = await Promise.all([
+      proc.exited,
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+    ]);
+    return { code: code ?? 127, out: out.trim(), err: err.trim() };
+  } catch (err) {
+    ignore(`systemctl ${args.join(" ")}`, err);
+    return { code: 127, out: "", err: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+/** journalctl text (best-effort): trimmed output, "" when unavailable. */
+export async function journalctlText(args: string[]): Promise<string> {
+  try {
+    const proc = Bun.spawn(["journalctl", ...args], {
+      stdout: "pipe",
+      stderr: "pipe",
+      env: process.env,
+    });
+    const out = await new Response(proc.stdout).text();
+    await proc.exited;
+    return out.trim();
+  } catch (err) {
+    ignore(`journalctl ${args.join(" ")}`, err);
+    return "";
+  }
+}
+
+export interface BringUpOptions {
+  /** Where the unit file was written (used in the result messages). */
+  servicePath: string;
+  /** The user the unit runs as (User=) — used in messages. */
+  targetUser: string;
+  /** Home of User= — the unit's PBOSS_HOME lives under it. */
+  targetHome: string;
+  /** Overall deadline for the unit to become healthy. Default 30s. */
+  verifyTimeoutMs?: number;
+  /**
+   * Socket of the INVOKING CLI's own daemon (root's /root/.pboss under
+   * sudo). Default: the CLI's own PBOSS_HOME socket. Overridable so
+   * tests can point it at a path nothing will ever answer.
+   */
+  cliSocket?: string;
+}
+
+/**
+ * Bring the freshly written unit up and VERIFY it — the half of
+ * `pboss startup install` that runs after the unit file lands in
+ * /etc/systemd/system.
+ *
+ * THE HANG THIS CODE EXISTS TO PREVENT: `systemctl start pboss` BLOCKS
+ * until the start job completes, and this unit can keep the job pending
+ * FOREVER. Every failed start cycle includes ExecStartPost polling for
+ * the daemon (>=10s), so each cycle outlives systemd's default
+ * start-rate-limit window (5 starts / 10s) — "Start request repeated too
+ * quickly" never fires, Restart=on-failure loops forever, and the queued
+ * start job (plus the CLI that awaited it) hangs indefinitely. That is
+ * the "install hangs although the unit file exists" bug.
+ *
+ * Defense, in layers:
+ *   1. start is submitted with --no-block (job in, no waiting);
+ *   2. health is polled HERE with a hard deadline — is-active state plus
+ *      a ping on the socket the unit's daemon actually binds;
+ *   3. the unit itself rate-limits (StartLimitIntervalSec/Burst) and
+ *      bounds its start (TimeoutStartSec) so systemd gives up on its own.
+ */
+export async function bringUpSystemdUnit(opts: BringUpOptions): Promise<string> {
+  const unitSocket = join(opts.targetHome, ".pboss", "daemon.sock");
+
+  // A detached daemon from an earlier CLI command would hold the socket
+  // the unit's ExecStart needs — the loser used to exit 1 and the unit
+  // restart-looped. Ask any stray to stop BEFORE starting the unit, on
+  // BOTH sockets involved: the CLI's own PBOSS_HOME (root's /root/.pboss
+  // under sudo) and the target user's home (the unit runs as them). Never
+  // spawns: it only acts when a daemon already answers.
+  await stopDaemonIfRunning(15_000, opts.cliSocket ?? DAEMON_SOCKET);
+  if (unitSocket !== (opts.cliSocket ?? DAEMON_SOCKET)) {
+    await stopDaemonIfRunning(15_000, unitSocket);
+  }
+
+  const manual: string[] = [];
+  // daemon-reload and enable submit no job — safe to wait on.
+  for (const args of [["daemon-reload"], ["enable", "pboss"]] as const) {
+    const r = await runSystemctl([...args]);
+    if (r.code !== 0) {
+      ignore(`systemctl ${args.join(" ")} (bring-up)`, r.err);
+      manual.push(`systemctl ${args.join(" ")}`);
+    }
+  }
+  // The start job is the only hangable one — submit it, never await it.
+  const start = await runSystemctl(["--no-block", "start", "pboss"]);
+  if (start.code !== 0) {
+    ignore("systemctl --no-block start pboss (bring-up)", start.err);
+    manual.push("systemctl start pboss");
+  }
+
+  if (manual.length > 0) {
+    return (
+      `Service file installed at ${opts.servicePath}, but systemd could not be\n` +
+      `controlled from here. Finish enabling it with:\n  ` +
+      manual.map((c) => `sudo ${c}`).join("\n  ")
+    );
+  }
+
+  // Verify: poll the unit state and the daemon socket until healthy,
+  // permanently failed, or out of time. Two signals, both needed —
+  // Type=simple reports "active" the moment ExecStart is forked (before
+  // the socket exists), and a leftover daemon can answer the socket while
+  // the unit itself is "failed".
+  const deadline = Date.now() + (opts.verifyTimeoutMs ?? 30_000);
+  let state = "";
+  let responsive = false;
+  while (Date.now() < deadline) {
+    state = (await runSystemctl(["is-active", "pboss"])).out;
+    responsive = (await probeDaemon(unitSocket)) !== null;
+    if (state === "active" && responsive) break;
+    // The unit gave up (start-rate limited / permanent failure) — polling
+    // longer cannot change the verdict.
+    if (state === "failed") break;
+    await Bun.sleep(500);
+  }
+
+  if (state === "active" && responsive) {
+    return `Service installed and started: ${opts.servicePath}`;
+  }
+
+  const journal = await journalctlText(["-u", "pboss", "-n", "25", "--no-pager"]);
+  return (
+    `Service installed but is not healthy (unit state: ${state || "unknown"},\n` +
+    `daemon at ${unitSocket} ${responsive ? "is" : "is not"} answering).\n` +
+    `Recent unit output:\n${journal || "  (journalctl unavailable)"}\n` +
+    `Inspect with:  systemctl status pboss  ·  journalctl -u pboss -n 50 --no-pager`
+  );
 }
 
 /** Escape a value for inclusion in a plist XML string element. */

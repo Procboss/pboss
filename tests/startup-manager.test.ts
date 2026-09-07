@@ -120,10 +120,29 @@ describe("StartupManager — generated unit shape", () => {
       // ExecStartPost must WAIT for the unit's own daemon instead of
       // auto-spawning a competing one (the socket race that ended in
       // "Start request repeated too quickly").
-      expect(out).toContain("resurrect --wait 30");
+      expect(out).toContain("resurrect --wait 10");
       // Exit 81 = another daemon owns the socket — restarting cannot fix
       // that; without this directive systemd restart-loops.
       expect(out).toContain("RestartPreventExitStatus=81");
+    }
+  );
+
+  test.skipIf(process.platform === "win32")(
+    "linux unit terminates instead of restart-looping forever",
+    async () => {
+      const startup = new StartupManager();
+      const out = await startup.generate("linux");
+
+      // One FAILED start cycle takes >=10s (ExecStartPost polls for the
+      // daemon), so systemd's DEFAULT rate-limit window (5 starts / 10s)
+      // never fills — the unit would restart-loop forever and keep the
+      // start job (and `systemctl start`, and `pboss startup install`)
+      // hanging. The explicit window below always trips.
+      expect(out).toContain("StartLimitIntervalSec=120");
+      expect(out).toContain("StartLimitBurst=5");
+      // A hung start (including ExecStartPost) must become a failure
+      // systemd can act on, not a forever-activating unit.
+      expect(out).toContain("TimeoutStartSec=20");
     }
   );
 

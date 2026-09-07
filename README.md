@@ -150,6 +150,8 @@ pboss startup install                     # macOS: LaunchAgent (no sudo needed)
 
 `pboss startup` with no option does not install — it prints the list of options (`install` / `uninstall` / `generate [os]`).
 
+`pboss startup install` always returns: the systemd start is submitted with `--no-block` and verified against a hard deadline (unit state + a ping on the daemon's socket); an unhealthy unit prints the state, the socket probe result, and the recent journal output instead of hanging.
+
 Schedule a command — backups, reports, cleanups — without a managed process:
 
 ```bash
