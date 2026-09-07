@@ -365,7 +365,13 @@ describe("StartupManager — the unit PATH carries the target user's bun (the ru
         const out = await startup.generate("linux");
         const pathLine = out.match(/Environment=PATH=(.+)/)?.[1] ?? "";
         expect(pathLine.startsWith("/usr/local/sbin")).toBe(true);
-        expect(pathLine).not.toContain(".bun");
+        // The TARGET user's .bun dir must not be added — but a script-mode
+        // install may legitimately append the resolved system Bun's own dir
+        // (on CI that is /home/runner/.bun/bin), so scope the assertion.
+        expect(pathLine).not.toContain(join(home, ".bun"));
+        for (const dir of ["/usr/local/bin", "/usr/bin", "/bin"]) {
+          expect(pathLine).toContain(dir);
+        }
       } finally {
         rmSync(home, { recursive: true, force: true });
       }
