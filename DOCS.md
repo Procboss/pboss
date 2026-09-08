@@ -47,6 +47,7 @@ ProcBoss (pboss) is free and open-source software built for the developer commun
 - [ProcBoss Cloud](#procboss-cloud)
   - [Linking a server — the device-code flow](#linking-a-server--the-device-code-flow)
   - [User login (pboss login / whoami / logout)](#user-login-pboss-login--whoami--logout)
+  - [Updating pboss (pboss upgrade)](#updating-pboss-pboss-upgrade)
   - [What the cloud link does](#what-the-cloud-link-does)
   - [Cloud security model](#cloud-security-model)
   - [Self-hosting / custom cloud endpoint](#self-hosting--custom-cloud-endpoint)
@@ -1408,7 +1409,7 @@ sudo pboss cloud connect
 # ⚡ ProcBoss Cloud — connect this server
 #
 #   Open:  https://procboss.com/connect
-#   Code:  F7KD-92XM
+#   Code:  3RJD-TZJD-K2M4
 #
 #   No browser here — open the URL on any device (laptop/phone) and enter the code.
 # Waiting for authorization… (code expires in 10 min)
@@ -1441,6 +1442,29 @@ pboss logout                    # revokes the CLI token server-side (this device
 ```
 
 Revoking a server in the dashboard never logs you out of your CLI, and logging out never unlinks a server — each credential dies alone.
+
+### Updating pboss (pboss upgrade)
+
+`pboss upgrade` self-updates the CLI through the **same channel that installed it**, so a machine never accumulates two copies of pboss. The installers record their channel in `~/.pboss/channel.json` at install time, and the upgrade honors it:
+
+| Installed via | Upgrade runs |
+|---|---|
+| universal installer (curl \| sudo bash / install.ps1) | the same installer, again — it's idempotent |
+| `npm i -g pboss` | `npm install -g pboss@latest` |
+| `bun add -g pboss` | `bun add -g pboss@latest` |
+| Homebrew | `brew upgrade pboss` |
+| snap | `sudo snap refresh pboss` |
+
+Machines installed before the stamp existed are covered by runtime detection from the executable's own location (`/usr/local/bin/pboss` → universal, `…/Cellar/pboss/…` → brew, `/snap/pboss/…` → snap, a `node_modules` path → npm/bun, a repo checkout → source). If the detection is wrong, `pboss upgrade --channel brew` repairs it and persists the answer.
+
+```bash
+pboss upgrade --check       # dry run: current/latest/channel/command, changes nothing
+pboss upgrade                # confirm, then upgrade through the detected channel
+pboss upgrade --yes          # scripted — skip the [y/N] prompt
+pboss upgrade --channel npm  # fix a misdetected channel (persists)
+```
+
+Version numbers come from the npm registry (the canonical source every channel builds from). After an upgrade the daemon keeps running the previous code until you restart it — `pboss upgrade` detects a live daemon and prints the exact `pboss kill && pboss resurrect` line to run.
 
 ### What the cloud link does
 

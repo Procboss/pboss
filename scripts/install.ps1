@@ -102,6 +102,20 @@ try {
     & bun build --compile --minify --bytecode .\src\index.ts --outfile $outputExe
 
     Write-Host "✓ Binary installed at $outputExe" -ForegroundColor Green
+
+    # Record the install channel — `pboss upgrade` re-runs THIS installer
+    # (never npm/brew/snap) so the machine keeps exactly one pboss.
+    $stampDir = Join-Path $env:USERPROFILE ".pboss"
+    if (-not (Test-Path $stampDir)) {
+        New-Item -ItemType Directory -Path $stampDir -Force | Out-Null
+    }
+    $stamp = @{
+        channel    = "universal"
+        by         = "install.ps1"
+        stampedAt  = [int][double]::Parse((Get-Date -UFormat %s))
+    } | ConvertTo-Json -Compress
+    Set-Content -Path (Join-Path $stampDir "channel.json") -Value $stamp -Encoding ascii
+    Write-Host "✓ Install channel recorded (universal)" -ForegroundColor Green
 }
 finally {
     Set-Location $env:USERPROFILE

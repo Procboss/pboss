@@ -131,6 +131,18 @@ echo -e "${CYAN}Installing pboss to ${INSTALL_DIR}...${RESET}"
 cp "$TMP_DIR/pboss" "$INSTALL_DIR/pboss"
 chmod 755 "$INSTALL_DIR/pboss"
 
+# 5b. Record the install channel — `pboss upgrade` re-runs THIS installer
+#     (never npm/brew/snap) so a machine keeps exactly one pboss.
+STAMP_DIR="$INVOKE_HOME/.pboss"
+mkdir -p "$STAMP_DIR"
+printf '{"channel":"universal","by":"install.sh","stampedAt":%s,"version":"%s"}\n' \
+  "$(date +%s)" "$("$INSTALL_DIR/pboss" --version 2>/dev/null | awk '{print $NF}' | tr -d 'v')" \
+  > "$STAMP_DIR/channel.json"
+if [ -n "$INVOKE_USER" ]; then
+  chown "${INVOKE_USER}:" "$STAMP_DIR" "$STAMP_DIR/channel.json" 2>/dev/null \
+    || chown "$INVOKE_USER" "$STAMP_DIR" "$STAMP_DIR/channel.json" 2>/dev/null || true
+fi
+
 # 6. PATH sanity note (rare — /usr/local/bin is on PATH almost everywhere)
 if [[ ":$PATH:" != *":$INSTALL_DIR:"* ]]; then
   echo -e "${YELLOW}Note: ${INSTALL_DIR} is not on the current PATH. Add it to your shell profile if 'pboss' is not found.${RESET}"

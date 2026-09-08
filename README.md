@@ -124,13 +124,22 @@ sudo pboss cloud connect
 # ⚡ ProcBoss Cloud — connect this server
 #
 #   Open:  https://procboss.com/connect
-#   Code:  F7KD-92XM
+#   Code:  3RJD-TZJD-K2M4
 #
 # Waiting for authorization…
 # ✓ Server authorized and connected
 ```
 
 Open the URL anywhere, enter the code, approve the card (it shows this machine's hostname, OS, and agent version), done. The daemon stores the machine credential in `~/.pboss/cloud.json` (0600), keeps an **outbound-only** connection open (SSE command channel + state reports every 10s, with automatic reconnect), and you get the fleet view, alerts, and remote process control (restart a process from the dashboard or `pboss cloud servers`). `pboss login` / `pboss whoami` / `pboss logout` manage your *user* identity separately — revoking a server never logs you out, and vice versa. Every local feature works without an account; the cloud is purely additive.
+
+### Updating
+
+`pboss upgrade` self-updates through the channel that installed it — the universal installer re-runs itself, npm calls npm, brew calls brew, snap refreshes — so one machine never ends up with two pboss CLIs:
+
+```bash
+pboss upgrade --check    # see current → latest, the detected channel, and the exact command
+pboss upgrade            # do it (adds --channel <x> to repair a misdetected channel)
+```
 
 ---
 

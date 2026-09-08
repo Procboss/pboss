@@ -55,6 +55,17 @@ import {
   cloudUserMe,
   cloudUserRevoke,
 } from "./cloud-auth";
+import {
+  currentChannelContext,
+  detectChannel,
+  buildUpgradePlan,
+  compareVersions,
+  fetchLatestVersion,
+  runUpgradePlan,
+  writeChannelStamp,
+  type InstallChannel,
+  type ChannelContext,
+} from "./upgrade";
 import { resolveCloudUrl } from "./cloud";
 
 // ---------------------------------------------------------------------------
@@ -1483,6 +1494,140 @@ ${colorize("Notes:", "dim")}
     console.log(`  Cloud:  ${cred.cloudUrl}`);
   }
 
+  /**
+   * `pboss upgrade` — self-update through the SAME channel that installed
+   * pboss (universal installer / npm / bun / brew / snap), so one machine
+   * never accumulates two copies of the CLI. Options:
+   *   --check      dry-run: show current/latest/channel/command, change nothing
+   *   --yes, -y    skip the confirmation prompt
+   *   --channel X  override the detected channel AND persist the override
+   *                 (fixes a misdetected machine once and for all)
+   */
+  async cmdUpgrade(args: string[]) {
+    const dryRun = args.includes("--check") || args[0] === "check";
+    const assumeYes = args.includes("--yes") || args.includes("-y");
+    const channelFlagIdx = args.indexOf("--channel");
+    const channelOverride =
+      channelFlagIdx !== -1 ? args[channelFlagIdx + 1] : undefined;
+
+    let ctx: ChannelContext = currentChannelContext();
+    if (channelOverride) {
+      const valid: InstallChannel[] = [
+        "universal",
+        "npm",
+        "bun",
+        "brew",
+        "snap",
+        "source",
+      ];
+      if (!valid.includes(channelOverride as InstallChannel)) {
+        console.error(
+          colorize(
+            `Unknown channel "${channelOverride}" — valid: ${valid.join(", ")}`,
+            "red"
+          )
+        );
+        process.exit(1);
+      }
+      // The override is a repair, not a one-off: remember it.
+      writeChannelStamp({
+        channel: channelOverride as InstallChannel,
+        by: "pboss upgrade --channel",
+        stampedAt: Math.floor(Date.now() / 1000),
+      });
+      ctx = { ...ctx, stamp: { channel: channelOverride as InstallChannel } };
+    }
+
+    const channel = detectChannel(ctx);
+    const plan = buildUpgradePlan(channel, process.platform);
+
+    console.log(colorize("⚡ pboss upgrade", "bold"));
+    console.log(`  Installed via:  ${plan.label}`);
+    console.log(`  Current:        v${VERSION}`);
+
+    const latest = await fetchLatestVersion();
+    if (!latest) {
+      console.error(
+        colorize(
+          "Could not reach the registry to learn the latest version — try again later.",
+          "red"
+        )
+      );
+      process.exit(1);
+    }
+    const cmp = compareVersions(VERSION, latest);
+
+    if (cmp >= 0) {
+      console.log(colorize(`✓ Already up to date (v${VERSION}).`, "green"));
+      if (cmp === 0) {
+        console.log(
+          colorize(`  Next upgrade will run: ${plan.command.join(" ") || "manual"}`, "dim")
+        );
+      } else {
+        console.log(
+          colorize(
+            `  Installed version is ahead of the registry (v${VERSION} > v${latest}) — nothing to do.`,
+            "dim"
+          )
+        );
+      }
+      return;
+    }
+
+    console.log(`  Latest:         v${latest}`);
+    console.log(
+      `  Upgrade cmd:    ${plan.command.join(" ") || "(manual — see note)"}`
+    );
+
+    if (plan.manual) {
+      console.error(colorize(`\n${plan.note ?? "Manual upgrade required."}`, "yellow"));
+      process.exit(1);
+    }
+
+    if (dryRun) {
+      console.log(colorize("\n--check: dry run — nothing was changed.", "cyan"));
+      return;
+    }
+
+    if (!assumeYes) {
+      const ok = await this.confirm(`Upgrade pboss v${VERSION} → v${latest} via ${plan.label}?`);
+      if (!ok) {
+        console.log(colorize("Upgrade cancelled.", "yellow"));
+        return;
+      }
+    }
+
+    const success = await runUpgradePlan(plan);
+    if (!success) {
+      console.error(colorize("The upgrade command failed — see its output above.", "red"));
+      process.exit(1);
+    }
+
+    console.log(colorize(`✓ Upgrade to v${latest} requested through ${plan.label}.`, "green"));
+    if (plan.note) {
+      console.log(colorize(`  ${plan.note}`, "dim"));
+    }
+    // A running daemon keeps the OLD code until restarted — say so instead
+    // of silently running yesterday's agent on today's install.
+    const daemonAlive = await this.pboss
+      .ping()
+      .then(() => true)
+      .catch(() => false);
+    if (daemonAlive) {
+      console.log(
+        colorize(
+          "  The daemon is still running the previous version — restart it to pick up the new one:",
+          "yellow"
+        )
+      );
+      console.log(colorize("    pboss kill && pboss resurrect", "cyan"));
+    } else {
+      console.log(
+        colorize(`  Verify with: pboss --version  (expect v${latest})`, "dim")
+      );
+    }
+  }
+
   async cmdEnv(args: string[]) {
     const envMgr = new EnvManager();
     const subCmd = args[0];
@@ -1716,6 +1861,11 @@ ${colorize("Notes:", "dim")}
     login                         Log in as YOU (for whoami — device flow)
     logout                        Revoke the CLI login
     whoami                        Who is logged in on this CLI
+    upgrade                       Self-update through the channel that
+                                  installed pboss (universal / npm / bun /
+                                  brew / snap) — never spawns a second CLI
+                                  --check: dry run, --yes: skip confirm
+                                  --channel X: fix a misdetected channel
     
     ${colorize("Deploy:", "cyan")}
     deploy <config> <env> [setup] Deploy using ecosystem config
@@ -1891,6 +2041,9 @@ ${colorize("Notes:", "dim")}
         break;
       case "whoami":
         await this.cmdWhoami();
+        break;
+      case "upgrade":
+        await this.cmdUpgrade(commandArgs);
         break;
       case "env":
         await this.cmdEnv(commandArgs);

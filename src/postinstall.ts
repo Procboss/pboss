@@ -27,6 +27,7 @@
  */
 
 import { StartupManager } from "./startup-manager";
+import { writeChannelStamp, parseUserAgent } from "./upgrade";
 
 /**
  * True when the package manager is performing a GLOBAL install (npm sets
@@ -54,6 +55,16 @@ export function manualInstallHint(): string {
 
 async function main(): Promise<void> {
   if (!isGlobalInstall()) return; // local/dev install — silent by rule 1
+
+  // Record WHO installed us so `pboss upgrade` upgrades through the same
+  // package manager (npm/bun/pnpm/yarn) instead of spawning a second copy.
+  const pm = parseUserAgent(process.env.npm_config_user_agent);
+  writeChannelStamp({
+    channel: "npm",
+    pm,
+    by: "postinstall",
+    stampedAt: Math.floor(Date.now() / 1000),
+  });
 
   try {
     // Shorter verify deadline than the CLI default: a failing unit must not

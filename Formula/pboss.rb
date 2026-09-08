@@ -12,6 +12,16 @@ class Pboss < Formula
     system "bun", "build", "--compile", "--minify", "--bytecode", "./src/index.ts", "--outfile", bin/"pboss"
   end
 
+  # Record the install channel so `pboss upgrade` upgrades through brew
+  # (brew upgrade pboss) instead of spawning a second CLI from npm/universal.
+  def post_install
+    stamp_dir = File.join(Dir.home, ".pboss")
+    FileUtils.mkdir_p(stamp_dir)
+    File.write(File.join(stamp_dir, "channel.json"), {
+      channel: "brew", by: "homebrew", stampedAt: Time.now.to_i
+    }.to_json + "\n")
+  end
+
   test do
     assert_match "pboss", shell_output("#{bin}/pboss --version")
   end
