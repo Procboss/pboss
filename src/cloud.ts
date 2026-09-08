@@ -20,6 +20,7 @@
 
 import { existsSync, readFileSync, writeFileSync, chmodSync, unlinkSync } from "node:fs";
 import { platform, arch, hostname, totalmem, freemem, loadavg, cpus } from "node:os";
+import { dirname } from "node:path";
 import { VERSION, CLOUD_FILE, CLOUD_DEFAULT_URL, CLOUD_REPORT_INTERVAL_MS } from "./constants";
 import { getSystemInfo, colorize } from "./utils";
 import { ignore } from "./error-handling";
@@ -757,6 +758,42 @@ export class CloudAgent {
         return logs;
       }
 
+      case "process.deploy":
+      case "server.deploy": {
+        const scope =
+          cmd.type === "server.deploy"
+            ? this.pm.list().filter((p) => p.status === "online" || p.status === "stopped")
+            : [this.findState(target)].filter(Boolean) as ProcessState[];
+        if (cmd.type === "process.deploy" && scope.length === 0) {
+          throw new Error(`no process named "${target}"`);
+        }
+        const results: Array<Record<string, unknown>> = [];
+        for (const p of scope) {
+          const env = p.pboss_env ?? p.bm2_env;
+          const cwd = env?.cwd || (env?.script ? dirname(env.script) : "");
+          const t0 = Date.now();
+          const pull = await gitPull(cwd); // throws honest errors on a bad repo
+          let restart: boolean = false;
+          if (pull.pulled) {
+            await this.pm.restart(p.name);
+            restart = true;
+          }
+          results.push({
+            process: p.name,
+            commit: pull.commit,
+            message: pull.message,
+            branch: pull.branch,
+            remote: pull.remote,
+            pulled: pull.pulled,
+            restart,
+            durationMs: Date.now() - t0,
+          });
+        }
+        // single-process deploys unwrap; server deploys return the list
+        if (cmd.type === "process.deploy" && results.length === 1) return results[0];
+        return results;
+      }
+
       case "server.info": {
         const sys = getSystemInfo();
         return {
@@ -785,6 +822,64 @@ export class CloudAgent {
       (p) => p.name === target || String(p.pm_id) === target || String(p.id) === target
     );
   }
+}
+
+/**
+ * `git pull --ff-only` in a working directory — the cloud deploy primitive.
+ * Returns the HEAD commit/message/branch and whether anything was pulled.
+ * Honest errors: not a repo / pull refused / git missing.
+ */
+export async function gitPull(
+  cwd: string
+): Promise<{
+  pulled: boolean;
+  commit: string;
+  message: string;
+  branch: string;
+  remote: string | null;
+}> {
+  if (!cwd) throw new Error("no working directory for this process");
+  const git = async (...args: string[]) => {
+    const proc = Bun.spawn(["git", "-C", cwd, ...args], {
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const stdout = await new Response(proc.stdout).text();
+    const stderr = await new Response(proc.stderr).text();
+    const exitCode = await proc.exited;
+    if (exitCode !== 0) {
+      throw new Error(
+        `git ${args[0]} failed in ${cwd}: ${(stderr || stdout).trim().split("\n")[0]?.slice(0, 160)}`
+      );
+    }
+    return stdout.trim();
+  };
+
+  // a .git dir (or worktree file) must exist — honest error otherwise
+  const check = await Bun.spawn(["git", "-C", cwd, "rev-parse", "--is-inside-work-tree"], {
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  if ((await check.exited) !== 0) {
+    throw new Error(
+      `${cwd} is not a git repository — the cloud can only deploy git checkouts`
+    );
+  }
+
+  const pullOut = await git("pull", "--ff-only");
+  const pulled = !/^already up to date/i.test(pullOut.split("\n")[0] ?? "");
+  const commit = (await git("rev-parse", "--short", "HEAD")) || "";
+  const message = (await git("log", "-1", "--pretty=%s")) || "";
+  const branch = (await git("branch", "--show-current")) || "(detached)";
+  let remoteRaw = "";
+  try {
+    remoteRaw = await git("config", "--get", "remote.origin.url");
+  } catch (err) {
+    // no origin remote configured — the deploy still works; the repo shows as null
+    ignore(`read remote origin url (${cwd})`, err);
+  }
+  const remote = remoteRaw ? remoteRaw.replace(/\.git$/, "") : null;
+  return { pulled, commit, message, branch, remote };
 }
 
 function sleep(ms: number): Promise<void> {

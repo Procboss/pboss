@@ -1470,17 +1470,19 @@ Version numbers come from the npm registry (the canonical source every channel b
 
 Once linked, the daemon's cloud agent:
 
-- opens an **SSE command stream** to the cloud and keeps it alive (keepalives, automatic reconnect with exponential backoff, reset on success);
-- posts a **full state report** every 10 seconds (and immediately after every command): server metrics (CPU, memory, uptime) and the process list with per-process CPU/mem/restarts/crashes/uptime;
-- derives **events** from consecutive snapshots — crashes, restarts, on/offline transitions — which the cloud turns into alerts;
-- executes **remote commands** from the dashboard: `process.list`, `process.start`, `process.stop`, `process.restart`, `process.delete`, `process.logs`, `server.info` — each answered with a result and followed by a fresh state report;
+- keeps ONE **WebSocket** open to the cloud (`wss://…/ws/agent`, outbound-only) — commands, state reports, results and live log frames all flow over it, with automatic reconnect (exponential backoff, reset on success);
+- sends a **full state report** every 10 seconds (and immediately after every command): server metrics (CPU, memory, uptime) and the process list with per-process CPU/mem/restarts/crashes/uptime;
+- derives **events** from consecutive snapshots — crashes (with exit code, signal and a 30-line log tail for the cloud's crash reports), restarts, on/offline transitions — which the cloud turns into alerts;
+- executes **remote commands** from the dashboard: `process.list`, `process.start`, `process.stop`, `process.restart`, `process.delete`, `process.logs`, `process.deploy`, `server.info`, `server.deploy` — each answered with a result and followed by a fresh state report;
+- **tails logs live** when a dashboard opens them (`log.watch` / `log.unwatch` control frames; new lines are pushed as they land on disk);
+- **deploys** by running `git pull --ff-only` in the process's working directory and restarting it — the dashboard's Deploy button reports the real commit, message and duration. Working directories that aren't git checkouts fail honestly;
 - answers `pboss cloud servers` with the fleet view (fetched daemon-side with the machine credential — the CLI never holds the secret).
 
-If the credential is revoked from the dashboard, the next stream handshake fails with 401: the agent stops, clears `cloud.json`, and says so — re-link with `pboss cloud connect`.
+If the credential is revoked from the dashboard, the cloud closes the WebSocket with code 4001: the agent stops, clears `cloud.json`, and says so — re-link with `pboss cloud connect`.
 
 ### Cloud security model
 
-- **No inbound anything.** The agent makes outbound HTTPS/SSE connections only; there is no port to open and no attack surface facing the internet.
+- **No inbound anything.** The agent makes outbound HTTPS/WSS connections only; there is no port to open and no attack surface facing the internet.
 - **Secrets never rest in plaintext server-side.** Machine secrets and CLI tokens are stored as sha256 hashes; raw forms exist only in the local 0600 files and in memory.
 - **Single-claim device codes.** A credential is minted at claim time and handed over exactly once; a raced second poller gets nothing. Codes expire in 10 minutes and are denied on the approval card.
 - **Separate revocable identities.** Server credentials, CLI tokens, and browser sessions are three independent credential spaces — revoke one, the others don't flinch.
