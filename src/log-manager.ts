@@ -180,34 +180,33 @@ export class LogManager {
     signal: AbortSignal
   ) {
     const paths = this.getLogPaths(name, id);
-  
+
     const state = {
       out: Bun.file(paths.outFile).size,
       err: Bun.file(paths.errFile).size,
     };
-    
-  
+
     const poll = setInterval(async () => {
       for (const [type, fp] of [["out", paths.outFile],["err", paths.errFile],] as const) {
-        
+
         const f = Bun.file(fp);
-  
+
         if (!(await f.exists())) continue;
-  
+
         let lastSize = state[type];
-  
+
         const size = f.size;
-  
+
         if (size < lastSize) {
           state[type] = 0; // rotated file
           lastSize = 0;
         }
-  
+
         if (size === lastSize) continue;
-  
+
         const chunk = await f.slice(lastSize, size).text();
         state[type] = size;
-  
+
         for (const line of chunk.split(/\r?\n/).filter(Boolean)) {
           try {
             const log = { name, id, ...this.parseLine(line, type) };
@@ -219,11 +218,88 @@ export class LogManager {
         }
       }
     }, 500);
-  
+
     signal.addEventListener("abort", () => {
       clearInterval(poll);
     });
   }
+
+  /**
+   * Callback-based incremental tail (used by the cloud agent's log.watch).
+   * Polls both log files every `intervalMs`, parses new lines, and emits
+   * them as {t, level, msg} batches. Returns the stop function.
+   * Idempotent per (name, id) — starting a second watch on the same files
+   * stops the first.
+   */
+  watchLogs(
+    name: string,
+    id: number,
+    onLines: (lines: { t: number; level: string; msg: string }[]) => void,
+    customOut?: string,
+    customErr?: string,
+    intervalMs = 500
+  ): () => void {
+    const paths = this.getLogPaths(name, id, customOut, customErr);
+    const key = `${name}-${id}`;
+
+    // one tail per target — a second watcher replaces the first
+    this.lineWatchers.get(key)?.();
+
+    const state = { out: -1, err: -1 };
+
+    const readSide = async (
+      type: "out" | "err",
+      fp: string
+    ): Promise<{ t: number; level: string; msg: string }[]> => {
+      const f = Bun.file(fp);
+      if (!(await f.exists())) return [];
+      if (state[type] === -1) {
+        // first poll: start from EOF, only NEW lines are "live"
+        state[type] = f.size;
+        return [];
+      }
+      let lastSize = state[type];
+      const size = f.size;
+      if (size < lastSize) {
+        state[type] = 0; // rotated file
+        lastSize = 0;
+      }
+      if (size === lastSize) return [];
+      const chunk = await f.slice(lastSize, size).text();
+      state[type] = size;
+      const lines: { t: number; level: string; msg: string }[] = [];
+      for (const line of chunk.split(/\r?\n/).filter(Boolean)) {
+        const parsed = this.parseLine(line, type);
+        lines.push({
+          t: Date.now(),
+          level: type === "err" ? "err" : "info",
+          msg: parsed.msg,
+        });
+      }
+      return lines;
+    };
+
+    const poll = setInterval(async () => {
+      try {
+        const out = await readSide("out", paths.outFile);
+        const err = await readSide("err", paths.errFile);
+        const batch = [...out, ...err];
+        if (batch.length > 0) onLines(batch);
+      } catch (err) {
+        // unreadable mid-poll (rotation race) — next tick retries
+        ignore(`watch logs ${name}-${id}`, err);
+      }
+    }, intervalMs);
+
+    const stop = () => {
+      clearInterval(poll);
+      if (this.lineWatchers.get(key) === stop) this.lineWatchers.delete(key);
+    };
+    this.lineWatchers.set(key, stop);
+    return stop;
+  }
+
+  private lineWatchers = new Map<string, () => void>();
 
   async rotate(filePath: string, options: LogRotateOptions): Promise<void> {
     

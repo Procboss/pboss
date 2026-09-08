@@ -1,16 +1,17 @@
 /**
- * Cloud agent unit tests — protocol mapping, SSE parsing, event diffing,
+ * Cloud agent unit tests — protocol mapping, ws URL/crash-tail helpers,
  * and the config file round-trip. Network behaviour (streams, reconnects)
  * is covered by the end-to-end flow against a live daemon.
  */
 
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import {
-  SseParser,
   mapProcessState,
   buildStateReport,
   diffEvents,
   startOptionsFromState,
+  wsUrlOf,
+  crashLogTail,
   saveCloudConfig,
   loadCloudConfig,
   clearCloudConfig,
@@ -59,55 +60,29 @@ function fakeState(overrides: Partial<ProcessState> = {}): ProcessState {
   } as ProcessState;
 }
 
-/* ── SseParser ────────────────────────────────────────────────────────── */
+/* ── ws url + crash tail helpers ────────────────────────────────── */
 
-describe("SseParser", () => {
-  test("parses complete frames", () => {
-    const p = new SseParser();
-    const events = p.push(
-      'event: command\ndata: {"id":"cmd_1","type":"process.list","payload":{}}\n\n' +
-        "event: hello\ndata: {\"a\":1}\n\n"
-    );
-    expect(events.length).toBe(2);
-    expect(events[0]!.event).toBe("command");
-    expect(JSON.parse(events[0]!.data).id).toBe("cmd_1");
-    expect(events[1]!.event).toBe("hello");
+describe("wsUrlOf", () => {
+  test("maps http(s) cloud URLs onto the agent WS endpoint", () => {
+    expect(wsUrlOf("https://procboss.com")).toBe("wss://procboss.com/ws/agent");
+    expect(wsUrlOf("http://localhost:3000")).toBe("ws://localhost:3000/ws/agent");
+    expect(wsUrlOf("https://example.org/")).toBe("wss://example.org/ws/agent");
   });
+});
 
-  test("reassembles frames split across chunks", () => {
-    const p = new SseParser();
-    const frame = 'event: command\ndata: {"id":"cmd_2","type":"process.stop","payload":{"target":"api"}}\n\n';
-    const first = p.push(frame.slice(0, 25));
-    expect(first.length).toBe(0); // incomplete — nothing yet
-    const second = p.push(frame.slice(25));
-    expect(second.length).toBe(1);
-    expect(JSON.parse(second[0]!.data).payload.target).toBe("api");
-  });
-
-  test("ignores comments and keepalive pings", () => {
-    const p = new SseParser();
-    const events = p.push(": ping\n\n" + "retry: 3000\n\n");
-    expect(events.length).toBe(0);
-  });
-
-  test("multi-line data joins with newlines", () => {
-    const p = new SseParser();
-    const events = p.push("event: x\ndata: line1\ndata: line2\n\n");
-    expect(events[0]!.data).toBe("line1\nline2");
-  });
-
-  test("handles CRLF line endings", () => {
-    const p = new SseParser();
-    const events = p.push("event: cmd\r\ndata: {\"ok\":true}\r\n\r\n");
-    expect(events.length).toBe(1);
-    expect(events[0]!.event).toBe("cmd");
-    expect(JSON.parse(events[0]!.data).ok).toBe(true);
-  });
-
-  test("defaults to message event name", () => {
-    const p = new SseParser();
-    const events = p.push('data: {"x":9}\n\n');
-    expect(events[0]!.event).toBe("message");
+describe("crashLogTail", () => {
+  test("takes the last N non-empty messages", () => {
+    const logs = Array.from({ length: 40 }, (_, i) => ({
+      name: "api",
+      id: 0,
+      ts: String(i),
+      msg: `line ${i}`,
+    }));
+    const tail = crashLogTail(logs, 30);
+    expect(tail.length).toBe(30);
+    expect(tail[0]).toBe("line 10");
+    expect(tail[29]).toBe("line 39");
+    expect(crashLogTail([])).toEqual([]);
   });
 });
 

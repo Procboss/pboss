@@ -52,7 +52,7 @@ describe("device flow — machine scope (pboss cloud connect)", () => {
   test("requestDeviceCode sends machine facts and returns a grant", async () => {
     const grant = await auth.requestDeviceCode(mini.url, "machine");
     expect(grant.deviceCode.startsWith("pbd_")).toBe(true);
-    expect(grant.userCode).toMatch(/^[A-Z2-9]{4}-[A-Z2-9]{4}$/);
+    expect(grant.userCode).toMatch(/^[A-Z2-9]{4}-[A-Z2-9]{4}-[A-Z2-9]{4}$/);
     expect(grant.verificationUrl).toBe(`${mini.url}/connect`);
     expect(grant.intervalMs).toBeGreaterThan(0);
     const device = mini.state.devices.find((d) => d.deviceCode === grant.deviceCode);

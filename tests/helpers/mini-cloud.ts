@@ -5,7 +5,7 @@
  * agent link WITHOUT the real Next.js app + Postgres.
  *
  * It implements the SAME wire contract (shapes, error codes, single-claim
- * semantics, Bearer auth, SSE command channel, 409-before-stream), so the
+ * semantics, Bearer auth, the /ws/agent WebSocket, 409-before-socket), so the
  * client + agent code under test is the real production code. Differences
  * from the real cloud are deliberate and limited to: in-memory state,
  * secrets kept raw in memory (so agent auth can be checked), approval is
@@ -53,10 +53,10 @@ const USER_CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
 
 function mintUserCode(): string {
   let raw = "";
-  for (let i = 0; i < 8; i++) {
+  for (let i = 0; i < 12; i++) {
     raw += USER_CODE_ALPHABET[randomBytes(1)[0]! % USER_CODE_ALPHABET.length];
   }
-  return `${raw.slice(0, 4)}-${raw.slice(4)}`;
+  return `${raw.slice(0, 4)}-${raw.slice(4, 8)}-${raw.slice(8)}`;
 }
 
 export interface MiniCloudOptions {
@@ -77,6 +77,7 @@ export interface MiniCloud {
     enrollmentTokens: string[];
     lastStateReport: Record<string, unknown> | null;
     commandResults: Array<{ commandId: string; success: boolean; data?: unknown; error?: string }>;
+    logFrames: Array<{ process: string; lines: unknown[] }>;
   };
   /** Approve/deny a code the way the browser page would. */
   approve(userCode: string, action?: "approve" | "deny"): Promise<Response>;
@@ -88,6 +89,8 @@ export interface MiniCloud {
   ): Promise<{ commandId: string; success: boolean; data?: unknown; error?: string }>;
   /** Mint a legacy enrollment token for `pboss cloud connect <token>`. */
   mintEnrollmentToken(): string;
+  /** Send a fire-and-forget control frame (log.watch / log.unwatch). */
+  sendControl(serverId: string, frame: Record<string, unknown>): boolean;
   /** Answer slow_down exactly once on the next poll (client-backoff test). */
   slowDownOnce(): void;
 }
@@ -102,22 +105,36 @@ export async function startMiniCloud(opts: MiniCloudOptions = {}): Promise<MiniC
     enrollmentTokens: [],
     lastStateReport: null,
     commandResults: [],
+    logFrames: [],
   };
 
-  // SSE agent streams + pending commands (the "gateway")
-  const streams = new Map<string, ReadableStreamDefaultController<Uint8Array>>();
+  // Live agent WebSockets + pending commands (the "gateway")
+  type MiniWs = { serverId: string; send: (s: string) => void; close: (code: number, reason?: string) => void; ping: () => void };
+  const sockets = new Map<string, MiniWs>();
   const pending = new Map<string, { resolve: (r: any) => void; timer: ReturnType<typeof setTimeout> }>();
-  const keepalive = new Map<string, ReturnType<typeof setInterval>>();
+  const pings = new Map<string, ReturnType<typeof setInterval>>();
   let slowDownPending = false;
 
-  function sseSend(serverId: string, text: string): void {
-    const ctl = streams.get(serverId);
-    if (!ctl) return;
+  function wsSend(serverId: string, text: string): boolean {
+    const ws = sockets.get(serverId);
+    if (!ws) return false;
     try {
-      ctl.enqueue(new TextEncoder().encode(text));
+      ws.send(text);
+      return true;
     } catch {
-      /* stream closed — the agent will reconnect */
+      return false; // closed — the agent will reconnect
     }
+  }
+
+  /** Apply a state report the way the real cloud's ingest would. */
+  function applyStateReport(server: MiniServerRow, report: any): void {
+    server.status = report.status === "offline" ? "offline" : report.status ?? "online";
+    server.cpu = report.cpu ?? 0;
+    server.memUsed = report.memUsed ?? 0;
+    server.memTotal = report.memTotal ?? 0;
+    server.lastSeen = Date.now();
+    server.processes = report.processes ?? [];
+    state.lastStateReport = report;
   }
 
   function agentAuth(header: string | null): MiniServerRow | null {
@@ -340,16 +357,10 @@ export async function startMiniCloud(opts: MiniCloudOptions = {}): Promise<MiniC
     if (req.method === "POST" && path === "/api/agent/state") {
       const server = agentAuth(req.headers.get("authorization"));
       if (!server) return json({ error: "unauthorized" }, 401);
-      // the real cloud answers 409 until the SSE stream is registered
-      if (!streams.has(server.id)) return json({ error: "stream_not_registered" }, 409);
+      // the real cloud answers 409 until the agent WebSocket is registered
+      if (!sockets.has(server.id)) return json({ error: "stream_not_registered" }, 409);
       const report = (await req.json().catch(() => ({}))) as any;
-      server.status = report.status === "offline" ? "offline" : report.status ?? "online";
-      server.cpu = report.cpu ?? 0;
-      server.memUsed = report.memUsed ?? 0;
-      server.memTotal = report.memTotal ?? 0;
-      server.lastSeen = Date.now();
-      server.processes = report.processes ?? [];
-      state.lastStateReport = report;
+      applyStateReport(server, report);
       return json({ ok: true });
     }
 
@@ -361,10 +372,10 @@ export async function startMiniCloud(opts: MiniCloudOptions = {}): Promise<MiniC
           id: s.id,
           name: s.name,
           host: s.host,
-          status: streams.has(s.id) ? "online" : s.status,
+          status: sockets.has(s.id) ? "online" : s.status,
           os: s.os,
           agentVersion: s.agentVersion,
-          cpu: s.status === "offline" && !streams.has(s.id) ? 0 : s.cpu,
+          cpu: s.status === "offline" && !sockets.has(s.id) ? 0 : s.cpu,
           memUsed: s.memUsed,
           memTotal: s.memTotal,
           lastSeen: new Date(s.lastSeen).toISOString(),
@@ -379,28 +390,7 @@ export async function startMiniCloud(opts: MiniCloudOptions = {}): Promise<MiniC
       return json({ ok: true });
     }
 
-    if (req.method === "GET" && path === "/api/agent/stream") {
-      const server = agentAuth(req.headers.get("authorization"));
-      if (!server) return json({ error: "unauthorized" }, 401);
-      const id = server.id;
-      const stream = new ReadableStream<Uint8Array>({
-        start(controller) {
-          streams.set(id, controller);
-          controller.enqueue(new TextEncoder().encode(`event: hello\ndata: {"serverId":"${id}"}\n\n`));
-          const iv = setInterval(() => sseSend(id, ": ping\n\n"), 2000);
-          keepalive.set(id, iv);
-        },
-        cancel() {
-          streams.delete(id);
-          const iv = keepalive.get(id);
-          if (iv) clearInterval(iv);
-          keepalive.delete(id);
-        },
-      });
-      return new Response(stream, {
-        headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" },
-      });
-    }
+
 
     if (req.method === "POST" && path === "/api/agent/command-result") {
       const server = agentAuth(req.headers.get("authorization"));
@@ -419,10 +409,83 @@ export async function startMiniCloud(opts: MiniCloudOptions = {}): Promise<MiniC
     return json({ error: "not_found", path }, 404);
   }
 
-  const server = Bun.serve({
+  const server = Bun.serve<{ authorization?: string }>({
     port: 0,
-    fetch(req) {
+    fetch(req, bunServer) {
+      if (new URL(req.url).pathname === "/ws/agent") {
+        const ok = bunServer.upgrade(req, {
+          data: { authorization: req.headers.get("authorization") ?? "" },
+        });
+        if (ok) return; // upgraded — websocket handlers take over
+        return json({ error: "upgrade_failed" }, 500);
+      }
       return handle(req);
+    },
+    websocket: {
+      open(ws) {
+        const data = ws.data;
+        const server = agentAuth(data.authorization ?? null);
+        if (!server) {
+          // invalid/revoked credential — same close code the real cloud uses
+          ws.close(4001, "revoked");
+          return;
+        }
+        const entry: MiniWs = {
+          serverId: server.id,
+          send: (s) => ws.send(s),
+          close: (code, reason) => ws.close(code, reason),
+          ping: () => ws.ping(),
+        };
+        const prev = sockets.get(server.id);
+        if (prev) prev.close(1000, "replaced");
+        sockets.set(server.id, entry);
+        ws.send(JSON.stringify({ type: "hello", serverId: server.id, now: Date.now() }));
+        pings.set(server.id, setInterval(() => entry.ping(), 2000));
+      },
+      message(ws, raw) {
+        const data = ws.data as { authorization?: string };
+        const server = agentAuth(data.authorization ?? null);
+        if (!server) return;
+        let frame: any;
+        try {
+          frame = JSON.parse(String(raw));
+        } catch {
+          return;
+        }
+        switch (frame?.type) {
+          case "state":
+            applyStateReport(server, frame.report ?? {});
+            break;
+          case "command-result": {
+            const result = frame.result ?? {};
+            state.commandResults.push(result);
+            const waiter = pending.get(result.commandId);
+            if (waiter) {
+              pending.delete(result.commandId);
+              clearTimeout(waiter.timer);
+              waiter.resolve(result);
+            }
+            break;
+          }
+          case "log":
+            state.logFrames.push({ process: frame.process, lines: frame.lines ?? [] });
+            break;
+          default:
+            break; // pong etc.
+        }
+      },
+      close(ws) {
+        const data = ws.data as { authorization?: string };
+        const server = agentAuth(data.authorization ?? null);
+        if (!server) return;
+        const entry = sockets.get(server.id);
+        if (entry && entry.serverId === server.id) {
+          sockets.delete(server.id);
+          const iv = pings.get(server.id);
+          if (iv) clearInterval(iv);
+          pings.delete(server.id);
+        }
+      },
     },
   });
 
@@ -431,9 +494,10 @@ export async function startMiniCloud(opts: MiniCloudOptions = {}): Promise<MiniC
     port: server.port ?? 0,
     state,
     stop: async () => {
-      for (const iv of keepalive.values()) clearInterval(iv);
-      keepalive.clear();
-      streams.clear();
+      for (const iv of pings.values()) clearInterval(iv);
+      pings.clear();
+      for (const ws of sockets.values()) ws.close(1001, "server stopping");
+      sockets.clear();
       server.stop(true);
     },
     approve: (userCode, action = "approve") =>
@@ -450,8 +514,17 @@ export async function startMiniCloud(opts: MiniCloudOptions = {}): Promise<MiniC
           resolve({ commandId, success: false, error: "agent timeout" });
         }, 10_000);
         pending.set(commandId, { resolve, timer });
-        sseSend(serverId, `event: command\ndata: ${JSON.stringify({ id: commandId, type, payload })}\n\n`);
+        const sent = wsSend(
+          serverId,
+          JSON.stringify({ type: "command", command: { id: commandId, type, payload } })
+        );
+        if (!sent) {
+          pending.delete(commandId);
+          clearTimeout(timer);
+          resolve({ commandId, success: false, error: "agent offline" });
+        }
       }),
+    sendControl: (serverId, frame) => wsSend(serverId, JSON.stringify(frame)),
     mintEnrollmentToken: () => {
       const token = "pbc_" + randomBytes(12).toString("base64url");
       state.enrollmentTokens.push(token);

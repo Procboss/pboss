@@ -101,6 +101,9 @@ export interface ProcessEnvMeta extends ProcessDescription {
   version?: string;
   axm_monitor?: Record<string, any>;
   axm_actions?: any[];
+  /** Facts from the last exit (null until the process has exited once). */
+  last_exit_code?: number | null;
+  last_exit_signal?: string | null;
 }
 
 export interface ProcessState {

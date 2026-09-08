@@ -373,6 +373,26 @@ import type { ReadableStreamController } from "bun";
    list(): ProcessState[] {
      return Array.from(this.processes.values()).map((p) => p.getState());
    }
+   
+   /**
+    * Live log tail for one process (by name), used by the cloud agent's
+    * log.watch frames. Returns the stop function, or null when no process
+    * with that name exists.
+    */
+   watchProcessLogs(
+     name: string,
+     onLines: (lines: { t: number; level: string; msg: string }[]) => void
+   ): (() => void) | null {
+     const container = Array.from(this.processes.values()).find((c) => c.name === name);
+     if (!container) return null;
+     return this.logManager.watchLogs(
+       container.name,
+       container.id,
+       onLines,
+       container.config.outFile,
+       container.config.errorFile
+     );
+   }
  
    describe(target: string | number): ProcessState[] {
      return this.resolveTarget(target).map((p) => p.getState());

@@ -47,6 +47,9 @@ export class ProcessContainer {
   public pid: number | undefined;
   public restartCount: number = 0;
   public unstableRestarts: number = 0;
+  /** Exit facts from the most recent exit (null until it has exited once). */
+  public lastExitCode: number | null = null;
+  public lastExitSignal: string | null = null;
   public createdAt: number;
   public startedAt: number = 0;
   public memory: number = 0;
@@ -365,9 +368,12 @@ export class ProcessContainer {
     }
   }
 
-  private handleExit(code: number | null) {
+  private handleExit(code: number | string | null) {
     const wasOnline = this.status === "online";
     const oldPid = this.pid;
+    // Record the raw exit facts — the cloud turns them into crash reports.
+    this.lastExitCode = typeof code === "number" ? code : null;
+    this.lastExitSignal = typeof code === "string" ? code : null;
     this.status = code === 0 ? "stopped" : "errored";
     this.pid = undefined;
     this.process = null;
@@ -550,6 +556,8 @@ export class ProcessContainer {
       created_at: this.createdAt,
       pm_id: this.id,
       axm_monitor: this.axmMonitor,
+      last_exit_code: this.lastExitCode,
+      last_exit_signal: this.lastExitSignal,
     };
 
     return {

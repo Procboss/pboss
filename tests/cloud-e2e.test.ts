@@ -1,8 +1,9 @@
 /**
  * Cloud e2e — the whole stack against the mini-cloud contract double:
  * real CLI subprocesses, a real daemon subprocess (auto-started by the CLI
- * exactly as in production), and a real bidirectional agent link (SSE
- * command channel + state reports) over 127.0.0.1.
+ * exactly as in production), and a real bidirectional agent link (the
+ * /ws/agent WebSocket: state reports up, commands + log.watch down) over
+ * 127.0.0.1.
  *
  * The human-in-the-loop is simulated the only way it can be in a test:
  * the CLI's stdout is STREAMED (not buffered), the printed code is read
@@ -72,7 +73,7 @@ async function runDeviceFlowCli(args: string[], home: string) {
       if (done) break;
       chunks.push(decoder.decode(value, { stream: true }));
       if (!approved) {
-        const m = chunks.join("").match(/Code:\s*(?:\x1b\[[0-9;]*m)*([A-Z2-9]{4}-[A-Z2-9]{4})/);
+        const m = chunks.join("").match(/Code:\s*(?:\x1b\[[0-9;]*m)*([A-Z2-9]{4}-[A-Z2-9]{4}-[A-Z2-9]{4})/);
         if (m) {
           approved = true;
           void mini.approve(m[1]!);
@@ -148,7 +149,7 @@ describe(
           expect(code).toBe(0);
           expect(out).toContain("ProcBoss Cloud — connect this server");
           expect(out).toContain(mini.url);
-          expect(out).toMatch(/Code:\s*(?:\x1b\[[0-9;]*m)*[A-Z2-9]{4}-[A-Z2-9]{4}/);
+          expect(out).toMatch(/Code:\s*(?:\x1b\[[0-9;]*m)*[A-Z2-9]{4}-[A-Z2-9]{4}-[A-Z2-9]{4}/);
           expect(out).toContain("No browser here — open the URL on any device");
           expect(out).toContain("✓ Server authorized and connected");
           expect(err).toBe("");
@@ -221,6 +222,60 @@ describe(
           expect(dis.out).toContain("✓ Unlinked");
           expect(existsSync(cloudJsonPath)).toBe(false);
           expect(mini.state.servers[0]!.secret).toBeNull(); // revoked upstream
+        } finally {
+          await killDaemon(home);
+          rmSync(home, { recursive: true, force: true });
+        }
+      },
+      90_000
+    );
+
+    test(
+      "log.watch / log.unwatch — the cloud drives the agent's live log tail",
+      async () => {
+        const home = freshHome("logwatch");
+        try {
+          // link first (auto-approved device flow)
+          const { code } = await runDeviceFlowCli(["cloud", "connect", "--url", mini.url], home);
+          expect(code).toBe(0);
+          const cred = readCloudJson(home);
+          await pollFleet(cred, (list) =>
+            list.some((s) => s.id === cred.serverId && s.status === "online")
+          );
+
+          // a process that TALKS every 300ms
+          const noisy = join(home, "noisy.ts");
+          writeFileSync(noisy, "let i = 0; setInterval(() => { console.log('tick ' + (++i)); }, 300);\n");
+          const started = await runCli(["start", noisy], home);
+          expect(started.code).toBe(0);
+          // wait for it to show up in state reports
+          const deadline = Date.now() + 15_000;
+          for (;;) {
+            const report = mini.state.lastStateReport as any;
+            if (report?.processes?.some((p: any) => p.name === "noisy")) break;
+            if (Date.now() > deadline) throw new Error("noisy never appeared in a state report");
+            await new Promise((r) => setTimeout(r, 400));
+          }
+
+          // no log frames before a watch
+          expect(mini.state.logFrames.length).toBe(0);
+
+          // watch → the agent tails the process and pushes frames
+          expect(mini.sendControl(cred.serverId, { type: "log.watch", process: "noisy" })).toBe(true);
+          const framesDeadline = Date.now() + 10_000;
+          for (;;) {
+            if (mini.state.logFrames.some((f) => f.lines.length > 0)) break;
+            if (Date.now() > framesDeadline) throw new Error("no log frames arrived after log.watch");
+            await new Promise((r) => setTimeout(r, 300));
+          }
+          const firstLine = (mini.state.logFrames.find((f) => f.lines.length > 0)!.lines[0] as any);
+          expect(String(firstLine.msg)).toContain("tick");
+
+          // unwatch → the tail stops: frame count freezes
+          expect(mini.sendControl(cred.serverId, { type: "log.unwatch", process: "noisy" })).toBe(true);
+          const countAtUnwatch = mini.state.logFrames.length;
+          await new Promise((r) => setTimeout(r, 1500)); // > 3 ticks + poll interval
+          expect(mini.state.logFrames.length).toBe(countAtUnwatch);
         } finally {
           await killDaemon(home);
           rmSync(home, { recursive: true, force: true });

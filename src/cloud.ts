@@ -2,12 +2,18 @@
  * ProcBoss (pboss) — Cloud Agent
  *
  * Links this machine's pboss daemon to ProcBoss Cloud over an
- * OUTBOUND-ONLY connection (SSE command channel + HTTPS state posts).
- * The cloud never reaches into the user's network.
+ * OUTBOUND-ONLY WebSocket connection (/ws/agent). The cloud never reaches
+ * into the user's network.
  *
- * Enrollment: `pboss cloud connect pbc_…` (single-use token minted in the
- * dashboard) is exchanged once for a permanent per-server credential stored
- * in `~/.pboss/cloud.json` (0600). Reconnection is automatic with backoff.
+ * One full-duplex socket carries everything:
+ *   agent → cloud:  state reports (10s), command results, live log frames
+ *   cloud → agent:  commands (restart/stop/…), log.watch / log.unwatch
+ *
+ * Enrollment: `pboss cloud connect` (device code) or the legacy single-use
+ * token is exchanged once for a permanent per-server credential stored in
+ * `~/.pboss/cloud.json` (0600). Reconnection is automatic with backoff;
+ * close code 4001 means the credential was revoked — the agent unlinks
+ * itself instead of retrying forever.
  *
  * Wire protocol is mirrored on the cloud side (src/lib/cloud/protocol.ts).
  */
@@ -32,7 +38,7 @@ export interface CloudConfig {
 export function loadCloudConfig(): CloudConfig | null {
   try {
     if (!existsSync(CLOUD_FILE)) return null;
-    const raw = JSON.parse(readFileSync(CLOUD_FILE, "utf-8")) as Partial<CloudConfig>;
+    const raw = JSON.parse(readFileSync(CLOUD_FILE, "utf-8") as string) as Partial<CloudConfig>;
     if (!raw.cloudUrl || !raw.serverId || !raw.serverSecret) return null;
     return {
       cloudUrl: String(raw.cloudUrl).replace(/\/+$/, ""),
@@ -67,6 +73,13 @@ export function clearCloudConfig(): void {
 export function resolveCloudUrl(explicit?: string): string {
   const url = (explicit || process.env.PBOSS_CLOUD_URL || CLOUD_DEFAULT_URL).trim();
   return url.replace(/\/+$/, "");
+}
+
+/** https://… → wss://…, http://… → ws://…, and the agent endpoint path. */
+export function wsUrlOf(cloudUrl: string): string {
+  const base = cloudUrl.replace(/\/+$/, "");
+  const wsBase = base.replace(/^http:\/\//i, "ws://").replace(/^https:\/\//i, "wss://");
+  return `${wsBase}/ws/agent`;
 }
 
 /* ── fleet view (`pboss cloud servers`, via the daemon's machine credential) ── */
@@ -126,6 +139,9 @@ export interface CloudProcessReport {
   restarts: number;
   crashes: number;
   uptimeSec: number;
+  /** Exit facts (present after the process has exited once). */
+  exitCode?: number | null;
+  signal?: string | null;
 }
 
 export interface CloudEventReport {
@@ -133,6 +149,10 @@ export interface CloudEventReport {
   process: string;
   at: number;
   detail?: string;
+  /** Crash enrichment — drives the cloud's crash reports. */
+  exitCode?: number | null;
+  signal?: string | null;
+  logTail?: string[];
 }
 
 export interface CloudStateReport {
@@ -159,7 +179,9 @@ export interface CloudCommand {
     | "process.restart"
     | "process.delete"
     | "process.logs"
-    | "server.info";
+    | "process.deploy"
+    | "server.info"
+    | "server.deploy";
   payload: Record<string, unknown>;
 }
 
@@ -169,6 +191,24 @@ export interface CloudCommandResult {
   data?: unknown;
   error?: string;
 }
+
+/** Frames the cloud sends down the socket. */
+export type CloudServerFrame =
+  | { type: "hello"; serverId: string; now: number }
+  | { type: "command"; command: CloudCommand }
+  | { type: "log.watch"; process: string }
+  | { type: "log.unwatch"; process: string }
+  | { type: "ping"; now: number };
+
+/** Frames the agent sends up. */
+export type CloudAgentFrame =
+  | { type: "state"; report: CloudStateReport }
+  | { type: "command-result"; result: CloudCommandResult }
+  | { type: "log"; process: string; lines: { t: number; level?: string; msg: string }[] }
+  | { type: "pong"; now: number };
+
+/** The cloud closes the socket with this code when the credential is revoked. */
+export const WS_CLOSE_REVOKED = 4001;
 
 /* ── pure mapping helpers (unit-tested) ───────────────────────────────── */
 
@@ -193,6 +233,8 @@ export function mapProcessState(p: ProcessState): CloudProcessReport {
     // pm_uptime is the epoch-ms START timestamp (process-container sets it to
     // startedAt) — same math the CLI's own uptime column uses: now - start.
     uptimeSec: Math.max(0, Math.round((Date.now() - (env?.pm_uptime ?? Date.now())) / 1000)),
+    exitCode: env?.last_exit_code ?? undefined,
+    signal: env?.last_exit_signal ?? undefined,
   };
 }
 
@@ -240,7 +282,14 @@ export function diffEvents(
       continue;
     }
     if (before.status !== "errored" && p.status === "errored") {
-      events.push({ kind: "crash", process: p.name, at: now, detail: "process errored" });
+      events.push({
+        kind: "crash",
+        process: p.name,
+        at: now,
+        detail: "process errored",
+        exitCode: p.exitCode ?? null,
+        signal: p.signal ?? null,
+      });
     } else if (before.status === "online" && p.status === "stopped") {
       events.push({ kind: "stopped", process: p.name, at: now, detail: "process stopped" });
     } else if (
@@ -291,46 +340,12 @@ export function startOptionsFromState(p: ProcessState): StartOptions {
   };
 }
 
-/* ── SSE frame parser (unit-tested) ───────────────────────────────────── */
-
-export interface SseEvent {
-  event: string;
-  data: string;
-}
-
-export class SseParser {
-  private buffer = "";
-  private event = "";
-  private dataLines: string[] = [];
-
-  /** Feed a chunk; returns complete events and keeps partials buffered. */
-  push(chunk: string): SseEvent[] {
-    this.buffer += chunk;
-    const out: SseEvent[] = [];
-    let idx: number;
-    while ((idx = this.buffer.indexOf("\n")) !== -1) {
-      let line = this.buffer.slice(0, idx);
-      this.buffer = this.buffer.slice(idx + 1);
-      if (line.endsWith("\r")) line = line.slice(0, -1);
-      if (line.startsWith(":")) continue; // comment / keepalive
-      if (line === "") {
-        if (this.dataLines.length > 0 || this.event) {
-          out.push({ event: this.event || "message", data: this.dataLines.join("\n") });
-        }
-        this.event = "";
-        this.dataLines = [];
-        continue;
-      }
-      const colon = line.indexOf(":");
-      const field = colon === -1 ? line : line.slice(0, colon);
-      let value = colon === -1 ? "" : line.slice(colon + 1);
-      if (value.startsWith(" ")) value = value.slice(1);
-      if (field === "event") this.event = value;
-      else if (field === "data") this.dataLines.push(value);
-      // retry/id fields are ignored
-    }
-    return out;
-  }
+/** Lines of crash-context the agent attaches to crash events (raw text). */
+export function crashLogTail(logs: LogItem[], max = 30): string[] {
+  return logs
+    .slice(-max)
+    .map((l) => l.msg ?? "")
+    .filter((s) => s.length > 0);
 }
 
 /* ── the agent ────────────────────────────────────────────────────────── */
@@ -353,7 +368,7 @@ export class CloudAgent {
   private pm: ProcessManager;
   private cfg: CloudConfig | null = null;
   private running = false;
-  private streamAbort: AbortController | null = null;
+  private ws: WebSocket | null = null;
   private reportTimer: ReturnType<typeof setInterval> | null = null;
   private backoffMs = 1000;
   private reconnects = 0;
@@ -363,7 +378,8 @@ export class CloudAgent {
   private lastError: string | null = null;
   private lastSnapshot = new Map<string, CloudProcessReport>();
   private reportNow: (() => void) | null = null;
-  private retry409Armed = false;
+  /** Active log tails (process name → stop function), driven by log.watch. */
+  private logTails = new Map<string, () => void>();
 
   constructor(pm: ProcessManager) {
     this.pm = pm;
@@ -448,8 +464,7 @@ export class CloudAgent {
     if (this.reportTimer) clearInterval(this.reportTimer);
     this.reportTimer = null;
     this.reportNow = null;
-    this.streamAbort?.abort();
-    this.streamAbort = null;
+    this.closeSocket(1000, "agent stopped");
     this.streamState = "stopped";
     if (opts.revoke && this.cfg) {
       const cfg = this.cfg;
@@ -478,57 +493,56 @@ export class CloudAgent {
     };
   }
 
-  /* ── command channel (SSE, outbound) ───────────────────────────────── */
+  private closeSocket(code: number, reason: string): void {
+    const ws = this.ws;
+    this.ws = null;
+    if (ws) {
+      try {
+        ws.close(code, reason);
+      } catch {
+        // already closing — nothing to do
+      }
+    }
+  }
+
+  /* ── command + log channel (WebSocket, full-duplex) ─────────────────── */
 
   private async runStream(): Promise<void> {
     while (this.running && this.cfg) {
       const cfg = this.cfg;
-      this.streamAbort = new AbortController();
+      this.streamState = "connecting";
+      let closedWith: { code: number; reason: string } | null = null;
       try {
-        this.streamState = "connecting";
-        const res = await fetch(`${cfg.cloudUrl}/api/agent/stream`, {
-          headers: this.authHeader(cfg),
-          signal: this.streamAbort.signal,
-        });
-        if (res.status === 401) {
-          await this.handleRevoked();
+        const ws = await this.dialWebSocket(cfg);
+        if (!this.running || this.cfg !== cfg) {
+          this.closeSocket(1000, "superseded");
           return;
         }
-        if (!res.ok || !res.body) {
-          throw new Error(`stream HTTP ${res.status}`);
-        }
-        // stream opened — reset backoff and start reporting
+        this.ws = ws;
         this.streamState = "connected";
         this.backoffMs = 1000;
         this.lastError = null;
         console.log(
-          colorize(`☁  cloud: connected — command channel live`, "green")
+          colorize(`☁  cloud: connected — command channel live (WebSocket)`, "green")
+        );
+        // Fresh state right after (re)connecting — the dashboard lights up.
+        void this.reportState().catch((err: unknown) =>
+          ignore("cloud state report (post-connect)", err)
         );
 
-        const reader = res.body.getReader();
-        const decoder = new TextDecoder();
-        const parser = new SseParser();
-        for (;;) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          for (const ev of parser.push(decoder.decode(value, { stream: true }))) {
-            if (ev.event === "command") {
-              const cmd = this.safeJson(ev.data) as CloudCommand | null;
-              if (cmd?.id && cmd.type) {
-                void this.handleCommand(cmd);
-              }
-            }
-            // "hello" and keepalive comments need no handling
-          }
-        }
-        // server closed the stream gracefully — reconnect immediately
-        this.streamState = "connecting";
+        closedWith = await this.serveWebSocket(ws);
       } catch (err: any) {
         if (!this.running) return;
-        if (err?.name === "AbortError") return;
         this.lastError = err?.message ?? String(err);
       }
       if (!this.running || !this.cfg) return;
+
+      // Revoked: the cloud told us to go away — unlink, don't retry.
+      if (closedWith?.code === WS_CLOSE_REVOKED) {
+        this.handleRevoked();
+        return;
+      }
+
       this.streamState = "backoff";
       this.reconnects++;
       await sleep(this.backoffMs);
@@ -536,64 +550,168 @@ export class CloudAgent {
     }
   }
 
-  private async handleRevoked(): Promise<void> {
+  /** Dial /ws/agent; resolves with the OPEN socket (auth header included). */
+  private dialWebSocket(cfg: CloudConfig): Promise<WebSocket> {
+    return new Promise<WebSocket>((resolve, reject) => {
+      const url = wsUrlOf(cfg.cloudUrl);
+      // Bun's WebSocket client accepts extra handshake headers.
+      const ws = new WebSocket(url, { headers: this.authHeader(cfg) } as never);
+      const failTimer = setTimeout(() => {
+        try {
+          ws.close();
+        } catch {
+          // not open — close is a no-op that triggers onclose below
+        }
+        reject(new Error(`websocket handshake timeout (${url})`));
+      }, 15_000);
+      ws.onopen = () => {
+        clearTimeout(failTimer);
+        resolve(ws);
+      };
+      ws.onerror = () => {
+        clearTimeout(failTimer);
+        reject(new Error(`websocket error (dialing ${url})`));
+      };
+      ws.onclose = (ev) => {
+        clearTimeout(failTimer);
+        reject(new Error(`websocket closed during handshake (code ${ev.code})`));
+      };
+    });
+  }
+
+  /** Serve frames on an open socket; resolves when the socket closes. */
+  private serveWebSocket(ws: WebSocket): Promise<{ code: number; reason: string }> {
+    return new Promise((resolve) => {
+      ws.onmessage = (ev) => {
+        this.handleFrame(String(ev.data));
+      };
+      ws.onclose = (ev) => {
+        // tails are per-connection state; watch frames re-arrive on reconnect
+        this.stopAllLogTails();
+        resolve({ code: ev.code, reason: String(ev.reason ?? "") });
+      };
+      ws.onerror = () => {
+        // onclose follows; nothing to do here
+      };
+    });
+  }
+
+  private handleFrame(raw: string): void {
+    let frame: CloudServerFrame | null = null;
+    try {
+      frame = JSON.parse(raw) as CloudServerFrame;
+    } catch {
+      return; // not JSON — ignore (forward-compat: unknown frames too)
+    }
+    if (!frame?.type) return;
+    switch (frame.type) {
+      case "hello":
+        // handshake ack — registration is confirmed
+        break;
+      case "command": {
+        const cmd = frame.command;
+        if (cmd?.id && cmd.type) {
+          void this.handleCommand(cmd);
+        }
+        break;
+      }
+      case "log.watch":
+        if (frame.process) this.startLogTail(frame.process);
+        break;
+      case "log.unwatch":
+        if (frame.process) this.stopLogTail(frame.process);
+        break;
+      case "ping":
+        this.sendFrame({ type: "pong", now: Date.now() });
+        break;
+      default:
+        break;
+    }
+  }
+
+  /** Best-effort frame send — drops silently when the socket is closed. */
+  private sendFrame(frame: CloudAgentFrame): boolean {
+    const ws = this.ws;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return false;
+    try {
+      ws.send(JSON.stringify(frame));
+      return true;
+    } catch (err) {
+      ignore("send cloud frame", err);
+      return false;
+    }
+  }
+
+  private handleRevoked(): void {
     this.running = false;
     if (this.reportTimer) clearInterval(this.reportTimer);
     this.reportTimer = null;
-    this.streamAbort?.abort();
+    this.closeSocket(WS_CLOSE_REVOKED, "revoked");
+    this.stopAllLogTails();
     this.streamState = "stopped";
     clearCloudConfig();
     this.cfg = null;
     console.error(
       colorize(
-        "☁  cloud: credential revoked from the dashboard — re-link with `pboss cloud connect <token>`",
+        "☁  cloud: credential revoked from the dashboard — re-link with `pboss cloud connect`",
         "yellow"
       )
     );
   }
 
-  /* ── state reporting (POST, every 10s and after each command) ──────── */
+  /* ── state reporting (every 10s and after each command) ─────────────── */
 
   private async reportState(): Promise<void> {
     if (!this.running || !this.cfg) return;
-    const cfg = this.cfg;
     const states = this.pm.list();
-    const report = buildStateReport(cfg.serverId, states);
+    const report = buildStateReport(this.cfg.serverId, states);
     report.events = diffEvents(this.lastSnapshot, report.processes);
+    // crash events carry the log tail for the cloud's crash reports
+    for (const ev of report.events) {
+      if (ev.kind !== "crash") continue;
+      try {
+        const logs = await this.pm.getLogs(ev.process, 30);
+        ev.logTail = crashLogTail(logs);
+      } catch (err) {
+        ignore(`read log tail for crash (${ev.process})`, err);
+      }
+    }
     this.lastSnapshot = new Map(report.processes.map((p) => [p.name, p]));
     this.lastReport = report;
 
-    try {
-      const res = await fetch(`${cfg.cloudUrl}/api/agent/state`, {
-        method: "POST",
-        headers: this.authHeader(cfg),
-        body: JSON.stringify(report),
-      });
-      if (res.status === 401) {
-        await this.handleRevoked();
-        return;
-      }
-      if (res.status === 409 && !this.retry409Armed) {
-        // stream not registered yet (race between start() and the first
-        // post) — retry once shortly instead of waiting a full interval
-        this.retry409Armed = true;
-        setTimeout(() => {
-          this.retry409Armed = false;
-          void this.reportState().catch((err: unknown) => ignore("cloud state report (409 retry)", err));
-        }, 1500);
-        return;
-      }
+    if (this.sendFrame({ type: "state", report })) {
       this.lastReportAt = Date.now();
-    } catch (err: any) {
-      this.lastError = err?.message ?? String(err);
+    } else {
+      this.lastError = "websocket not open — state report skipped";
     }
+  }
+
+  /* ── live log tails (log.watch / log.unwatch) ───────────────────────── */
+
+  private startLogTail(process: string): void {
+    if (this.logTails.has(process)) return; // idempotent — multiple watchers share one tail
+    const stop = this.pm.watchProcessLogs(process, (lines) => {
+      this.sendFrame({ type: "log", process, lines });
+    });
+    if (stop) {
+      this.logTails.set(process, stop);
+    }
+  }
+
+  private stopLogTail(process: string): void {
+    const stop = this.logTails.get(process);
+    stop?.();
+    this.logTails.delete(process);
+  }
+
+  private stopAllLogTails(): void {
+    for (const stop of this.logTails.values()) stop();
+    this.logTails.clear();
   }
 
   /* ── command execution (local, against this daemon's process engine) ── */
 
   private async handleCommand(cmd: CloudCommand): Promise<void> {
-    const cfg = this.cfg;
-    if (!cfg) return;
     let result: CloudCommandResult;
     try {
       const data = await this.executeCommand(cmd);
@@ -601,17 +719,7 @@ export class CloudAgent {
     } catch (err: any) {
       result = { commandId: cmd.id, success: false, error: err?.message ?? String(err) };
     }
-    try {
-      await fetch(`${cfg.cloudUrl}/api/agent/command-result`, {
-        method: "POST",
-        headers: this.authHeader(cfg),
-        body: JSON.stringify(result),
-      });
-    } catch (err) {
-      // The dashboard's command dispatch times out on its own — but record
-      // why the result never arrived.
-      ignore("post command result to cloud", err);
-    }
+    this.sendFrame({ type: "command-result", result });
     // the dashboard expects fresh state right after a command
     await this.reportState().catch((err: unknown) => ignore("cloud state report (post-command)", err));
   }
@@ -676,14 +784,6 @@ export class CloudAgent {
     return list.find(
       (p) => p.name === target || String(p.pm_id) === target || String(p.id) === target
     );
-  }
-
-  private safeJson(text: string): unknown {
-    try {
-      return JSON.parse(text);
-    } catch {
-      return null;
-    }
   }
 }
 
