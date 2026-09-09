@@ -55,11 +55,35 @@ export const CLOUD_EVENT_OUTBOX_MAX = 200;
  */
 export const CLOUD_EVENT_TTL_MS = 10 * 60_000;
 
+/**
+ * Hello deadline. The cloud sends a `hello` frame the instant the
+ * authenticated upstream upgrade completes. Some reverse proxies answer
+ * the WebSocket upgrade THEMSELVES (a 101 within milliseconds) and then
+ * dial the origin without forwarding the Authorization header — the origin
+ * rejects, and the client sits on an open socket that leads nowhere: a
+ * "mirage" open. Until hello arrives, the agent refuses to call itself
+ * connected, send frames, or reset the backoff. Env override:
+ * PBOSS_CLOUD_HELLO_TIMEOUT_MS (tests).
+ */
+export const CLOUD_HELLO_TIMEOUT_MS = 10_000;
+
+/**
+ * A confirmed link that lived at least this long counts as stable — when it
+ * eventually drops, the retry counter resets, so "N retries" reads as
+ * "N since the last stable link", not a scary lifetime total. Env override:
+ * PBOSS_CLOUD_STABLE_LINK_MS (tests).
+ */
+export const CLOUD_STABLE_LINK_MS = 60_000;
+
 export interface CloudAgentOptions {
   /** Shrink the inbound watchdog (tests). Default 45s, env overridable. */
   inboundWatchdogMs?: number;
   /** Report cadence in ms (tests). Default 10s, env overridable. */
   reportIntervalMs?: number;
+  /** Hello-confirmation deadline in ms (tests). Default 10s, env overridable. */
+  helloTimeoutMs?: number;
+  /** How long a link must hold to count as stable (tests). Default 60s. */
+  stableLinkMs?: number;
 }
 
 /* ── config file ──────────────────────────────────────────────────────── */
@@ -464,6 +488,8 @@ export interface CloudAgentStatus {
   connected: boolean;
   streamState: "connecting" | "connected" | "backoff" | "stopped";
   reconnects: number;
+  /** ms until the next dial attempt while in backoff (null otherwise). */
+  nextRetryInMs: number | null;
   lastReportAt: number | null;
   lastReportAgeMs: number | null;
   processes: number;
@@ -480,6 +506,13 @@ export class CloudAgent {
   private reportTimer: ReturnType<typeof setInterval> | null = null;
   private backoffMs = 1000;
   private reconnects = 0;
+  /** When the next dial fires while in backoff (status display). */
+  private nextRetryAt: number | null = null;
+  /** The cloud's hello frame confirms the link is REAL, not a proxy mirage. */
+  private linkConfirmed = false;
+  private confirmedAt = 0;
+  private helloTimeoutMs: number;
+  private stableLinkMs: number;
   private streamState: CloudAgentStatus["streamState"] = "stopped";
   private lastReport: CloudStateReport | null = null;
   private lastReportAt: number | null = null;
@@ -513,6 +546,14 @@ export class CloudAgent {
     this.reportIntervalMs =
       opts.reportIntervalMs ??
       (Number.isFinite(envReport) && envReport > 0 ? envReport : CLOUD_REPORT_INTERVAL_MS);
+    const envHello = Number.parseInt(process.env.PBOSS_CLOUD_HELLO_TIMEOUT_MS ?? "", 10);
+    this.helloTimeoutMs =
+      opts.helloTimeoutMs ??
+      (Number.isFinite(envHello) && envHello > 0 ? envHello : CLOUD_HELLO_TIMEOUT_MS);
+    const envStable = Number.parseInt(process.env.PBOSS_CLOUD_STABLE_LINK_MS ?? "", 10);
+    this.stableLinkMs =
+      opts.stableLinkMs ??
+      (Number.isFinite(envStable) && envStable > 0 ? envStable : CLOUD_STABLE_LINK_MS);
   }
 
   get config(): CloudConfig | null {
@@ -529,6 +570,7 @@ export class CloudAgent {
       connected: this.streamState === "connected",
       streamState: this.streamState,
       reconnects: this.reconnects,
+      nextRetryInMs: this.nextRetryAt ? Math.max(0, this.nextRetryAt - Date.now()) : null,
       lastReportAt: this.lastReportAt,
       lastReportAgeMs: this.lastReportAt ? Date.now() - this.lastReportAt : null,
       processes: this.lastReport?.processes.length ?? 0,
@@ -584,6 +626,9 @@ export class CloudAgent {
     this.cfg = cfg;
     this.running = true;
     this.streamState = "connecting";
+    // A manual (re)start dials immediately — the backoff ladder restarts too.
+    this.backoffMs = 1000;
+    this.nextRetryAt = null;
     console.log(
       colorize(`☁  cloud: connecting to ${cfg.cloudUrl} (${cfg.serverName ?? cfg.serverId})`, "cyan")
     );
@@ -603,6 +648,8 @@ export class CloudAgent {
     this.stopWatchdog();
     this.closeSocket(1000, "agent stopped");
     this.streamState = "stopped";
+    this.linkConfirmed = false;
+    this.nextRetryAt = null;
     if (opts.revoke && this.cfg) {
       const cfg = this.cfg;
       try {
@@ -679,7 +726,9 @@ export class CloudAgent {
     while (this.running && this.cfg) {
       const cfg = this.cfg;
       this.streamState = "connecting";
+      this.linkConfirmed = false;
       let closedWith: { code: number; reason: string } | null = null;
+      let helloTimer: ReturnType<typeof setTimeout> | null = null;
       try {
         const ws = await this.dialWebSocket(cfg);
         if (!this.running || this.cfg !== cfg) {
@@ -687,21 +736,33 @@ export class CloudAgent {
           return;
         }
         this.ws = ws;
-        this.streamState = "connected";
-        this.backoffMs = 1000;
-        this.lastError = null;
+        // streamState stays "connecting" until the cloud's `hello` frame
+        // CONFIRMS the link (see confirmLink): some reverse proxies answer
+        // the WebSocket upgrade themselves and never establish the
+        // authenticated upstream — a "mirage" open. An agent that trusted
+        // the open event alone once reported connected while every frame
+        // vanished into the proxy, and the fake open reset the backoff
+        // every cycle: a ~3s flap, hundreds of retries per hour.
         this.lastInboundAt = Date.now();
         this.sawServerPing = false;
-        console.log(
-          colorize(`☁  cloud: connected — command channel live (WebSocket)`, "green")
-        );
-        // Fresh state right after (re)connecting — the dashboard lights up.
-        void this.reportState().catch((err: unknown) =>
-          ignore("cloud state report (post-connect)", err)
-        );
+        helloTimer = setTimeout(() => {
+          if (this.ws !== ws || this.linkConfirmed || !this.running) return;
+          this.lastError =
+            "cloud completed the WebSocket upgrade but never confirmed the link (no hello frame) — " +
+            "a reverse proxy may be stripping the agent handshake";
+          console.log(
+            colorize(
+              `☁  cloud: open but unconfirmed for ${Math.round(this.helloTimeoutMs / 1000)}s — redialing`,
+              "yellow"
+            )
+          );
+          this.closeSocket(1000, "hello timeout");
+        }, this.helloTimeoutMs);
 
         closedWith = await this.serveWebSocket(ws);
+        if (helloTimer) clearTimeout(helloTimer);
       } catch (err: any) {
+        if (helloTimer) clearTimeout(helloTimer);
         if (!this.running) return;
         this.lastError = err?.message ?? String(err);
       }
@@ -713,23 +774,52 @@ export class CloudAgent {
         return;
       }
 
+      // Post-mortem: surface WHY a confirmed link died. The generic
+      // "websocket not open — state report skipped" once masked this for
+      // hours (a stream of handshake 401s read as unexplained flapping).
+      if (closedWith && this.linkConfirmed) {
+        if (closedWith.reason === "replaced") {
+          this.lastError =
+            "cloud replaced this connection — another daemon linking with the same credential?";
+        } else if (closedWith.code !== 1000) {
+          this.lastError = `cloud closed the connection (code ${closedWith.code}${closedWith.reason ? `: ${closedWith.reason}` : ""})`;
+        }
+      }
+      // A link that held ≥ stableLinkMs was healthy: its death resets the
+      // counter, so "N retries" means "N since the last stable link".
+      if (this.linkConfirmed && Date.now() - this.confirmedAt >= this.stableLinkMs) {
+        this.reconnects = 0;
+      }
+
       this.streamState = "backoff";
       this.reconnects++;
       // Jitter (75–125%): after a cloud-side blip, every agent in a fleet
       // exits backoff at the same instant — the synchronized retry storm
       // is what actually takes the gateway down. Spreading the retries
       // turns a thundering herd into a trickle.
-      await sleep(Math.floor(this.backoffMs * (0.75 + Math.random() * 0.5)));
+      const delay = Math.floor(this.backoffMs * (0.75 + Math.random() * 0.5));
+      this.nextRetryAt = Date.now() + delay;
+      await sleep(delay);
       this.backoffMs = Math.min(this.backoffMs * 2, 30_000);
+      this.nextRetryAt = null;
     }
   }
 
-  /** Dial /ws/agent; resolves with the OPEN socket (auth header included). */
+  /** Dial /ws/agent; resolves with the OPEN socket (auth included). */
   private dialWebSocket(cfg: CloudConfig): Promise<WebSocket> {
     return new Promise<WebSocket>((resolve, reject) => {
       const url = wsUrlOf(cfg.cloudUrl);
+      // The credential rides two transports: the Authorization header
+      // (well-behaved proxies) AND the `?agent=` query param — some
+      // reverse proxies (preview tunnels, corporate gateways) strip
+      // Authorization from WebSocket upgrades but forward the URL. The
+      // cloud reads whichever arrives; both carry the same Bearer token.
+      const authedUrl =
+        url +
+        (url.includes("?") ? "&" : "?") +
+        `agent=${encodeURIComponent(`${cfg.serverId}.${cfg.serverSecret}`)}`;
       // Bun's WebSocket client accepts extra handshake headers.
-      const ws = new WebSocket(url, { headers: this.authHeader(cfg) } as never);
+      const ws = new WebSocket(authedUrl, { headers: this.authHeader(cfg) } as never);
       const failTimer = setTimeout(() => {
         try {
           ws.close();
@@ -757,6 +847,7 @@ export class CloudAgent {
   private serveWebSocket(ws: WebSocket): Promise<{ code: number; reason: string }> {
     return new Promise((resolve) => {
       ws.onmessage = (ev) => {
+        if (this.ws !== ws) return; // a superseded socket's frames are noise
         this.lastInboundAt = Date.now();
         this.handleFrame(String(ev.data));
       };
@@ -781,7 +872,8 @@ export class CloudAgent {
     if (!frame?.type) return;
     switch (frame.type) {
       case "hello":
-        // handshake ack — registration is confirmed
+        // handshake ack — registration is confirmed, the link is real
+        this.confirmLink();
         break;
       case "command": {
         const cmd = frame.command;
@@ -808,10 +900,30 @@ export class CloudAgent {
     }
   }
 
+  /** The cloud's hello frame: the link is REAL (authenticated upstream). */
+  private confirmLink(): void {
+    if (this.linkConfirmed) return;
+    this.linkConfirmed = true;
+    this.confirmedAt = Date.now();
+    this.streamState = "connected";
+    this.backoffMs = 1000; // only a CONFIRMED link resets the ladder
+    this.lastError = null;
+    console.log(
+      colorize("☁  cloud: connected — command channel live (cloud-confirmed)", "green")
+    );
+    // Fresh state right after (re)connecting — the dashboard lights up.
+    void this.reportState().catch((err: unknown) =>
+      ignore("cloud state report (post-connect)", err)
+    );
+  }
+
   /** Best-effort frame send — drops silently when the socket is closed. */
   private sendFrame(frame: CloudAgentFrame): boolean {
     const ws = this.ws;
-    if (!ws || ws.readyState !== WebSocket.OPEN) return false;
+    // Frames only flow on a CONFIRMED link: an unconfirmed open may be a
+    // proxy mirage whose buffer would swallow them — sendFrame returning
+    // true would then lie about delivery.
+    if (!ws || !this.linkConfirmed || ws.readyState !== WebSocket.OPEN) return false;
     try {
       ws.send(JSON.stringify(frame));
       return true;
@@ -887,10 +999,15 @@ export class CloudAgent {
       // means the frame entered the local socket buffer, not that the
       // cloud ingested it. The ack owns the trim.
     } else {
-      this.lastError =
-        this.outbox.length > 0
-          ? `websocket not open — ${this.outbox.length} event(s) queued for the next connection`
-          : "websocket not open — state report skipped";
+      // Only when nothing more specific is on record: this generic skip
+      // once MASKED the real failure for hours (the dial was being 401'd
+      // upstream; the status just said "websocket not open").
+      if (!this.lastError) {
+        this.lastError =
+          this.outbox.length > 0
+            ? `websocket not open — ${this.outbox.length} event(s) queued for the next connection`
+            : "websocket not open — state report skipped";
+      }
     }
   }
 

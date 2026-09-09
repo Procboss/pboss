@@ -1319,7 +1319,10 @@ Examples:
                 : st.streamState === "connecting"
                   ? colorize("connecting…", "yellow")
                   : st.streamState === "backoff"
-                    ? colorize(`reconnecting (backoff, ${st.reconnects} retries)`, "yellow")
+                    ? colorize(
+                        `reconnecting (next try in ~${Math.max(1, Math.round((st.nextRetryInMs ?? 0) / 1000))}s, ${st.reconnects} ${st.reconnects === 1 ? "retry" : "retries"} since the last stable link)`,
+                        "yellow"
+                      )
                     : colorize("stopped", "red");
             console.log(`  Status:    ${state}`);
             console.log(`  Cloud:     ${st.cloudUrl}`);

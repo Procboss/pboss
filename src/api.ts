@@ -733,6 +733,7 @@ export class PBoss extends EventEmitter<PBossEvents> {
     connected: boolean;
     streamState: string;
     reconnects: number;
+    nextRetryInMs: number | null;
     lastReportAt: number | null;
     lastReportAgeMs: number | null;
     processes: number;
