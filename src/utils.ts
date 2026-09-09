@@ -17,7 +17,7 @@
 import { join } from "path";
 import { ALL_DIRS, PBOSS_HOME } from "./constants";
 import { mkdir } from "fs/promises";
-import { readFileSync } from "fs";
+import { chmodSync, readFileSync } from "fs";
 import { ignore } from "./error-handling";
 import { totalmem, freemem, loadavg, platform, hostname, uptime } from "node:os";
 
@@ -39,12 +39,33 @@ export function dumpEntryCount(): number {
   }
 }
 
+/**
+ * Create the pboss home tree. Mode 0700: ~/.pboss contains the daemon's
+ * Unix socket (any local user who can REACH the socket can command the
+ * daemon — the classic pm2 /tmp/.pm2 local-privilege hole) and cloud.json
+ * (the machine credential). Owner-only from the first mkdir on.
+ */
 export async function ensureDirs() {
   await Promise.all(
     ALL_DIRS.map(async (dir) => {
-      await mkdir(dir, { recursive: true });
+      await mkdir(dir, { recursive: true, mode: 0o700 });
     })
   );
+}
+
+/**
+ * Self-heal the permissions of an ~/.pboss created before the 0700 rule
+ * (or by a mode-ignoring filesystem): best-effort, never fatal. Unix only —
+ * Windows named pipes carry their own ACLs.
+ */
+export function tightenPbossHomeMode(): void {
+  if (process.platform === "win32") return;
+  try {
+    chmodSync(PBOSS_HOME, 0o700);
+  } catch {
+    // Not ours to fix (shared dir, exotic fs) — the mkdir mode already
+    // covers fresh installs; a deliberate override stays deliberate.
+  }
 }
 
 const MEMORY_REGEX = /^(\d+(?:\.\d+)?)\s*(K|M|G|T)?B?$/i;

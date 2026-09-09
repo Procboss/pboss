@@ -205,7 +205,11 @@ describe("StartupManager — generated unit shape", () => {
     expect(out).toContain("ExecStartPost=");
     expect(out).toContain("ExecReload=");
     expect(out).toContain("ExecStop=");
-    expect(out).toContain("Restart=on-failure");
+    // ALWAYS, not on-failure: a crash that happens to exit 0 must still
+    // restart (exit 81 = conflict stays non-restartable via
+    // RestartPreventExitStatus), and RestartSec=2 keeps the loop polite.
+    expect(out).toContain("Restart=always");
+    expect(out).toContain("RestartSec=2");
   });
 
   test.skipIf(process.platform === "win32")(

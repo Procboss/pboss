@@ -78,6 +78,16 @@ export interface MiniCloud {
     lastStateReport: Record<string, unknown> | null;
     commandResults: Array<{ commandId: string; success: boolean; data?: unknown; error?: string }>;
     logFrames: Array<{ process: string; lines: unknown[] }>;
+    /** Total agent WebSocket connections accepted (reconnect tests). */
+    connectionCount: number;
+    /** When the last state report arrived (freshness checks). */
+    lastReportArrivedAt: number;
+    /** Pong frames received from the agent (proves pings are flowing). */
+    pongCount: number;
+    /** Ingested event ids (first delivery) — mirrors the cloud's dedup/ack. */
+    ingestedEventIds: string[];
+    /** Crash events actually ingested (deduped — the dashboard's view). */
+    ingestedCrashEvents: Array<{ id?: string; process: string; at: number }>;
   };
   /** Approve/deny a code the way the browser page would. */
   approve(userCode: string, action?: "approve" | "deny"): Promise<Response>;
@@ -93,6 +103,12 @@ export interface MiniCloud {
   sendControl(serverId: string, frame: Record<string, unknown>): boolean;
   /** Answer slow_down exactly once on the next poll (client-backoff test). */
   slowDownOnce(): void;
+  /**
+   * Simulate a network blackout for one server: stop sending pings WITHOUT
+   * closing the socket — the agent's inbound watchdog must detect the
+   * silence and force a reconnect. A reconnect re-arms pings.
+   */
+  silencePings(serverId: string): void;
 }
 
 export async function startMiniCloud(opts: MiniCloudOptions = {}): Promise<MiniCloud> {
@@ -106,6 +122,11 @@ export async function startMiniCloud(opts: MiniCloudOptions = {}): Promise<MiniC
     lastStateReport: null,
     commandResults: [],
     logFrames: [],
+    connectionCount: 0,
+    lastReportArrivedAt: 0,
+    pongCount: 0,
+    ingestedEventIds: [],
+    ingestedCrashEvents: [],
   };
 
   // Live agent WebSockets + pending commands (the "gateway")
@@ -135,6 +156,7 @@ export async function startMiniCloud(opts: MiniCloudOptions = {}): Promise<MiniC
     server.lastSeen = Date.now();
     server.processes = report.processes ?? [];
     state.lastStateReport = report;
+    state.lastReportArrivedAt = Date.now();
   }
 
   function agentAuth(header: string | null): MiniServerRow | null {
@@ -145,6 +167,40 @@ export async function startMiniCloud(opts: MiniCloudOptions = {}): Promise<MiniC
     const server = state.servers.find((s) => s.id === raw.slice(0, dot));
     if (!server?.secret || server.secret !== raw.slice(dot + 1)) return null;
     return server;
+  }
+
+  /** Per-server seen event ids — the cloud's at-least-once dedup, mirrored. */
+  const seenEventIds = new Map<string, Set<string>>();
+
+  /** Ingest a state frame's events the way the cloud does: dedup by id,
+   *  record first-time crashes, and return the ids to ack to the agent
+   *  (possession semantics — re-delivered ids are acked again so the
+   *  agent's outbox can retire them, while the duplicate is dropped). */
+  function ingestEvents(
+    serverId: string,
+    events: Array<Record<string, unknown>>
+  ): string[] {
+    let seen = seenEventIds.get(serverId);
+    if (!seen) {
+      seen = new Set();
+      seenEventIds.set(serverId, seen);
+    }
+    const acked: string[] = [];
+    for (const ev of events) {
+      if (typeof ev?.id !== "string" || !ev.id) continue; // pre-extension agent
+      acked.push(ev.id); // ack = "I have this event" (re-delivery included)
+      if (seen.has(ev.id)) continue; // duplicate — ingest nothing
+      seen.add(ev.id);
+      state.ingestedEventIds.push(ev.id);
+      if (ev.kind === "crash") {
+        state.ingestedCrashEvents.push({
+          id: ev.id,
+          process: String(ev.process ?? ""),
+          at: Number(ev.at ?? Date.now()),
+        });
+      }
+    }
+    return acked;
   }
 
   function userTokenAuth(header: string | null): MiniUserToken | null {
@@ -439,8 +495,18 @@ export async function startMiniCloud(opts: MiniCloudOptions = {}): Promise<MiniC
         const prev = sockets.get(server.id);
         if (prev) prev.close(1000, "replaced");
         sockets.set(server.id, entry);
+        state.connectionCount++;
         ws.send(JSON.stringify({ type: "hello", serverId: server.id, now: Date.now() }));
-        pings.set(server.id, setInterval(() => entry.ping(), 2000));
+        // Mirror the real cloud's heartbeat: protocol ping + APP-level ping
+        // frame. The app-level ping is what feeds the agent's inbound
+        // watchdog (protocol pings never surface as agent messages).
+        pings.set(
+          server.id,
+          setInterval(() => {
+            entry.ping();
+            entry.send(JSON.stringify({ type: "ping", now: Date.now() }));
+          }, 500)
+        );
       },
       message(ws, raw) {
         const data = ws.data as { authorization?: string };
@@ -453,8 +519,28 @@ export async function startMiniCloud(opts: MiniCloudOptions = {}): Promise<MiniC
           return;
         }
         switch (frame?.type) {
-          case "state":
+          case "state": {
             applyStateReport(server, frame.report ?? {});
+            // Mirror the real cloud: dedup events by id, ack the ingested
+            // ids back to the agent so its outbox can retire them.
+            const events = Array.isArray(frame.report?.events)
+              ? (frame.report.events as Array<Record<string, unknown>>)
+              : [];
+            const ack = ingestEvents(server.id, events);
+            if (ack.length > 0 && sockets.get(server.id)) {
+              try {
+                sockets.get(server.id)!.send(
+                  JSON.stringify({ type: "event-ack", ids: ack })
+                );
+              } catch {
+                // socket died mid-ack — the agent will re-send and the
+                // dedup set above keeps the second delivery single.
+              }
+            }
+            break;
+          }
+          case "pong":
+            state.pongCount++;
             break;
           case "command-result": {
             const result = frame.result ?? {};
@@ -532,6 +618,11 @@ export async function startMiniCloud(opts: MiniCloudOptions = {}): Promise<MiniC
     },
     slowDownOnce: () => {
       slowDownPending = true;
+    },
+    silencePings: (serverId) => {
+      const iv = pings.get(serverId);
+      if (iv) clearInterval(iv);
+      pings.delete(serverId);
     },
   };
 

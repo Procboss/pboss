@@ -736,6 +736,7 @@ export class PBoss extends EventEmitter<PBossEvents> {
     lastReportAt: number | null;
     lastReportAgeMs: number | null;
     processes: number;
+    pendingEvents: number;
     lastError: string | null;
   }> {
     const res = await this.sendOrThrow({ type: "cloudStatus" });

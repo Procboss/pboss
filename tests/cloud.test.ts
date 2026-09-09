@@ -15,6 +15,8 @@ import {
   saveCloudConfig,
   loadCloudConfig,
   clearCloudConfig,
+  assertSecureCloudUrl,
+  isLoopbackHost,
 } from "../src/cloud";
 import { CLOUD_FILE } from "../src/constants";
 import { rmSync, mkdirSync } from "node:fs";
@@ -232,5 +234,70 @@ describe("cloud config file", () => {
     const { resolveCloudUrl } = await import("../src/cloud");
     expect(resolveCloudUrl("https://procboss.com///")).toBe("https://procboss.com");
     expect(resolveCloudUrl(undefined)).toBe("https://procboss.com");
+  });
+});
+
+/* ── transport security: TLS is not optional off-loopback ───────────── */
+
+describe("cloud transport security (assertSecureCloudUrl)", () => {
+  const saved = process.env.PBOSS_CLOUD_ALLOW_INSECURE;
+  afterEach(() => {
+    if (saved === undefined) delete process.env.PBOSS_CLOUD_ALLOW_INSECURE;
+    else process.env.PBOSS_CLOUD_ALLOW_INSECURE = saved;
+  });
+
+  test("https and wss URLs always pass", () => {
+    expect(() => assertSecureCloudUrl("https://procboss.com")).not.toThrow();
+    expect(() => assertSecureCloudUrl("wss://procboss.com/ws/agent")).not.toThrow();
+  });
+
+  test("plain http/ws to loopback passes (tests, local self-hosted clouds)", () => {
+    expect(() => assertSecureCloudUrl("http://127.0.0.1:8080")).not.toThrow();
+    expect(() => assertSecureCloudUrl("http://localhost:3000")).not.toThrow();
+    expect(() => assertSecureCloudUrl("http://[::1]:3000")).not.toThrow();
+    expect(() => assertSecureCloudUrl("ws://localhost:9")).not.toThrow();
+  });
+
+  test("plain http/ws to a real host is REFUSED (credential + commands at stake)", () => {
+    expect(() => assertSecureCloudUrl("http://procboss.com")).toThrow(/plaintext/);
+    expect(() => assertSecureCloudUrl("http://cloud.example.internal:3000")).toThrow(/plaintext/);
+    expect(() => assertSecureCloudUrl("ws://192.168.1.10:3000/ws/agent")).toThrow(/plaintext/);
+  });
+
+  test("garbage URLs are refused as invalid, not as insecure", () => {
+    expect(() => assertSecureCloudUrl("not a url")).toThrow(/not a valid cloud URL/);
+  });
+
+  test("PBOSS_CLOUD_ALLOW_INSECURE=1 is the explicit, loud opt-out", () => {
+    process.env.PBOSS_CLOUD_ALLOW_INSECURE = "1";
+    expect(() => assertSecureCloudUrl("http://cloud.example.internal:3000")).not.toThrow();
+    // anything but the exact value "1" does not opt in
+    process.env.PBOSS_CLOUD_ALLOW_INSECURE = "true";
+    expect(() => assertSecureCloudUrl("http://cloud.example.internal:3000")).toThrow(/plaintext/);
+  });
+
+  test("isLoopbackHost recognizes every loopback spelling", () => {
+    for (const host of [
+      "localhost",
+      "LOCALHOST",
+      "127.0.0.1",
+      "127.42.0.9",
+      "::1",
+      "[::1]",
+      "0.0.0.0",
+      "db.localhost",
+    ]) {
+      expect(isLoopbackHost(host)).toBe(true);
+    }
+    for (const host of [
+      "procboss.com",
+      "192.168.1.10",
+      "10.0.0.5",
+      "172.17.0.1",
+      "example.internal",
+      "",
+    ]) {
+      expect(isLoopbackHost(host)).toBe(false);
+    }
   });
 });

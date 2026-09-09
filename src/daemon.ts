@@ -32,7 +32,7 @@ import {
 } from "./error-handling";
 import { probeDaemon } from "./daemon-probe";
 import { enrichPathWithBun } from "./install-mode";
-import { ensureDirs } from "./utils";
+import { ensureDirs, tightenPbossHomeMode } from "./utils";
 import type { DaemonMessage, DaemonResponse } from "./types";
 import type { ReadableStreamController, Server } from "bun";
 import { existsSync, unlinkSync, readFileSync } from "node:fs";
@@ -77,6 +77,10 @@ export default class Daemon {
     enrichPathWithBun();
 
     await ensureDirs();
+    // Security self-heal: an ~/.pboss from before the 0700 rule leaves the
+    // daemon socket reachable by every local user; tighten it at every
+    // boot (best-effort — see tightenPbossHomeMode).
+    tightenPbossHomeMode();
 
     this.daemonEnabled = _daemonEnabled;
     this.pm = new ProcessManager();

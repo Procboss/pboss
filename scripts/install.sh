@@ -127,7 +127,13 @@ if ! bun build --compile --minify --bytecode ./src/index.ts --outfile "$TMP_DIR/
 fi
 
 # 4. Install the compiled binary
+#     Unlink first: `cp` straight over a RUNNING executable dies with
+#     "Text file busy" (ETXTBSY) — the classic broken `pboss upgrade` while
+#     the daemon runs. rm drops the old inode (the running daemon keeps its
+#     mapping), then cp lands the new one; the boot-persistence step below
+#     restarts the daemon onto the new binary.
 echo -e "${CYAN}Installing pboss to ${INSTALL_DIR}...${RESET}"
+rm -f "$INSTALL_DIR/pboss"
 cp "$TMP_DIR/pboss" "$INSTALL_DIR/pboss"
 chmod 755 "$INSTALL_DIR/pboss"
 

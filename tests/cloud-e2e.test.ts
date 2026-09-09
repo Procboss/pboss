@@ -36,9 +36,9 @@ afterAll(async () => {
   await mini.stop();
 });
 
-function spawnCli(args: string[], home: string) {
+function spawnCli(args: string[], home: string, env: Record<string, string> = {}) {
   return Bun.spawn(["bun", "run", CLI, ...args], {
-    env: { ...process.env, PBOSS_HOME: home, PBOSS_NO_BROWSER: "1" },
+    env: { ...process.env, PBOSS_HOME: home, PBOSS_NO_BROWSER: "1", ...env },
     stdout: "pipe",
     stderr: "pipe",
     stdin: "ignore",
@@ -46,8 +46,8 @@ function spawnCli(args: string[], home: string) {
   });
 }
 
-async function runCli(args: string[], home: string) {
-  const proc = spawnCli(args, home);
+async function runCli(args: string[], home: string, env: Record<string, string> = {}) {
+  const proc = spawnCli(args, home, env);
   const [out, err] = await Promise.all([
     new Response(proc.stdout).text().catch(() => ""),
     new Response(proc.stderr).text().catch(() => ""),
@@ -61,8 +61,8 @@ async function runCli(args: string[], home: string) {
  * stdout, regex the code out of the "Code:  XXXX-XXXX" line (ANSI-tolerant
  * — colorize may wrap the value in bold escapes), approve it immediately.
  */
-async function runDeviceFlowCli(args: string[], home: string) {
-  const proc = spawnCli(args, home);
+async function runDeviceFlowCli(args: string[], home: string, env: Record<string, string> = {}) {
+  const proc = spawnCli(args, home, env);
   const chunks: string[] = [];
   let approved = false;
   const reader = (proc.stdout as ReadableStream<Uint8Array>).getReader();
@@ -285,6 +285,103 @@ describe(
     );
   }
 );
+
+describe("cloud e2e — the link survives incidents (reboot / network blackout)", () => {
+  test(
+    "daemon restart (reboot sim): the link resumes from the saved credential",
+    async () => {
+      const home = freshHome("rebootsim");
+      try {
+        // link the machine
+        const { code } = await runDeviceFlowCli(["cloud", "connect", "--url", mini.url], home);
+        expect(code).toBe(0);
+        const cred = readCloudJson(home);
+        await pollFleet(cred, (list) =>
+          list.some((s) => s.id === cred.serverId && s.status === "online")
+        );
+        const connectionsBefore = mini.state.connectionCount;
+
+        // the "reboot": the daemon dies with the machine
+        await killDaemon(home);
+
+        // machine back up: any pboss command auto-starts the daemon, which
+        // resumes the cloud link from ~/.pboss/cloud.json on its own
+        const st = await runCli(["cloud", "status"], home);
+        expect(st.code).toBe(0);
+        await pollFleet(cred, (list) =>
+          list.some((s) => s.id === cred.serverId && s.status === "online")
+        );
+        // a fresh connection was dialed (the old one died with the daemon)
+        expect(mini.state.connectionCount).toBeGreaterThan(connectionsBefore);
+        // and a FRESH state report arrived after the restart
+        expect(mini.state.lastReportArrivedAt).toBeGreaterThan(0);
+      } finally {
+        await killDaemon(home);
+        rmSync(home, { recursive: true, force: true });
+      }
+    },
+    90_000
+  );
+
+  test(
+    "silent network blackout: the agent's watchdog forces a reconnect",
+    async () => {
+      const home = freshHome("blackout");
+      try {
+        // daemon runs with a 2s watchdog (env is inherited by the daemon)
+        const { code } = await runDeviceFlowCli(
+          ["cloud", "connect", "--url", mini.url],
+          home,
+          { PBOSS_CLOUD_WATCHDOG_MS: "2000" }
+        );
+        expect(code).toBe(0);
+        const cred = readCloudJson(home);
+        await pollFleet(cred, (list) =>
+          list.some((s) => s.id === cred.serverId && s.status === "online")
+        );
+        // The daemon's watchdog only arms once the agent has SEEN a ping —
+        // wait for two NEW pong round-trips from THIS agent before cutting
+        // the link. (pongCount is cumulative across the whole suite: prior
+        // tests' agents already pushed it past 2, so an absolute threshold
+        // would pass instantly and silence the pings before this agent has
+        // ever seen one — sawServerPing stays false and the watchdog stays
+        // inert, which is a TEST bug, not an agent bug.)
+        const pongsAtStart = mini.state.pongCount;
+        const pingsDeadline = Date.now() + 15_000;
+        while (Date.now() < pingsDeadline && mini.state.pongCount < pongsAtStart + 2) {
+          await new Promise((r) => setTimeout(r, 250));
+        }
+        expect(mini.state.pongCount).toBeGreaterThanOrEqual(pongsAtStart + 2);
+        const connectionsBefore = mini.state.connectionCount;
+        const reportBefore = mini.state.lastReportArrivedAt;
+
+        // the blackout: the network path dies WITHOUT a close frame — pings
+        // stop, the socket stays half-open. Only the agent's inbound
+        // watchdog can detect this and re-dial.
+        mini.silencePings(cred.serverId);
+
+        // the watchdog fires within ~2s and a NEW connection lands
+        const deadline = Date.now() + 20_000;
+        while (Date.now() < deadline) {
+          if (mini.state.connectionCount > connectionsBefore) break;
+          await new Promise((r) => setTimeout(r, 250));
+        }
+        expect(mini.state.connectionCount).toBeGreaterThan(connectionsBefore);
+
+        // the link is fully alive again: fleet online AND a fresh state
+        // report arrived over the new socket
+        await pollFleet(cred, (list) =>
+          list.some((s) => s.id === cred.serverId && s.status === "online")
+        );
+        expect(mini.state.lastReportArrivedAt).toBeGreaterThanOrEqual(reportBefore);
+      } finally {
+        await killDaemon(home);
+        rmSync(home, { recursive: true, force: true });
+      }
+    },
+    90_000
+  );
+});
 
 describe("cloud e2e — user login (pboss login/whoami/logout)", () => {
   test(

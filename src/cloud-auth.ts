@@ -15,8 +15,9 @@
  * secret beyond the handshake itself.
  */
 
-import { existsSync, readFileSync, writeFileSync, chmodSync, unlinkSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, chmodSync, unlinkSync, mkdirSync } from "node:fs";
 import { platform, arch, hostname } from "node:os";
+import { dirname } from "node:path";
 import { CLOUD_USER_FILE, VERSION } from "./constants";
 import { resolveCloudUrl } from "./cloud";
 import { ignore } from "./error-handling";
@@ -222,6 +223,14 @@ export function loadCloudUser(): CloudUserCredential | null {
 }
 
 export function saveCloudUser(cred: CloudUserCredential): void {
+  // same mkdir-first policy as saveCloudConfig: a missing ~/.pboss must
+  // never cost the credential.
+  try {
+    mkdirSync(dirname(CLOUD_USER_FILE), { recursive: true, mode: 0o700 });
+  } catch {
+    // exists already, or a parent we cannot create — writeFileSync below
+    // reports the honest error.
+  }
   writeFileSync(CLOUD_USER_FILE, JSON.stringify(cred, null, 2), { mode: 0o600 });
   try {
     chmodSync(CLOUD_USER_FILE, 0o600);

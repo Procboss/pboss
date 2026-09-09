@@ -18,7 +18,8 @@
  * Wire protocol is mirrored on the cloud side (src/lib/cloud/protocol.ts).
  */
 
-import { existsSync, readFileSync, writeFileSync, chmodSync, unlinkSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, chmodSync, unlinkSync, mkdirSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { platform, arch, hostname, totalmem, freemem, loadavg, cpus } from "node:os";
 import { dirname } from "node:path";
 import { VERSION, CLOUD_FILE, CLOUD_DEFAULT_URL, CLOUD_REPORT_INTERVAL_MS } from "./constants";
@@ -26,6 +27,40 @@ import { getSystemInfo, colorize } from "./utils";
 import { ignore } from "./error-handling";
 import type { ProcessManager } from "./process-manager";
 import type { ProcessState, StartOptions, LogItem } from "./types";
+
+/**
+ * Inbound-silence watchdog. The cloud pings the agent (app-level `ping`
+ * frames) every ~15s. A socket can die WITHOUT a close frame — NAT timeout,
+ * network switch, half-open TCP — and then the agent would sit on a
+ * "connected" socket forever: sends are buffered locally and never arrive,
+ * the dashboard says offline while the agent thinks it is healthy. When no
+ * frame has arrived for this long (and the server has demonstrated that it
+ * pings), the agent closes the dead socket itself and the runStream loop
+ * dials fresh. Env override: PBOSS_CLOUD_WATCHDOG_MS (tests).
+ */
+export const CLOUD_INBOUND_WATCHDOG_MS = 45_000;
+
+/**
+ * Event outbox cap (see CloudAgent.reportState): the newest events are kept
+ * when a long outage overflows the buffer. Crash events with log tails are
+ * the payload that matters — a few hundred KB worst case, bounded.
+ */
+export const CLOUD_EVENT_OUTBOX_MAX = 200;
+
+/**
+ * How long an un-acked event stays queued before the agent gives up on it.
+ * A cloud that never acks (older than the event-ack extension) would leave
+ * the outbox growing forever — stale events are dropped instead of being
+ * re-delivered to a server that has clearly moved on.
+ */
+export const CLOUD_EVENT_TTL_MS = 10 * 60_000;
+
+export interface CloudAgentOptions {
+  /** Shrink the inbound watchdog (tests). Default 45s, env overridable. */
+  inboundWatchdogMs?: number;
+  /** Report cadence in ms (tests). Default 10s, env overridable. */
+  reportIntervalMs?: number;
+}
 
 /* ── config file ──────────────────────────────────────────────────────── */
 
@@ -53,6 +88,16 @@ export function loadCloudConfig(): CloudConfig | null {
 }
 
 export function saveCloudConfig(cfg: CloudConfig): void {
+  // mkdir first: the daemon normally ran ensureDirs(), but a fresh
+  // machine (or a test) can reach this write before anything created
+  // ~/.pboss — a missing credential because of a missing DIRECTORY is a
+  // bug, not an acceptable failure mode.
+  try {
+    mkdirSync(dirname(CLOUD_FILE), { recursive: true, mode: 0o700 });
+  } catch {
+    // exists already, or a parent we cannot create — writeFileSync below
+    // reports the honest error.
+  }
   writeFileSync(CLOUD_FILE, JSON.stringify(cfg, null, 2), { mode: 0o600 });
   try {
     chmodSync(CLOUD_FILE, 0o600);
@@ -74,6 +119,55 @@ export function clearCloudConfig(): void {
 export function resolveCloudUrl(explicit?: string): string {
   const url = (explicit || process.env.PBOSS_CLOUD_URL || CLOUD_DEFAULT_URL).trim();
   return url.replace(/\/+$/, "");
+}
+
+/* ── transport security (pm2's posture: never silent plaintext) ───────── */
+
+/** Loopback hostnames — plain http/ws is acceptable only for these. */
+export function isLoopbackHost(host: string): boolean {
+  const h = String(host).toLowerCase().replace(/^\[/, "").replace(/\]$/, "");
+  return (
+    h === "localhost" ||
+    h === "::1" ||
+    h === "0.0.0.0" ||
+    h.endsWith(".localhost") ||
+    /^127\./.test(h)
+  );
+}
+
+/**
+ * Refuse a plaintext transport to a non-loopback cloud. The machine
+ * credential, command frames, and log lines all cross this URL: without
+ * TLS a network observer can steal the credential and a MITM can inject
+ * process commands (restart/stop/delete/deploy). https/wss always pass;
+ * loopback passes (tests, self-hosted local clouds); anything else needs
+ * the operator's explicit `PBOSS_CLOUD_ALLOW_INSECURE=1` — and then the
+ * risk is said out loud, never silently accepted.
+ */
+export function assertSecureCloudUrl(cloudUrl: string): void {
+  let proto: string;
+  let host: string;
+  try {
+    const u = new URL(cloudUrl);
+    proto = u.protocol;
+    host = u.hostname;
+  } catch {
+    throw new Error(`not a valid cloud URL: ${cloudUrl}`);
+  }
+  if (proto === "https:" || proto === "wss:") return;
+  if (isLoopbackHost(host)) return;
+  if (process.env.PBOSS_CLOUD_ALLOW_INSECURE === "1") {
+    console.error(
+      colorize(
+        `☁  cloud: WARNING — ${proto}//${host} is UNENCRYPTED (PBOSS_CLOUD_ALLOW_INSECURE=1): the credential and command frames are readable and forgeable on the wire.`,
+        "yellow"
+      )
+    );
+    return;
+  }
+  throw new Error(
+    `refusing plaintext transport to ${cloudUrl}: use an https:// cloud URL, or set PBOSS_CLOUD_ALLOW_INSECURE=1 to accept the risk`
+  );
 }
 
 /** https://… → wss://…, http://… → ws://…, and the agent endpoint path. */
@@ -106,6 +200,7 @@ export interface CloudFleetServer {
  * toward the cloud itself.
  */
 export async function fetchFleet(cfg: CloudConfig): Promise<CloudFleetServer[]> {
+  assertSecureCloudUrl(cfg.cloudUrl);
   const res = await fetch(`${cfg.cloudUrl}/api/agent/servers`, {
     headers: {
       Authorization: `Bearer ${cfg.serverId}.${cfg.serverSecret}`,
@@ -154,6 +249,14 @@ export interface CloudEventReport {
   exitCode?: number | null;
   signal?: string | null;
   logTail?: string[];
+  /**
+   * Delivery id (agent-assigned, stable across re-sends): the cloud acks
+   * ingested events by id (`event-ack` frame) and dedups on it, so an event
+   * can be re-sent after a blackout without double-alerting. Absent on
+   * events from agents older than the ack extension (the cloud then simply
+   * never acks or dedups them).
+   */
+  id?: string;
 }
 
 export interface CloudStateReport {
@@ -199,7 +302,9 @@ export type CloudServerFrame =
   | { type: "command"; command: CloudCommand }
   | { type: "log.watch"; process: string }
   | { type: "log.unwatch"; process: string }
-  | { type: "ping"; now: number };
+  | { type: "ping"; now: number }
+  /** Ingested-event receipt: the agent may drop these ids from its outbox. */
+  | { type: "event-ack"; ids: string[] };
 
 /** Frames the agent sends up. */
 export type CloudAgentFrame =
@@ -362,6 +467,8 @@ export interface CloudAgentStatus {
   lastReportAt: number | null;
   lastReportAgeMs: number | null;
   processes: number;
+  /** Events observed but not yet delivered (blackout buffer depth). */
+  pendingEvents: number;
   lastError: string | null;
 }
 
@@ -381,9 +488,31 @@ export class CloudAgent {
   private reportNow: (() => void) | null = null;
   /** Active log tails (process name → stop function), driven by log.watch. */
   private logTails = new Map<string, () => void>();
+  /** Inbound-silence watchdog state: last frame time + server-ping proof. */
+  private lastInboundAt = 0;
+  private sawServerPing = false;
+  private watchdogTimer: ReturnType<typeof setInterval> | null = null;
+  private watchdogMs: number;
+  private reportIntervalMs: number;
+  /**
+   * Event outbox — crash/restart/online/stopped events, each stamped with a
+   * delivery id, held until the cloud acks ingestion (`event-ack`). The
+   * pm2 agent's offline queue made reliable: state is re-sent whole every
+   * cycle, but EVENTS are transitions — miss one and the dashboard never
+   * sees the crash. At-least-once delivery + cloud-side id dedup.
+   */
+  private outbox: CloudEventReport[] = [];
 
-  constructor(pm: ProcessManager) {
+  constructor(pm: ProcessManager, opts: CloudAgentOptions = {}) {
     this.pm = pm;
+    const envMs = Number.parseInt(process.env.PBOSS_CLOUD_WATCHDOG_MS ?? "", 10);
+    this.watchdogMs =
+      opts.inboundWatchdogMs ??
+      (Number.isFinite(envMs) && envMs > 0 ? envMs : CLOUD_INBOUND_WATCHDOG_MS);
+    const envReport = Number.parseInt(process.env.PBOSS_CLOUD_REPORT_MS ?? "", 10);
+    this.reportIntervalMs =
+      opts.reportIntervalMs ??
+      (Number.isFinite(envReport) && envReport > 0 ? envReport : CLOUD_REPORT_INTERVAL_MS);
   }
 
   get config(): CloudConfig | null {
@@ -403,12 +532,16 @@ export class CloudAgent {
       lastReportAt: this.lastReportAt,
       lastReportAgeMs: this.lastReportAt ? Date.now() - this.lastReportAt : null,
       processes: this.lastReport?.processes.length ?? 0,
+      pendingEvents: this.outbox.length,
       lastError: this.lastError,
     };
   }
 
   /** Link this machine: exchange the enrollment token for a credential. */
   async enroll(token: string, cloudUrl: string): Promise<{ serverId: string; serverName: string }> {
+    // The enrollment exchange carries the single-use token — TLS is not
+    // negotiable for non-loopback targets (see assertSecureCloudUrl).
+    assertSecureCloudUrl(cloudUrl);
     const res = await fetch(`${cloudUrl}/api/agent/enroll`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -446,6 +579,7 @@ export class CloudAgent {
 
   /** Start (or restart) the connection loops from a saved config. */
   start(cfg: CloudConfig): void {
+    assertSecureCloudUrl(cfg.cloudUrl);
     this.stop({ revoke: false, quiet: true });
     this.cfg = cfg;
     this.running = true;
@@ -454,9 +588,10 @@ export class CloudAgent {
       colorize(`☁  cloud: connecting to ${cfg.cloudUrl} (${cfg.serverName ?? cfg.serverId})`, "cyan")
     );
     void this.runStream();
-    this.reportTimer = setInterval(() => this.reportNow?.(), CLOUD_REPORT_INTERVAL_MS);
+    this.reportTimer = setInterval(() => this.reportNow?.(), this.reportIntervalMs);
     this.reportNow = () => void this.reportState().catch((err: unknown) => ignore("cloud state report (interval)", err));
     void this.reportState().catch((err: unknown) => ignore("cloud state report (initial)", err));
+    this.startWatchdog();
   }
 
   /** Stop the agent. `revoke` also kills the credential server-side. */
@@ -465,6 +600,7 @@ export class CloudAgent {
     if (this.reportTimer) clearInterval(this.reportTimer);
     this.reportTimer = null;
     this.reportNow = null;
+    this.stopWatchdog();
     this.closeSocket(1000, "agent stopped");
     this.streamState = "stopped";
     if (opts.revoke && this.cfg) {
@@ -506,6 +642,37 @@ export class CloudAgent {
     }
   }
 
+  /* ── inbound-silence watchdog (half-open socket detector) ────────── */
+
+  private startWatchdog(): void {
+    this.stopWatchdog();
+    const tick = Math.max(100, Math.min(1_000, Math.floor(this.watchdogMs / 3)));
+    this.watchdogTimer = setInterval(() => {
+      if (!this.running || this.streamState !== "connected") return;
+      // Only enforced once the server has PROVEN it pings on this connection
+      // — an older cloud that never pings must not be churn-reconnected.
+      if (!this.sawServerPing) return;
+      const silentFor = Date.now() - this.lastInboundAt;
+      if (silentFor > this.watchdogMs) {
+        this.lastError = `no frames from the cloud for ${Math.round(silentFor / 1000)}s — reconnecting`;
+        console.log(
+          colorize(
+            `☁  cloud: silent for ${Math.round(silentFor / 1000)}s (dead link?) — reconnecting`,
+            "yellow"
+          )
+        );
+        // No close frame will ever arrive — force the socket down so
+        // serveWebSocket resolves and runStream dials fresh.
+        this.closeSocket(1000, "inbound watchdog");
+      }
+    }, tick);
+  }
+
+  private stopWatchdog(): void {
+    if (this.watchdogTimer) clearInterval(this.watchdogTimer);
+    this.watchdogTimer = null;
+  }
+
   /* ── command + log channel (WebSocket, full-duplex) ─────────────────── */
 
   private async runStream(): Promise<void> {
@@ -523,6 +690,8 @@ export class CloudAgent {
         this.streamState = "connected";
         this.backoffMs = 1000;
         this.lastError = null;
+        this.lastInboundAt = Date.now();
+        this.sawServerPing = false;
         console.log(
           colorize(`☁  cloud: connected — command channel live (WebSocket)`, "green")
         );
@@ -546,7 +715,11 @@ export class CloudAgent {
 
       this.streamState = "backoff";
       this.reconnects++;
-      await sleep(this.backoffMs);
+      // Jitter (75–125%): after a cloud-side blip, every agent in a fleet
+      // exits backoff at the same instant — the synchronized retry storm
+      // is what actually takes the gateway down. Spreading the retries
+      // turns a thundering herd into a trickle.
+      await sleep(Math.floor(this.backoffMs * (0.75 + Math.random() * 0.5)));
       this.backoffMs = Math.min(this.backoffMs * 2, 30_000);
     }
   }
@@ -584,6 +757,7 @@ export class CloudAgent {
   private serveWebSocket(ws: WebSocket): Promise<{ code: number; reason: string }> {
     return new Promise((resolve) => {
       ws.onmessage = (ev) => {
+        this.lastInboundAt = Date.now();
         this.handleFrame(String(ev.data));
       };
       ws.onclose = (ev) => {
@@ -623,7 +797,11 @@ export class CloudAgent {
         if (frame.process) this.stopLogTail(frame.process);
         break;
       case "ping":
+        this.sawServerPing = true;
         this.sendFrame({ type: "pong", now: Date.now() });
+        break;
+      case "event-ack":
+        if (Array.isArray(frame.ids)) this.handleEventAck(frame.ids);
         break;
       default:
         break;
@@ -647,8 +825,10 @@ export class CloudAgent {
     this.running = false;
     if (this.reportTimer) clearInterval(this.reportTimer);
     this.reportTimer = null;
+    this.stopWatchdog();
     this.closeSocket(WS_CLOSE_REVOKED, "revoked");
     this.stopAllLogTails();
+    this.outbox.length = 0; // unlinking — held events are moot
     this.streamState = "stopped";
     clearCloudConfig();
     this.cfg = null;
@@ -666,9 +846,18 @@ export class CloudAgent {
     if (!this.running || !this.cfg) return;
     const states = this.pm.list();
     const report = buildStateReport(this.cfg.serverId, states);
-    report.events = diffEvents(this.lastSnapshot, report.processes);
+    // Events are TRANSITIONS — computed at observation time (true
+    // timestamps, fresh crash log tails), stamped with a delivery id, and
+    // queued. Sending is best-effort; DELIVERY is acked: the cloud replies
+    // `event-ack` per ingested id, and only then does an event leave the
+    // outbox. A crash that happens mid-blackout — even in the blind window
+    // before the watchdog notices the dead socket — is therefore re-sent
+    // after reconnect and still reaches the dashboard (the cloud dedups
+    // by id, so at-least-once never becomes double-alerting).
+    const events = diffEvents(this.lastSnapshot, report.processes);
+    this.lastSnapshot = new Map(report.processes.map((p) => [p.name, p]));
     // crash events carry the log tail for the cloud's crash reports
-    for (const ev of report.events) {
+    for (const ev of events) {
       if (ev.kind !== "crash") continue;
       try {
         const logs = await this.pm.getLogs(ev.process, 30);
@@ -677,13 +866,43 @@ export class CloudAgent {
         ignore(`read log tail for crash (${ev.process})`, err);
       }
     }
-    this.lastSnapshot = new Map(report.processes.map((p) => [p.name, p]));
+    if (events.length > 0) {
+      for (const ev of events) ev.id ??= randomUUID();
+      this.outbox.push(...events);
+    }
+    // Prune: TTL (a cloud that never acks has moved on) and hard cap.
+    if (this.outbox.length > 0) {
+      const cutoff = Date.now() - CLOUD_EVENT_TTL_MS;
+      this.outbox = this.outbox.filter((ev) => ev.at >= cutoff);
+      if (this.outbox.length > CLOUD_EVENT_OUTBOX_MAX) {
+        this.outbox.splice(0, this.outbox.length - CLOUD_EVENT_OUTBOX_MAX);
+      }
+    }
+    report.events = this.outbox.slice(0, 50);
     this.lastReport = report;
 
     if (this.sendFrame({ type: "state", report })) {
       this.lastReportAt = Date.now();
+      // The outbox is NOT trimmed here — sendFrame returning true only
+      // means the frame entered the local socket buffer, not that the
+      // cloud ingested it. The ack owns the trim.
     } else {
-      this.lastError = "websocket not open — state report skipped";
+      this.lastError =
+        this.outbox.length > 0
+          ? `websocket not open — ${this.outbox.length} event(s) queued for the next connection`
+          : "websocket not open — state report skipped";
+    }
+  }
+
+  /** The cloud ingested these event ids — retire them from the outbox. */
+  private handleEventAck(ids: string[]): void {
+    if (ids.length === 0) return;
+    const done = new Set(ids);
+    const before = this.outbox.length;
+    this.outbox = this.outbox.filter((ev) => !(ev.id && done.has(ev.id)));
+    if (this.outbox.length !== before && this.outbox.length === 0) {
+      // last held event just retired — clear the stale error
+      if (this.lastError?.includes("queued")) this.lastError = null;
     }
   }
 

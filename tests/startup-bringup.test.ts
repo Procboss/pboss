@@ -69,10 +69,16 @@ function installShims(scenario: ShimScenario): { dir: string; log: string } {
     // original argument list.
     'case "$1" in --user) shift ;; esac',
     `case "$*" in`,
-    // A blocking start (no --no-block) is THE bug: the start job never
+    // A blocking start/restart (no --no-block) is THE bug: the job never
     // completes. If the code ever regresses to this form, the shim hangs
     // and the test's race converts it into a clean failure.
     `  "start pboss") exec sleep 30 ;;`,
+    `  "restart pboss") exec sleep 30 ;;`,
+    // bring-up uses RESTART, not start: re-running `pboss startup install`
+    // (e.g. after `pboss upgrade` replaced the binary) must actually swap
+    // the running daemon onto the new binary — a bare `start` on an
+    // active unit is a no-op. On an inactive unit restart == start.
+    `  "--no-block restart pboss") ${onStart} ;;`,
     `  "--no-block start pboss") ${onStart} ;;`,
     `  "daemon-reload") ${onReload} ;;`,
     `  "enable pboss") exit 0 ;;`,
@@ -162,12 +168,15 @@ describe("bringUpSystemdUnit — the install() hang", () => {
       expect(msg).toContain("systemd-sim journal");
       expect(msg).toContain("journalctl --user -u pboss");
 
-      // THE regression guard: start must be submitted --no-block, never
-      // awaited as a blocking job. The shim's bare "start pboss" sleeps —
-      // the hang guard would have caught any invocation of it.
+      // THE regression guard: the (re)start job must be submitted
+      // --no-block, never awaited as a blocking job. The shim's bare
+      // "start/restart pboss" sleeps — the hang guard converts any such
+      // invocation into a clean failure. And it must be RESTART (not a
+      // bare start) so re-installing after an upgrade swaps the binary.
       const calls = readLog(log);
-      expect(calls).toContain("--user --no-block start pboss");
+      expect(calls).toContain("--user --no-block restart pboss");
       expect(calls).not.toContain("start pboss");
+      expect(calls).not.toContain("restart pboss");
       expect(calls).not.toContain("--no-block start pboss");
     },
     30_000
@@ -196,7 +205,7 @@ describe("bringUpSystemdUnit — the install() hang", () => {
         // not just that is-active said "active" (Type=simple says that at
         // fork time, before any socket exists).
         expect(await probeDaemon(unitSocket)).not.toBeNull();
-        expect(readLog(log)).toContain("--user --no-block start pboss");
+        expect(readLog(log)).toContain("--user --no-block restart pboss");
         // User mode: linger is best-effort-enabled so the daemon runs from
         // BOOT, not just from the user's first login (loginctl is shimmed
         // to succeed — deterministic).

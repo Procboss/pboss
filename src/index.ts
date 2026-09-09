@@ -31,6 +31,7 @@ import {
   StartupManager,
   bootServiceInstalled,
   persistenceHintLine,
+  selfHealLinger,
 } from "./startup-manager";
 import { EnvManager } from "./env-manager";
 import { DaemonConflictError, EXIT_DAEMON_CONFLICT, ignore } from "./error-handling";
@@ -1331,6 +1332,11 @@ Examples:
                   : "never"
               }`
             );
+            if (st.pendingEvents > 0) {
+              console.log(
+                `  Buffered:  ${colorize(`${st.pendingEvents} event(s) awaiting delivery`, "yellow")}`
+              );
+            }
             if (st.lastError) {
               console.log(`  Last err:  ${colorize(st.lastError, "yellow")}`);
             }
@@ -2116,6 +2122,11 @@ ${colorize("Notes:", "dim")}
       case "__daemon":
       case "daemon-server": {
         // The systemd unit's ExecStart (and the CLI daemonizer) run this.
+        // Reboot-survival self-heal: when we come up OUTSIDE systemd (CLI
+        // on-demand), linger is usually off — flip it on so the NEXT reboot
+        // starts the daemon (and the cloud link) before any login. Never
+        // blocks daemon startup, never throws.
+        void selfHealLinger().catch((err: unknown) => ignore("self-heal linger", err));
         // Failure handling is explicit: a conflict with a live daemon exits
         // 81 (systemd units set RestartPreventExitStatus=81 — a restart
         // cannot help while the other daemon owns the socket); anything

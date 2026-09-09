@@ -30,6 +30,7 @@ import { readFileSync, rmSync, existsSync } from "fs";
 import { mkdir } from "fs/promises";
 import { $ } from "bun";
 import { ignore } from "./error-handling";
+import { colorize } from "./utils";
 import { stopDaemonIfRunning } from "./api";
 import { probeDaemon } from "./daemon-probe";
 import { DAEMON_SOCKET } from "./constants";
@@ -176,6 +177,34 @@ async function lingerEnabled(user: string): Promise<boolean | null> {
   }
 }
 
+/**
+ * Reboot-survival self-heal, called when the daemon process comes up
+ * OUTSIDE systemd (the CLI's on-demand daemonizer): without linger the
+ * user unit only starts at the user's first login, so a headless reboot
+ * leaves the machine dark — no daemon, no cloud link — until someone
+ * logs in. If the unit is installed but linger is off, flip it on
+ * (best-effort, no root). Called from the __daemon entry so the cloud
+ * connection survives the NEXT reboot even when nobody logs in.
+ */
+export async function selfHealLinger(): Promise<boolean> {
+  if (process.platform !== "linux") return false;
+  // systemd started us — linger is already on (or deliberately managed).
+  if (process.env.INVOCATION_ID) return false;
+  const target = targetUserContext();
+  const unit = join(userUnitDir(target.home), "pboss.service");
+  if (!existsSync(unit)) return false; // nothing to start at boot yet
+  const on = await enableLinger(target.user);
+  if (on) {
+    console.log(
+      colorize(
+        `☁  linger enabled for ${target.user} — the daemon now starts at BOOT, before any login`,
+        "cyan"
+      )
+    );
+  }
+  return on;
+}
+
 export class StartupManager {
   async generate(platform?: string): Promise<string> {
     const os = platform || process.platform;
@@ -293,7 +322,11 @@ LimitNPROC=infinity
 LimitCORE=infinity
 Environment=PATH=${unitPath}
 Environment=PBOSS_HOME=${join(target.home, ".pboss")}
-Restart=on-failure
+# ALWAYS, not on-failure: the daemon must come back after ANY exit that is
+# not an explicit stop — including a crash that happens to exit 0. Exit 81
+# (another daemon owns the socket) stays non-restartable below.
+Restart=always
+RestartSec=2
 # Bound the whole start (including ExecStartPost) so a hung start is a
 # failure systemd can act on, not a forever-activating unit.
 TimeoutStartSec=20
@@ -828,11 +861,16 @@ export async function bringUpSystemdUnit(opts: BringUpOptions): Promise<string> 
       manual.push(`systemctl ${user ? "--user " : ""}${args.join(" ")}`);
     }
   }
-  // The start job is the only hangable one — submit it, never await it.
-  const start = await runSystemctl(["--no-block", "start", "pboss"], ctl);
+  // The (re)start job is the only hangable one — submit it, never await it.
+  // RESTART, not start: re-running `pboss startup install` (e.g. after
+  // `pboss upgrade` replaced the binary) must actually (re)start the unit
+  // — a bare `start` on an already-active unit is a NO-OP and would leave
+  // the OLD binary running until the next reboot. On an inactive unit,
+  // restart behaves exactly like start.
+  const start = await runSystemctl(["--no-block", "restart", "pboss"], ctl);
   if (start.code !== 0) {
-    ignore(`systemctl ${user ? "--user " : ""}--no-block start pboss (bring-up)`, start.err);
-    manual.push(`systemctl ${user ? "--user " : ""}start pboss`);
+    ignore(`systemctl ${user ? "--user " : ""}--no-block restart pboss (bring-up)`, start.err);
+    manual.push(`systemctl ${user ? "--user " : ""}restart pboss`);
   }
 
   if (manual.length > 0) {

@@ -92,6 +92,13 @@ try {
     $sourceDir = Join-Path $tempDir "pboss-main"
     Set-Location $sourceDir
 
+    # Stop a running daemon BEFORE compiling: Windows locks a running
+    # executable, so `bun build --outfile $installDir\pboss.exe` fails with
+    # "file in use" during an upgrade. Best-effort — the startup step at
+    # the end brings the new binary back up.
+    try { & schtasks /end /tn "PBOSS_Daemon" 2>$null } catch {}
+    try { Stop-Process -Name "pboss" -ErrorAction SilentlyContinue } catch {}
+
     Write-Host "Compiling standalone pboss executable for Windows..." -ForegroundColor Cyan
     & bun install | Out-Null
 

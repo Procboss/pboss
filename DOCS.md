@@ -1424,9 +1424,9 @@ Version numbers come from the npm registry (the canonical source every channel b
 
 Once linked, the daemon's cloud agent:
 
-- keeps ONE **WebSocket** open to the cloud (`wss://…/ws/agent`, outbound-only) — commands, state, results, and live log frames all flow over it, with automatic reconnect (exponential backoff, reset on success);
+- keeps ONE **WebSocket** open to the cloud (`wss://…/ws/agent`, outbound-only) — commands, state, results, and live log frames all flow over it, with automatic reconnect (jittered exponential backoff, reset on success) and an inbound-silence watchdog that re-dials dead (half-open) sockets;
 - sends a **full state report** every 10 seconds (and after every command): server metrics and the process list with per-process CPU/mem/restarts/uptime;
-- derives **events** from consecutive snapshots — crashes (exit code, signal, 30-line log tail), restarts, on/offline transitions — which the cloud turns into alerts;
+- derives **events** from consecutive snapshots — crashes (exit code, signal, 30-line log tail), restarts, on/offline transitions — which the cloud turns into alerts. Events are queued until the cloud acks them (`event-ack`, dedup by event id), so a crash that happens during a network outage is still delivered after the reconnect;
 - executes **remote commands**: `process.list/start/stop/restart/delete/logs/deploy`, `server.info`, `server.deploy` — each answered with a result and followed by a fresh state report;
 - **tails logs live** when a dashboard opens them (`log.watch` / `log.unwatch`); new lines are pushed as they land on disk;
 - **deploys** by running `git pull --ff-only` in the process's working directory and restarting it — the dashboard's Deploy button reports the real commit, message, and duration. Non-git directories fail honestly;
@@ -1437,6 +1437,8 @@ If the credential is revoked from the dashboard, the cloud closes the WebSocket 
 ### Cloud security model
 
 - **No inbound anything.** Outbound HTTPS/WSS connections only; no port to open, no internet-facing attack surface.
+- **TLS is enforced.** The agent refuses plaintext (`http://`/`ws://`) cloud URLs on non-loopback hosts; `PBOSS_CLOUD_ALLOW_INSECURE=1` is the explicit, warned opt-out for air-gapped LANs.
+- **Owner-only `~/.pboss` (0700).** The daemon's local socket and the credential files live in a directory other local users cannot reach; `cloud.json` itself is 0600.
 - **Secrets never rest in plaintext server-side.** Machine secrets and CLI tokens are stored as sha256 hashes; raw forms exist only in the local 0600 files and in memory.
 - **Single-claim device codes.** A credential is minted at claim time and handed over exactly once; a raced second poller gets nothing. Codes expire in 10 minutes.
 - **Separate revocable identities.** Server credentials, CLI tokens, and browser sessions are three independent credential spaces.
