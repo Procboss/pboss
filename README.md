@@ -13,28 +13,25 @@ By [procboss.com](https://procboss.com).
 
 ### Support ProcBoss
 
-ProcBoss (pboss) is free and open-source software built for the developer community. If ProcBoss saves you time or powers your production services, please consider supporting its development:
-
-- ⭐ **Star the Repo:** Star us on [GitHub](https://github.com/procboss/pboss) to help more developers discover ProcBoss.
-- 🐛 **Contribute:** Open issues, suggest features, or submit pull requests.
+ProcBoss is free and open-source. If it saves you time, star it on [GitHub](https://github.com/procboss/pboss), open issues, or send pull requests.
 
 ---
 
 ## Highlights
 
-- **Universal runtime support** — auto-detection for Node.js, Bun, Go, Python, Rust, Ruby, PHP, Java JARs, shell scripts, and compiled binaries.
-- **Cluster mode** — multiple instances with per-worker env injection, automatic port assignment, and zero-downtime rolling reloads.
-- **Namespaces** — group related processes (`--namespace my-app`) and operate on the whole group: `pboss restart my-app`, `pboss stop my-app`, `pboss start my-app`, `pboss delete my-app` (confirmed; `--force` skips). Unknown targets are clear errors, and group operations say what they touched.
-- **Foreground mode** — `--no-daemon` blocks as PID 1, purpose-built for Docker, Kubernetes, and containers.
-- **Web dashboard** — self-contained, live WebSocket updates, CPU/memory charts, process controls, and a log viewer. No external dependencies.
-- **Prometheus metrics** — dedicated `/metrics` endpoint, ready for scraping and Grafana dashboards.
-- **Log management** — automatic capture, size-based rotation, retention, and optional gzip compression.
-- **Health checks, cron restarts, file watching** — keep processes healthy and self-healing.
-- **Standalone cron jobs** — schedule any command with friendly syntax (`pboss cron run everyday@9:11 "bun backup.ts"`, `every-second` to `on-date@24-10-2026-23:10`), no managed process required; persists across reboots.
-- **Persistence (default on)** — the process list is saved automatically after every change, and the boot service (systemd / launchd / Task Scheduler) is installed automatically at install time — your apps survive daemon restarts and system reboots out of the box.
-- **Remote deployment** — SSH-based deploys with release directories, symlink rotation, and pre/post hooks.
-- **ProcBoss Cloud (optional)** — link a server with one command and a browser approval from any device: `pboss cloud connect` prints a code, you approve it at [procboss.com/connect](https://procboss.com/connect), and the daemon streams live state + takes remote commands (outbound-only — no ports to open). `pboss login` is your user identity for the CLI. Everything local keeps working without it.
-- **Tiny footprint** — a single machine-level daemon that starts in under 50ms and uses only ~12MB of RAM.
+- **Universal runtimes** — auto-detected: Node.js, Bun, Go, Python, Rust, Ruby, PHP, Java JARs, shell scripts, compiled binaries.
+- **Cluster mode** — N instances, per-worker env, automatic ports, zero-downtime rolling reloads.
+- **Namespaces** — group processes (`--namespace my-app`) and operate on the group: `pboss restart my-app`, `pboss delete my-app` (confirmed; `--force` skips).
+- **Foreground mode** — `--no-daemon` blocks as PID 1, for Docker and Kubernetes.
+- **Web dashboard** — live WebSocket updates, CPU/memory charts, process controls, log viewer. Zero dependencies.
+- **Prometheus metrics** — dedicated `/metrics` endpoint on :9616.
+- **Logs** — automatic capture, size-based rotation, retention, gzip.
+- **Health checks, cron restarts, file watching** — self-healing processes.
+- **Standalone cron jobs** — friendly schedules (`everyday@9:11`, `on-date@24-10-2026-23:10`), no managed process required, persists across reboots.
+- **Persistence (default on)** — process list saved after every change; the per-user boot service (systemd / launchd / Task Scheduler) is installed automatically — apps survive restarts and reboots.
+- **Remote deployment** — SSH deploys with release directories, symlink rotation, pre/post hooks.
+- **ProcBoss Cloud (optional)** — `pboss cloud connect` prints a code, you approve it at [procboss.com/connect](https://procboss.com/connect) from any device. Outbound-only connection: fleet view, alerts, remote control. Everything local works without it.
+- **Tiny footprint** — one daemon, <50ms start, ~12MB RAM.
 
 ---
 
@@ -135,11 +132,11 @@ pboss cloud connect
 # ✓ Server authorized and connected
 ```
 
-Open the URL anywhere, enter the code, approve the card (it shows this machine's hostname, OS, and agent version), done. The daemon stores the machine credential in `~/.pboss/cloud.json` (0600), keeps an **outbound-only** connection open (SSE command channel + state reports every 10s, with automatic reconnect), and you get the fleet view, alerts, and remote process control (restart a process from the dashboard or `pboss cloud servers`). `pboss login` / `pboss whoami` / `pboss logout` manage your *user* identity separately — revoking a server never logs you out, and vice versa. Every local feature works without an account; the cloud is purely additive.
+Open the URL anywhere, enter the code, approve the card (it shows this machine's hostname, OS, and agent version), done. The daemon keeps an **outbound-only** connection open and streams live state every 10s. You get the fleet view, alerts, and remote process control. `pboss login` manages your *user* identity separately. Every local feature works without an account.
 
 ### Updating
 
-`pboss upgrade` self-updates through the channel that installed it — the universal installer re-runs itself, npm calls npm, brew calls brew, snap refreshes — so one machine never ends up with two pboss CLIs:
+`pboss upgrade` self-updates through the channel that installed it (installer, npm, brew, snap) — one machine, one CLI:
 
 ```bash
 pboss upgrade --check    # see current → latest, the detected channel, and the exact command
@@ -150,9 +147,7 @@ pboss upgrade            # do it (adds --channel <x> to repair a misdetected cha
 
 ## Documentation
 
-**The full ProcBoss documentation lives at [docs.procboss.com](https://docs.procboss.com).**
-
-It covers everything — the complete CLI reference, cluster mode, log management, monitoring and metrics, the web dashboard, ecosystem files, environment management, deployment, startup scripts, modules, daemon control, foreground mode for Docker & containers, the configuration reference, the REST & WebSocket APIs, Prometheus and Grafana integration, the programmatic API, architecture, recipes, and troubleshooting.
+**The full documentation lives at [docs.procboss.com](https://docs.procboss.com).**
 
 | Popular sections | |
 |---|---|

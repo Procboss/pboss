@@ -14,10 +14,7 @@ By [procboss.com](https://procboss.com).
 
 ### Support ProcBoss
 
-ProcBoss (pboss) is free and open-source software built for the developer community by [docs.procboss.com](https://docs.procboss.com). If ProcBoss saves you time or powers your production services, please consider supporting its development:
-
-- ⭐ **Star the Repo:** Star us on [GitHub](https://github.com/procboss/pboss) to help more developers discover ProcBoss.
-- 🐛 **Contribute:** Open issues, suggest features, or submit pull requests.
+ProcBoss is free and open-source. If it saves you time, star it on [GitHub](https://github.com/procboss/pboss), open issues, or send pull requests.
 
 
 ---
@@ -27,7 +24,6 @@ ProcBoss (pboss) is free and open-source software built for the developer commun
 - [Support & Sponsor](#support-procboss)
 - [Why ProcBoss?](#why-procboss)
 - [Features](#features)
-- [Requirements](#requirements)
 - [Installation](#installation)
 - [Quick Start](#quick-start)
 - [Multi-Language & Runtime Support](#multi-language--runtime-support)
@@ -92,51 +88,49 @@ ProcBoss (pboss) is free and open-source software built for the developer commun
 
 ## Why ProcBoss?
 
-ProcBoss (pboss) is a universal, production-grade process manager built from the ground up for modern developer and DevOps workflows. While engineered on native Bun APIs for maximum throughput and minimal memory overhead, ProcBoss is completely **runtime-agnostic** and manages any program, language, or software stack.
-
-ProcBoss replaces complex, heavyweight process managers with a clean, ultra-fast architecture. It uses `Bun.spawn` for lightning-fast process orchestration, `Bun.serve` for the real-time web dashboard and IPC, native `WebSocket` over Unix sockets, `Bun.file` for high-performance I/O, and `Bun.gzipSync` for automatic log compression. The result is a single machine-level daemon that starts in under 50ms, uses only ~12MB of RAM, and manages your entire infrastructure seamlessly.
+ProcBoss (pboss) is a production-grade, runtime-agnostic process manager built on native Bun APIs — it manages any program, language, or stack. `Bun.spawn` for orchestration, `Bun.serve` for the dashboard and IPC, native `WebSocket` over Unix sockets, `Bun.file` for I/O, `Bun.gzipSync` for log compression. One daemon: <50ms start, ~12MB RAM.
 
 ---
 
 ## Features
 
-**Universal Multi-Language Support** — Native auto-detection and execution for Node.js, Bun, Go, Python, Rust, Ruby, PHP, Java JARs, Shell scripts, Windows scripts, and compiled binaries.
+**Universal Multi-Language Support** — Auto-detected execution: Node.js, Bun, Go, Python, Rust, Ruby, PHP, Java JARs, shell and Windows scripts, compiled binaries.
 
-**Core Process Management** — Start, stop, restart, reload, delete, and scale processes with automatic restart on crash, configurable restart strategies, memory-limit restarts, and tree killing.
+**Core Process Management** — Start, stop, restart, reload, delete, and scale with automatic restart on crash, configurable restart strategies, memory-limit restarts, and tree killing.
 
-**Cluster Mode** — Run multiple instances of your application with per-worker environment injection, automatic port assignment, and round-robin-ready configuration using `PBOSS_WORKER_ID` and `NODE_APP_INSTANCE` conventions.
+**Cluster Mode** — Multiple instances with per-worker environment injection, automatic port assignment, and `PBOSS_WORKER_ID` / `NODE_APP_INSTANCE` conventions.
 
-**Zero-Downtime Reload** — Graceful reload cycles through instances sequentially, starting the new process before stopping the old one, ensuring your application never drops a request.
+**Zero-Downtime Reload** — The new process starts before the old one stops — no dropped requests.
 
-**Foreground / No-Daemon Mode** — Run ProcBoss in blocking foreground mode without spawning a background daemon. Designed for containerized environments like Docker, Kubernetes, and any platform that expects PID 1 to remain in the foreground.
+**Foreground / No-Daemon Mode** — Blocking foreground mode without a background daemon, for Docker, Kubernetes, and any platform that expects PID 1 in the foreground.
 
-**Real-Time Web Dashboard** — A built-in dark-themed web dashboard with live WebSocket updates, CPU/memory charts, process control buttons, and a log viewer. No external dependencies.
+**Real-Time Web Dashboard** — Live WebSocket updates, CPU/memory charts, process controls, log viewer. No external dependencies.
 
-**Prometheus Metrics** — A dedicated metrics endpoint exports process and system telemetry in Prometheus exposition format, ready for scraping by Prometheus and visualization in Grafana.
+**Prometheus Metrics** — A dedicated metrics endpoint in Prometheus exposition format, ready for scraping and Grafana.
 
-**Log Management** — Automatic log capture with buffered writes, size-based rotation, configurable retention, optional gzip compression, log flushing, and real-time tailing.
+**Log Management** — Automatic capture with buffered writes, size-based rotation, retention, gzip compression, flushing, and real-time tailing.
 
-**Health Checks** — HTTP health check probes with configurable intervals, timeouts, and failure thresholds that automatically restart unhealthy processes.
+**Health Checks** — HTTP probes with configurable interval, timeout, and failure threshold that restart unhealthy processes.
 
 **Cron Restarts** — Schedule periodic restarts using standard cron expressions for applications that benefit from regular recycling.
 
-**Standalone Cron Jobs** — Schedule any shell command or script with human-friendly syntax (`everyday@9:11`, `every-second`, `every-sunday@10:10`, `on-date@24-10-2026-23:10`) — no managed process required. Jobs persist across daemon restarts and reboots, run with output logs, and survive missed runs gracefully. See [Cron Jobs](#cron-jobs).
+**Standalone Cron Jobs** — Schedule any shell command with friendly syntax (`everyday@9:11`, `every-second`, `on-date@24-10-2026-23:10`) — no managed process required. Persisted in `~/.pboss/cron.json`, survive restarts and reboots, log every run. See [Cron Jobs](#cron-jobs).
 
-**File Watching** — Automatic restart on file changes with configurable watch paths and ignore patterns. Ideal for development workflows.
+**File Watching** — Automatic restart on file changes with configurable watch paths and ignore patterns.
 
-**Ecosystem Files** — Declare your entire application topology in a single JSON or TypeScript configuration file and start everything with one command.
+**Ecosystem Files** — Declare your whole application topology in one JSON or TypeScript file; start everything with one command.
 
-**Process Persistence** — Save the current process list and resurrect it after a daemon restart or system reboot. Combined with startup script generation, your applications survive server reboots.
+**Process Persistence** — The process list is saved and resurrected after a daemon restart or system reboot; combined with startup scripts, your apps survive reboots.
 
-**Startup Script Generation** — Automatically generate and install systemd (Linux), launchd (macOS), or Task Scheduler (Windows) service configurations so the ProcBoss daemon starts at boot.
+**Startup Script Generation** — systemd (Linux), launchd (macOS), or Task Scheduler (Windows) service installed automatically — per-user, no root.
 
-**Remote Deployment** — A built-in deploy system that handles SSH-based deployment with git pull, release directory management, symlink rotation, and pre/post-deploy hooks.
+**Remote Deployment** — SSH-based deployment with git pull, release directories, symlink rotation, and pre/post hooks.
 
 **Module/Plugin System** — Extend ProcBoss with custom modules that hook into the process manager lifecycle.
 
-**Environment Management** — Store, retrieve, and inject environment variables per process with `.env` file loading support.
+**Environment Management** — Store, retrieve, and inject environment variables per process, with `.env` file loading.
 
-**Full IPC Architecture** — A daemonized architecture where the CLI communicates with a long-running daemon process over a Unix domain socket using WebSocket protocol.
+**Full IPC Architecture** — The CLI talks to a long-running daemon over a Unix domain socket using WebSocket protocol.
 
 ---
 
@@ -256,9 +250,9 @@ Output:
 pboss start server.ts
 ```
 
-That is the whole setup. The process list is saved automatically to `~/.pboss/dump.json` after **every** change (start, stop, restart, delete, scale), and the boot service — installed automatically by the one-line installer at install time — starts the daemon at boot and resurrects the list: running processes come back running, stopped ones come back stopped, deleted ones don't come back. The first `pboss start` states where persistence stands in one line, so the default is never a silent surprise.
+That is the whole setup. The process list is saved to `~/.pboss/dump.json` after **every** change, and the boot service — installed by the one-line installer — starts the daemon at boot and resurrects the list: running processes come back running, stopped ones stopped, deleted ones never.
 
-`pboss startup status` shows the whole picture read-only: whether the boot service is installed and enabled, whether the daemon is up, and exactly what a reboot would restore from the dump.
+`pboss startup status` shows the whole picture read-only: service installed/enabled, daemon up, and what a reboot would restore.
 
 If the boot service could not be installed automatically (a host without a user systemd session, e.g. some containers), one command enables it:
 
@@ -462,7 +456,7 @@ pboss reload my-namespace
 pboss reload all
 ```
 
-The reload process works as follows for each instance. First, a new process is spawned. Then ProcBoss waits for the new process to become stable or emit a ready signal if `--wait-ready` is enabled. Next, the old process receives SIGTERM and is given the kill timeout to shut down gracefully. Finally, the cycle moves to the next instance.
+Per instance: spawn the new process → wait for it to become stable (or the ready signal with `--wait-ready`) → SIGTERM the old one within the kill timeout → move to the next instance.
 
 ---
 
@@ -500,10 +494,10 @@ pboss delete stellarforge    # confirmed, or --force
 
 Resolution rules:
 
-- A target that matches a **process name** (or its cluster instances, `name-0`, `name-1`, …) always wins — existing per-process commands behave exactly as before, even if a namespace shares the name.
+- A target that matches a **process name** (or its cluster instances, `name-0`, `name-1`, …) always wins — per-process commands behave exactly as before.
 - Otherwise the target operates on every process in the **namespace**.
-- Unknown targets are clear errors: `Process or namespace "x" not found — nothing to <verb>`. Run `pboss list` to see registered names and namespaces (the table has a namespace column).
-- Group operations report what they touched — `✓ Stopped 4 processes in namespace "stellarforge"` — above the usual process table, and the auto-saved dump follows immediately, so the group state survives reboots by default.
+- Unknown targets are clear errors: `Process or namespace "x" not found — nothing to <verb>`. `pboss list` shows registered names and namespaces.
+- Group operations report what they touched — `✓ Stopped 4 processes in namespace "stellarforge"` — and the auto-saved dump follows immediately, so group state survives reboots.
 
 ---
 
@@ -562,38 +556,13 @@ Output:
 
 #### pboss list
 
-List all managed processes with their status, resource usage, and uptime.  
-Supports a **live mode** with auto-refresh and interactive keyboard shortcuts.
+List all managed processes with their status, resource usage, and uptime. Supports a **live mode** with auto-refresh and interactive keyboard shortcuts.
 
 ```bash
 pboss list
 ```
 
-## Live Mode Keyboard Shortcuts
-
-```
-R : Reload table manually
-M : Sort by Memory usage
-C : Sort by CPU usage
-U : Sort by Uptime
-Q : Quit live mode
-```
-
-## Examples
-
-```bash
-# List all processes once
-pboss list
-
-# List processes with live updates
-pboss list --live
-```
-
-## Notes
-
-* Live mode automatically refreshes the table every second (default interval).
-* Sorting can be changed on the fly using the keyboard shortcuts.
-* Press `R` to reload manually, `Q` to quit live mode.
+Live mode (`pboss list --live`) refreshes every second; `R` reloads manually, `M`/`C`/`U` sort by memory/CPU/uptime, `Q` quits.
 
 ---
 
@@ -1030,7 +999,7 @@ Deploy a new release.
 pboss deploy ecosystem.config.json production
 ```
 
-The deploy process works as follows. It runs the `preDeploy` hook locally such as running tests. It connects via SSH to each configured host. It pulls the latest code from the configured ref. It creates a new timestamped release directory. It updates the current symlink to the new release. It runs the `postDeploy` hook remotely such as installing dependencies and reloading processes. It cleans up old releases, keeping only the 5 most recent.
+The deploy runs, in order: `preDeploy` hook locally (e.g. tests) → SSH to each host → `git pull` of the configured ref → new timestamped release directory → `current` symlink updated → `postDeploy` hook remotely (e.g. install + reload) → old releases cleaned (5 kept).
 
 Multi-host deployment is supported. Specify an array of hosts to deploy to all of them sequentially:
 
@@ -1090,12 +1059,12 @@ The full schedule grammar (24-hour clock, day-month-year dates):
 
 Notes:
 
-- Times use the 24-hour clock. Hour **24** is accepted and means "the following day": `24:30` is `00:30` the next day.
-- Dates are **day-month-year** (`24-10-2026` = October 24, 2026) and are calendar-validated (leap years included).
-- Keywords tolerate hyphens, underscores and camelCase: `on-date@`, `onDate@` and `on_date@` are the same word; so are `every-second` and `everySecond`.
-- Next-run times are computed by the mature [cron-parser](https://www.npmjs.com/package/cron-parser) library — the same engine validates raw cron expressions, and 6-field ones get a seconds field.
-- Jobs missed while the machine or daemon was down are **skipped** (like classic cron), not back-filled; recurring jobs simply reschedule to their next future occurrence.
-- If a time has already passed for `today@…` or `on-date@…`, pboss rejects it with a suggestion instead of scheduling a job that never fires.
+- Times use the 24-hour clock. Hour **24** means the following day: `24:30` = `00:30` next day.
+- Dates are **day-month-year** (`24-10-2026` = October 24, 2026), calendar-validated (leap years included).
+- Keywords tolerate hyphens, underscores and camelCase: `on-date@`, `onDate@`, `on_date@` are the same word.
+- Next-run times come from the [cron-parser](https://www.npmjs.com/package/cron-parser) library, which also validates raw expressions (6-field ones get a seconds field).
+- Jobs missed while the machine or daemon was down are **skipped** (like classic cron); recurring jobs reschedule to their next future occurrence.
+- A past time for `today@…` / `on-date@…` is rejected with a suggestion, not scheduled to never fire.
 
 Options for `cron run`:
 
@@ -1212,9 +1181,9 @@ The boot service is normally installed **automatically** — the one-line instal
 
 Install the boot startup service:
 
-- **Linux:** writes and enables a **per-user systemd unit** (`~/.config/systemd/user/pboss.service`) and drives it with `systemctl --user` — no root, no sudo. After the unit comes up, pboss best-effort runs `loginctl enable-linger <user>` so the daemon starts at BOOT rather than at first login; where linger is refused (older systemd / polkit), the install still succeeds and says the daemon will start at first login instead. The start is submitted with `--no-block` and health is verified with a hard deadline — the unit state plus a ping on the socket the unit's daemon actually binds — with the recent journal output printed when the unit does not come up. `pboss startup install` therefore always returns; a failing daemon produces a diagnosis, never a hang (the unit also rate-limits its own restarts, so a failing daemon cannot loop forever). Running it under sudo is rejected with a clear "re-run as yourself" message — root has no user systemd session.
+- **Linux:** writes and enables a **per-user systemd unit** (`~/.config/systemd/user/pboss.service`) and drives it with `systemctl --user` — no root, no sudo. After bring-up, pboss best-effort runs `loginctl enable-linger <user>` so the daemon starts at BOOT rather than at first login; where linger is refused, the install still succeeds and says so. The start is `--no-block` with a hard health deadline (unit state + socket ping), so `install` always returns — a failing daemon produces a diagnosis, never a hang. Under sudo it is rejected — root has no user systemd session.
 - **macOS:** writes and loads a `launchd` LaunchAgent (`~/Library/LaunchAgents/com.pboss.daemon.plist`). No root needed or wanted. The plist pins `PATH`, `HOME`, and `PBOSS_HOME` so the daemon resolves the same `~/.pboss` as your interactive commands.
-- **Windows:** registers a Scheduled Task (`PBOSS_Daemon`) that starts the daemon at **this user's logon**. No elevation required for per-user registration — only hosts whose policy refuses it ask for an elevated re-run. Registration goes through PowerShell's `Register-ScheduledTask`, which passes the executable and its arguments as separate values (no `schtasks /tr` nested-quoting to break on paths with spaces).
+- **Windows:** registers a Scheduled Task (`PBOSS_Daemon`) that starts the daemon at **this user's logon**, via PowerShell's `Register-ScheduledTask` (no `schtasks /tr` quoting pitfalls). No elevation required; only hosts whose policy refuses it ask for an elevated re-run.
 
 The generated service runs as the invoking user and uses the same `~/.pboss` data as your daily `pboss` commands — never root's `/root/.pboss`.
 
@@ -1223,9 +1192,9 @@ The generated service runs as the invoking user and uses the same `~/.pboss` dat
 pboss startup install
 ```
 
-The generated file detects how pboss was installed and adapts the daemon command accordingly. On a **compiled standalone install** (one-line installer, `build:bin`) the service re-executes the pboss binary itself (`ExecStart=/home/you/.local/bin/pboss __daemon`) — the Bun runtime is embedded in the binary and is **not required** on the system. On a **script install** (`bun add -g pboss`, npm) the service runs the source on the system Bun runtime (`ExecStart=/home/you/.bun/bin/bun run .../daemon.ts`). The generated file's header comment states which mode was detected.
+The generated file adapts to how pboss was installed: a **compiled standalone install** (one-line installer, `build:bin`) re-executes the pboss binary itself (`ExecStart=/home/you/.local/bin/pboss __daemon` — Bun is embedded, not required on the system); a **script install** (`bun add -g pboss`, npm) runs the source on the system Bun (`ExecStart=/home/you/.bun/bin/bun run .../daemon.ts`). The header comment states which mode was detected.
 
-The unit/agent `PATH` deliberately includes the target user's `~/.bun/bin` whenever it exists (even on compiled installs): worker processes inherit the service's environment, so a worker shelling out to `bun` by name must resolve it. Independently of the unit file, the daemon self-heals its own `PATH` at startup (prepending the directory of the Bun it discovered) — so daemons started by **older** unit files also find Bun after a binary upgrade. See [Runtime discovery](#multi-language--runtime-support) for the full Bun discovery chain.
+The unit/agent `PATH` includes the target user's `~/.bun/bin` whenever it exists (workers that shell out to `bun` by name must resolve it), and the daemon self-heals its own `PATH` at startup — daemons started by **older** unit files also find Bun after an upgrade. See [Runtime discovery](#multi-language--runtime-support) for the full chain.
 
 #### pboss startup status
 
@@ -1401,7 +1370,7 @@ pboss cloud connect
 # ✓ Server authorized and connected
 ```
 
-What happens: the CLI requests a device code (`POST /api/device/code`, carrying hostname/OS/arch/agent version — the approval card shows exactly these facts), prints the URL plus the short human code, and polls. You open the URL anywhere, sign in with GitHub or Google, and approve or deny the card. On approval the cloud links (or re-links) the Server row, and the CLI's next poll claims the per-server credential — minted at that moment, handed over **exactly once**. The CLI then hands it to the daemon via the local socket: the daemon writes `~/.pboss/cloud.json` (0600) and owns the connection from there on. Denials, expiries (10 minutes), and the single-claim rule are all honest errors at the terminal.
+The CLI requests a device code (`POST /api/device/code`, carrying hostname/OS/arch/agent version — the approval card shows exactly these facts), prints the URL plus the code, and polls. You open the URL anywhere, sign in with GitHub or Google, and approve or deny the card. On approval, the CLI's next poll claims the per-server credential — minted at that moment, handed over **exactly once** — and passes it to the daemon, which writes `~/.pboss/cloud.json` (0600) and owns the connection from there on. Denials, expiries (10 minutes), and double claims are all honest errors at the terminal.
 
 Flags: `--url <cloud>` overrides the endpoint (else `PBOSS_CLOUD_URL`, else `https://procboss.com`); `--no-browser` (or `PBOSS_NO_BROWSER=1`) skips the auto-open attempt. On a machine with a desktop session the CLI tries to open the tab for you — over SSH without `DISPLAY` it stays print-only, which is exactly right for servers.
 
@@ -1455,23 +1424,23 @@ Version numbers come from the npm registry (the canonical source every channel b
 
 Once linked, the daemon's cloud agent:
 
-- keeps ONE **WebSocket** open to the cloud (`wss://…/ws/agent`, outbound-only) — commands, state reports, results and live log frames all flow over it, with automatic reconnect (exponential backoff, reset on success);
-- sends a **full state report** every 10 seconds (and immediately after every command): server metrics (CPU, memory, uptime) and the process list with per-process CPU/mem/restarts/crashes/uptime;
-- derives **events** from consecutive snapshots — crashes (with exit code, signal and a 30-line log tail for the cloud's crash reports), restarts, on/offline transitions — which the cloud turns into alerts;
-- executes **remote commands** from the dashboard: `process.list`, `process.start`, `process.stop`, `process.restart`, `process.delete`, `process.logs`, `process.deploy`, `server.info`, `server.deploy` — each answered with a result and followed by a fresh state report;
-- **tails logs live** when a dashboard opens them (`log.watch` / `log.unwatch` control frames; new lines are pushed as they land on disk);
-- **deploys** by running `git pull --ff-only` in the process's working directory and restarting it — the dashboard's Deploy button reports the real commit, message and duration. Working directories that aren't git checkouts fail honestly;
-- answers `pboss cloud servers` with the fleet view (fetched daemon-side with the machine credential — the CLI never holds the secret).
+- keeps ONE **WebSocket** open to the cloud (`wss://…/ws/agent`, outbound-only) — commands, state, results, and live log frames all flow over it, with automatic reconnect (exponential backoff, reset on success);
+- sends a **full state report** every 10 seconds (and after every command): server metrics and the process list with per-process CPU/mem/restarts/uptime;
+- derives **events** from consecutive snapshots — crashes (exit code, signal, 30-line log tail), restarts, on/offline transitions — which the cloud turns into alerts;
+- executes **remote commands**: `process.list/start/stop/restart/delete/logs/deploy`, `server.info`, `server.deploy` — each answered with a result and followed by a fresh state report;
+- **tails logs live** when a dashboard opens them (`log.watch` / `log.unwatch`); new lines are pushed as they land on disk;
+- **deploys** by running `git pull --ff-only` in the process's working directory and restarting it — the dashboard's Deploy button reports the real commit, message, and duration. Non-git directories fail honestly;
+- answers `pboss cloud servers` with the fleet view (fetched daemon-side — the CLI never holds the secret).
 
 If the credential is revoked from the dashboard, the cloud closes the WebSocket with code 4001: the agent stops, clears `cloud.json`, and says so — re-link with `pboss cloud connect`.
 
 ### Cloud security model
 
-- **No inbound anything.** The agent makes outbound HTTPS/WSS connections only; there is no port to open and no attack surface facing the internet.
+- **No inbound anything.** Outbound HTTPS/WSS connections only; no port to open, no internet-facing attack surface.
 - **Secrets never rest in plaintext server-side.** Machine secrets and CLI tokens are stored as sha256 hashes; raw forms exist only in the local 0600 files and in memory.
-- **Single-claim device codes.** A credential is minted at claim time and handed over exactly once; a raced second poller gets nothing. Codes expire in 10 minutes and are denied on the approval card.
-- **Separate revocable identities.** Server credentials, CLI tokens, and browser sessions are three independent credential spaces — revoke one, the others don't flinch.
-- **Approval shows the machine facts.** The /connect card displays hostname, OS, arch, and agent version before you approve, so you always know what you're linking.
+- **Single-claim device codes.** A credential is minted at claim time and handed over exactly once; a raced second poller gets nothing. Codes expire in 10 minutes.
+- **Separate revocable identities.** Server credentials, CLI tokens, and browser sessions are three independent credential spaces.
+- **Approval shows the machine facts.** The /connect card displays hostname, OS, arch, and agent version before you approve.
 
 ### Self-hosting / custom cloud endpoint
 
@@ -1853,7 +1822,13 @@ scrape_configs:
 
 ### Grafana Dashboard
 
-Import a dashboard with the following panels for comprehensive monitoring: Process Status Overview as a stat panel colored by status, CPU Usage per Process as a time series with `pboss_process_cpu` grouped by name, Memory Usage per Process as a time series with `pboss_process_memory_bytes` grouped by name, Restart Rate as a graph of `rate(pboss_process_restarts_total[5m])` to detect instability, System Load as a time series of `pboss_system_load_average` across all periods, and Memory Pressure as a gauge computing `1 - (pboss_system_memory_free_bytes / pboss_system_memory_total_bytes)`.
+Import panels for comprehensive monitoring:
+
+- **Process Status Overview** — stat panel colored by status
+- **CPU / Memory per Process** — time series `pboss_process_cpu` / `pboss_process_memory_bytes` grouped by name
+- **Restart Rate** — `rate(pboss_process_restarts_total[5m])` to detect instability
+- **System Load** — `pboss_system_load_average` across all periods
+- **Memory Pressure** — gauge `1 - (pboss_system_memory_free_bytes / pboss_system_memory_total_bytes)`
 
 ### Alert Rules Example
 
@@ -2936,12 +2911,6 @@ bun test
 
 ## License
 
-GPL-3.0-only
+GPL-3.0-only — see [LICENSE](LICENSE).
 
 Copyright (c) 2025 procboss.com
-
-Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
