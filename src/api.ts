@@ -118,6 +118,13 @@ export async function loadEcosystemConfig(filePath: string): Promise<EcosystemCo
 
   const cwd = path.dirname(abs);
 
+  // Issue #28: a config may legitimately contain only top-level options
+  // (e.g. `module.exports = { noDaemon: true }`). Default `apps` to an empty
+  // array instead of crashing on `config.apps.map` below.
+  if (!Array.isArray(config.apps)) {
+    config.apps = [];
+  }
+
   config.apps = config.apps.map((app) => {
     if ((app.cwd || "").trim() === "") {
       app.cwd = cwd;

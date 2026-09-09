@@ -161,6 +161,13 @@ export interface StartOptions {
   namespace?: string;
   nodeArgs?: string[];
   sourceMapSupport?: boolean;
+  /**
+   * Run in foreground without a daemon. Documented in the config reference
+   * (Process options); honored per-app and at the ecosystem top level —
+   * anywhere it is `true`, `pboss start` stays in the foreground and hosts
+   * the supervisor in-process (same as `--no-daemon`). Issue #28.
+   */
+  noDaemon?: boolean;
 }
 
 export interface EcosystemConfig {

@@ -270,36 +270,84 @@ class PBossCLI {
   // -------------------------------------------------------------------------
 
   async cmdStart(args: string[]) {
-    if (args.length === 0) {
+    // Issue #28: `pboss start --config <file>` (also `--config=<file>`) must
+    // load that file as the ecosystem config. Previously the flag was not
+    // recognized at all: it fell through as an "unknown flag", its VALUE was
+    // mistaken for the positional target, and a config like
+    // `procboss.config.js` was then executed as a plain script (so every
+    // option inside it — `noDaemon` included — was silently ignored).
+    // Extraction stops at the `--` sentinel so script arguments are kept.
+    let configPath: string | undefined;
+    const restArgs: string[] = [];
+    for (let i = 0; i < args.length; i++) {
+      const arg = args[i]!;
+      if (arg === "--") {
+        restArgs.push(...args.slice(i));
+        break;
+      }
+      if (arg === "--config" || arg === "-c") {
+        const value = args[i + 1];
+        if (!value || value.startsWith("-")) {
+          console.error(
+            colorize(`Error: ${arg} requires a config file path (e.g. ${arg} ecosystem.config.js)`, "red")
+          );
+          process.exit(1);
+        }
+        configPath = value;
+        i++; // consume the value so it is not mistaken for a positional
+        continue;
+      }
+      if (arg.startsWith("--config=")) {
+        const value = arg.slice("--config=".length);
+        if (!value) {
+          console.error(colorize("Error: --config= requires a config file path", "red"));
+          process.exit(1);
+        }
+        configPath = value;
+        continue;
+      }
+      restArgs.push(arg);
+    }
+    args = restArgs;
+
+    if (args.length === 0 && !configPath) {
       console.error(colorize("Usage: pboss start <script|config> [options]", "red"));
       process.exit(1);
     }
 
-    const firstPositional = args.find((a) => !a.startsWith("-"));
-    if (!firstPositional) {
+    const firstPositional = configPath ? undefined : args.find((a) => !a.startsWith("-"));
+    if (!configPath && !firstPositional) {
       console.error(colorize("Usage: pboss start <script|config> [options]", "red"));
       process.exit(1);
     }
 
-    const ext = extname(firstPositional);
+    const ext = firstPositional ? extname(firstPositional) : "";
     // Read BEFORE the start: an empty dump means this is the fleet's first
     // process — the one moment the persistence onboarding hint matters.
     const wasEmptyFleet = dumpEntryCount() === 0;
 
     try {
       if (
+        configPath ||
         ext === ".json" ||
-        firstPositional.includes("ecosystem") ||
-        firstPositional.includes("pboss.config") ||
-        firstPositional.includes("bm2.config") ||
-        firstPositional.includes("pm2.config")
+        firstPositional!.includes("ecosystem") ||
+        firstPositional!.includes("pboss.config") ||
+        firstPositional!.includes("procboss.config") ||
+        firstPositional!.includes("bm2.config") ||
+        firstPositional!.includes("pm2.config")
       ) {
-        const config = await loadEcosystemConfig(firstPositional);
+        const config = await loadEcosystemConfig(configPath ?? firstPositional!);
         const raw = args.includes("--raw");
         if (raw) {
           config.apps = config.apps.map((app) => ({ ...app, raw: true }));
         }
-        if (config.noDaemon && !this.noDaemon) {
+        // Issue #28: `noDaemon: true` in the config file must switch to
+        // foreground mode exactly like the `--no-daemon` CLI flag. It is
+        // honored at the top level AND per-app (the config reference lists
+        // it among the process options).
+        const wantsNoDaemon =
+          config.noDaemon === true || config.apps.some((app) => app.noDaemon === true);
+        if (wantsNoDaemon && !this.noDaemon) {
           this.noDaemon = true;
           this.pboss = new PBoss({ noDaemon: true });
         }
@@ -314,16 +362,19 @@ class PBossCLI {
           await new Promise(() => {});
         }
       } else {
+        // configPath is falsy here, so the usage guard above guarantees a
+        // positional target exists.
+        const target = firstPositional!;
         // Issue #27: `pboss start <namespace>` (or an existing process name
         // / id) resumes processes that already exist. The reroute fires ONLY
         // when the positional is not an existing file — a real script
         // always wins, so `pboss start ./index.ts` behaves exactly as
         // before.
-        const scriptAbs = resolve(firstPositional);
+        const scriptAbs = resolve(target);
         if (!(await Bun.file(scriptAbs).exists())) {
           try {
-            const states = await this.pboss.startTarget(firstPositional);
-            this.printNamespaceSummary("Started", states, firstPositional);
+            const states = await this.pboss.startTarget(target);
+            this.printNamespaceSummary("Started", states, target);
             printProcessTable(states);
 
             if (this.noDaemon) {
@@ -1907,6 +1958,7 @@ ${colorize("Notes:", "dim")}
     --env <KEY=VALUE>             Set environment variable
     --no-autorestart              Disable auto-restart
     --no-daemon, -d               Run without daemon (blocks)
+    --config, -c <file>           Start from an ecosystem config file
     --raw                         Mirror child logs to stdout and stderr
     --log, -o <file>              Custom stdout log path
     --error, -e <file>            Custom stderr log path
@@ -1921,6 +1973,7 @@ ${colorize("Notes:", "dim")}
     pboss start --no-daemon app.ts
     pboss start --name api --no-daemon server.ts
     pboss start ecosystem.config.ts
+    pboss start --config procboss.config.js
     pboss cron run everyday@2:00 "bun /srv/backup.ts"
     pboss cron run every-sunday@10:10 "sh cleanup.sh" --name cleanup
     pboss restart api
