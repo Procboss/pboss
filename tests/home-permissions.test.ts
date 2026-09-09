@@ -17,10 +17,15 @@ import { tmpdir } from "node:os";
  * Runs in a subprocess because PBOSS_HOME is resolved at module import.
  */
 
-const ROOT = "/home/z/my-project/pboss";
+// Derive the repo root from this file's location — a hardcoded absolute
+// path breaks on any other machine (posix_spawn fails with a misleading
+// ENOENT 'bun' because its chdir to the nonexistent cwd fails first).
+const ROOT = join(import.meta.dir, "..");
 
 function runInSubprocess(home: string, code: string): Promise<number> {
-  const proc = Bun.spawn(["bun", "-e", code], {
+  // process.execPath = the bun binary running these tests: no PATH lookup,
+  // works even when the child's PATH doesn't include bun's directory.
+  const proc = Bun.spawn([process.execPath, "-e", code], {
     env: { ...process.env, PBOSS_HOME: home },
     stdout: "pipe",
     stderr: "pipe",
