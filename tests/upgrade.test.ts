@@ -194,16 +194,18 @@ describe("buildUpgradePlan: each channel upgrades through itself", () => {
     expect(plan.command).toEqual(["sudo", "snap", "refresh", "pboss"]);
   });
 
-  test("universal on linux/macOS → the curl|sudo bash installer", () => {
+  test("universal on linux/macOS → the curl | bash installer (no root)", () => {
     const plan = buildUpgradePlan("universal", "linux");
     expect(plan.command[0]).toBe("bash");
     expect(plan.command[2]).toContain("https://procboss.com/install.sh");
-    expect(plan.command[2]).toContain("sudo bash");
+    expect(plan.command[2]).toContain("| bash");
+    // Sudo is gone: the installer is per-user and needs no root.
+    expect(plan.command.join(" ")).not.toContain("sudo");
     // The plan must NOT install through a package manager.
     expect(plan.command.join(" ")).not.toContain("npm");
   });
 
-  test("universal on windows → the elevated powershell installer", () => {
+  test("universal on windows → the powershell installer (no elevation needed)", () => {
     const plan = buildUpgradePlan("universal", "win32");
     expect(plan.command[0]).toBe("powershell");
     expect(plan.command.at(-1)).toContain("https://procboss.com/install.ps1");

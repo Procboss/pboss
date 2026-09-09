@@ -924,14 +924,14 @@ Manage the boot startup service for the pboss daemon.
 
 The boot service is normally set up automatically at install time (the
 one-line installer and global npm installs do it for you) — you only need
-these commands when that was not possible (e.g. no privileges at install
-time, or a host without systemd) or to remove it again.
+these commands when that was not possible (e.g. a host without a user
+systemd session) or to remove it again.
 
 Commands:
   install               Install the boot startup service
-                          Linux:    sudo env PATH="$PATH" pboss startup install
-                          macOS:    pboss startup install   (no sudo needed)
-                          Windows:  pboss startup install   (elevated shell)
+                          Linux:    pboss startup install   (user unit — no sudo)
+                          macOS:    pboss startup install   (LaunchAgent — no sudo)
+                          Windows:  pboss startup install   (user task — no elevation)
   uninstall             Remove the boot startup service (alias: remove)
   status                Show whether the boot service is installed/enabled,
                           whether the daemon is up, and what a reboot would
@@ -1884,10 +1884,11 @@ ${colorize("Notes:", "dim")}
                                   (systemd unit ExecStartPost uses this)
     startup install               Install the boot startup service
                                   (done automatically at install time; run
-                                  this only when it could not be — sudo env
-                                  PATH="$PATH" pboss startup install on
-                                  Linux; macOS needs no sudo; Windows needs
-                                  an elevated shell)
+                                  this only when it could not be — works
+                                  without sudo on every platform: a
+                                  per-user systemd unit on Linux, a
+                                  LaunchAgent on macOS, a per-user
+                                  scheduled task on Windows)
     startup uninstall             Remove the boot startup service
                                   (alias: startup remove)
     startup status                Show boot-persistence state: service

@@ -1,11 +1,13 @@
 import { describe, test, expect, afterEach } from "bun:test";
 import { StartupManager, dumpBootSummary, bootServiceInstalled } from "../src/startup-manager";
-import { mkdtempSync, rmSync, existsSync, readFileSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, existsSync, readFileSync, mkdirSync, writeFileSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-// Sandbox note: these tests run as a NON-root user on Linux, which is exactly
-// the privilege context that must produce the helpful sudo retry hint.
+// Sandbox note: these tests run WITHOUT root privileges, which is exactly
+// the point — the boot service is per-user, so a normal user account is
+// all install()/uninstall() ever need. systemctl is PATH-shimmed so no
+// real systemd is touched.
 
 const SAVED_ENV: Record<string, string | undefined> = {};
 
@@ -25,37 +27,132 @@ afterEach(() => {
   }
 });
 
-describe("StartupManager — privilege checks (Linux)", () => {
-  test.skipIf(process.platform !== "linux" || typeof process.getuid === "function" && process.getuid() === 0)(
-    "install() as non-root throws with the PATH-preserving sudo hint",
+describe("StartupManager — the per-user privilege model (Linux)", () => {
+  test.skipIf(process.platform !== "linux")(
+    "install() needs NO root: writes the user unit and drives systemctl --user",
     async () => {
-      const startup = new StartupManager();
-      expect(startup.install()).rejects.toThrow(/sudo env PATH="\$PATH" pboss startup install/);
+      const home = mkdtempSync(join(tmpdir(), "pboss-user-install-"));
+      const { dir, log } = installSystemctlShim();
+      setEnv({
+        HOME: home,
+        SUDO_USER: undefined,
+        PBOSS_HOME: undefined,
+        PATH: `${dir}:${process.env.PATH}`,
+      });
+      try {
+        const startup = new StartupManager();
+        // Non-root used to throw "Root is required ... sudo env PATH=...".
+        // The new contract: no privilege error anywhere — install()
+        // completes for a normal user and only ever touches their own home.
+        const msg = await startup.install({
+          verifyTimeoutMs: 1_500,
+          cliSocket: join(dir, "no-cli-daemon.sock"),
+        });
+        expect(msg).not.toContain("Root is required");
+
+        // The unit landed under the invoking user's ~/.config/systemd/user.
+        const unitPath = join(home, ".config", "systemd", "user", "pboss.service");
+        expect(existsSync(unitPath)).toBe(true);
+        const unit = readFileSync(unitPath, "utf-8");
+        expect(unit).toContain("WantedBy=default.target");
+        expect(unit).not.toMatch(/^User=/m); // user unit: runs as its owner
+
+        // Every systemctl invocation addressed the USER manager.
+        const calls = readFileSync(log, "utf-8")
+          .split("\n")
+          .filter((l) => l.trim() !== "");
+        expect(calls.length).toBeGreaterThan(0);
+        expect(calls.every((c) => c.startsWith("--user"))).toBe(true);
+
+        // The manual fallback (shimmed daemon-reload failure, like a host
+        // without a user systemd session) is sudo-free.
+        expect(msg).toContain("systemctl --user daemon-reload");
+        expect(msg).not.toContain("sudo");
+      } finally {
+        rmSync(home, { recursive: true, force: true });
+        rmSync(dir, { recursive: true, force: true });
+      }
     }
   );
 
-  test.skipIf(process.platform !== "linux" || typeof process.getuid === "function" && process.getuid() === 0)(
-    "uninstall() as non-root throws with the sudo hint",
+  test.skipIf(process.platform !== "linux")(
+    "uninstall() needs NO root: removes the user unit via systemctl --user",
     async () => {
-      const startup = new StartupManager();
-      expect(startup.uninstall()).rejects.toThrow(/sudo env PATH="\$PATH" pboss startup uninstall/);
+      const home = mkdtempSync(join(tmpdir(), "pboss-user-uninstall-"));
+      const { dir, log } = installSystemctlShim();
+      const unitDir = join(home, ".config", "systemd", "user");
+      mkdirSync(unitDir, { recursive: true });
+      writeFileSync(join(unitDir, "pboss.service"), "[Unit]\n");
+      setEnv({
+        HOME: home,
+        SUDO_USER: undefined,
+        PBOSS_HOME: undefined,
+        PATH: `${dir}:${process.env.PATH}`,
+      });
+      try {
+        const startup = new StartupManager();
+        const msg = await startup.uninstall();
+        expect(msg).toContain("PBOSS service removed");
+        expect(existsSync(join(unitDir, "pboss.service"))).toBe(false);
+
+        const calls = readFileSync(log, "utf-8")
+          .split("\n")
+          .filter((l) => l.trim() !== "");
+        expect(calls).toContain("--user --no-block stop pboss");
+        expect(calls).toContain("--user disable pboss");
+      } finally {
+        rmSync(home, { recursive: true, force: true });
+        rmSync(dir, { recursive: true, force: true });
+      }
     }
   );
 });
 
+/**
+ * A systemctl shim directory for the manager-level tests: every invocation
+ * is logged; daemon-reload fails (a host without a user systemd session →
+ * the deterministic manual-fallback path, no daemon ever started); the rest
+ * succeed, with is-active reporting "inactive" so polling loops exit at
+ * once. A leading `--user` is stripped so the case patterns match both
+ * system and user invocations (only user ones are ever logged with it).
+ */
+function installSystemctlShim(): { dir: string; log: string } {
+  const dir = mkdtempSync(join(tmpdir(), "pboss-mgr-shim-"));
+  const log = join(dir, "systemctl.log");
+  const systemctl = [
+    "#!/bin/sh",
+    `echo "$@" >> "${log}"`,
+    'case "$1" in --user) shift ;; esac',
+    'case "$*" in',
+    '  "daemon-reload") exit 1 ;;',
+    '  "is-active pboss") echo inactive; exit 3 ;;',
+    '  *) exit 0 ;;',
+    'esac',
+  ].join("\n");
+  writeFileSync(join(dir, "systemctl"), systemctl);
+  chmodSync(join(dir, "systemctl"), 0o755);
+  return { dir, log };
+}
+
 describe("StartupManager — SUDO_USER-aware generation", () => {
   test.skipIf(process.platform === "win32")(
-    "linux unit runs as the invoking user (SUDO_USER resolved from /etc/passwd)",
+    "linux unit targets the invoking user's home (SUDO_USER resolved from /etc/passwd)",
     async () => {
       setEnv({ SUDO_USER: process.env.USER! });
       const startup = new StartupManager();
       const out = await startup.generate("linux");
 
-      expect(out).toContain(`User=${process.env.USER}`);
-      expect(out).toContain(`PBOSS_HOME=${process.env.HOME}/.pboss`);
+      // A USER unit: no User= directive (it runs as its owner), enabled
+      // via default.target, saved under the user's ~/.config/systemd/user.
+      expect(out).not.toMatch(/^User=/m);
       expect(out).toContain(`Runs as user: ${process.env.USER}`);
-      // The exact re-run hint is embedded in the header comment.
-      expect(out).toContain('sudo env PATH="$PATH" pboss startup install');
+      expect(out).toMatch(/Environment=PBOSS_HOME=\S+\/\.pboss/);
+      expect(out).toMatch(/# Save to: \S+\/\.config\/systemd\/user\/pboss\.service/);
+      expect(out).toContain("WantedBy=default.target");
+      expect(out).toContain("systemctl --user daemon-reload");
+      // The exact re-run hint is embedded in the header comment — sudo-free.
+      expect(out).toContain("pboss startup install");
+      expect(out).not.toContain("sudo");
     }
   );
 
@@ -67,8 +164,8 @@ describe("StartupManager — SUDO_USER-aware generation", () => {
       const out = await startup.generate("linux");
 
       // Unresolvable sudo user → do not guess: use the invoking context.
-      expect(out).toContain(`User=${process.env.USER || "root"}`);
-      expect(out).toContain("PBOSS_HOME=");
+      expect(out).not.toMatch(/^User=/m);
+      expect(out).toContain(`Environment=PBOSS_HOME=${process.env.HOME}/.pboss`);
     }
   );
 
@@ -78,7 +175,7 @@ describe("StartupManager — SUDO_USER-aware generation", () => {
       setEnv({ SUDO_USER: "root", USER: "root", HOME: "/root" });
       const startup = new StartupManager();
       const out = await startup.generate("linux");
-      expect(out).toContain("User=root");
+      expect(out).not.toMatch(/^User=/m);
       expect(out).toContain("PBOSS_HOME=/root/.pboss");
     }
   );
@@ -414,9 +511,10 @@ describe("StartupManager.status() — the read-only boot-persistence report", ()
         // in CI, red on the developer's box.
         const startup = new StartupManager();
         const report = await startup.status({ unitDir });
-        expect(report).toContain("Boot startup service (systemd)");
+        expect(report).toContain("Boot startup service (systemd, per-user)");
         expect(report).toContain("Installed:  no");
-        expect(report).toContain('sudo env PATH="$PATH" pboss startup install');
+        expect(report).toContain("pboss startup install");
+        expect(report).not.toContain("sudo");
         expect(report).toContain("Reboot persistence:");
         expect(report).toContain("nothing to restore yet");
         // The dump path is the TARGET user's, not root's.
@@ -436,11 +534,13 @@ describe("StartupManager.status() — the read-only boot-persistence report", ()
       const unitDir = mkdtempSync(join(tmpdir(), "pboss-status-units-"));
       setEnv({ HOME: home, SUDO_USER: undefined, PBOSS_HOME: undefined });
       try {
-        // Unit file + enablement symlink, exactly where systemd puts them.
-        mkdirSync(join(unitDir, "multi-user.target.wants"), { recursive: true });
+        // Unit file + enablement symlink, exactly where systemd puts them
+        // for user units (default.target, not multi-user.target — the user
+        // manager has no multi-user.target).
+        mkdirSync(join(unitDir, "default.target.wants"), { recursive: true });
         writeFileSync(join(unitDir, "pboss.service"), "[Unit]\n");
         writeFileSync(
-          join(unitDir, "multi-user.target.wants", "pboss.service"),
+          join(unitDir, "default.target.wants", "pboss.service"),
           "symlink-ish\n"
         );
         // Dump: 2 running + 1 stopped.
@@ -453,9 +553,10 @@ describe("StartupManager.status() — the read-only boot-persistence report", ()
         const startup = new StartupManager();
         const report = await startup.status({ unitDir });
         expect(report).toContain("Installed:  yes");
-        expect(report).toContain("Enabled:    yes");
+        expect(report).toContain("Enabled:    yes — starts with your session (default.target)");
         expect(report).toContain("2 process(es) come back running");
         expect(report).toContain("1 stopped");
+        expect(report).not.toContain("sudo");
       } finally {
         rmSync(home, { recursive: true, force: true });
         rmSync(unitDir, { recursive: true, force: true });

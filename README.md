@@ -42,19 +42,22 @@ ProcBoss (pboss) is free and open-source software built for the developer commun
 
 ### One-Line Universal Install
 
-Install and compile the native standalone `pboss` executable directly on your device. The installer installs system-wide (`/usr/local/bin`) and therefore requires root — pipe it through `sudo`:
+Install and compile the native standalone `pboss` executable directly on your device — no root required. The installer puts the binary in `~/.local/bin` (on PATH by default on modern distros) and sets up the per-user boot service:
 
 **Linux / macOS:**
 ```bash
-curl -fsSL https://procboss.com/install.sh | sudo bash
+curl -fsSL https://procboss.com/install.sh | bash
 ```
 
-**Windows (PowerShell, run as Administrator):**
+(Running the installer as root still works and installs system-wide to `/usr/local/bin` — but sudo is never required.)
+
+**Windows (PowerShell):**
 ```powershell
 powershell -c "irm https://procboss.com/install.ps1 | iex"
 ```
+(No Administrator needed — installs per-user to `%LOCALAPPDATA%\pboss`. An elevated shell installs machine-wide instead.)
 
-**Windows (Command Prompt, run as Administrator):**
+**Windows (Command Prompt):**
 ```cmd
 curl -fsSL https://procboss.com/install.cmd | cmd
 ```
@@ -62,8 +65,10 @@ curl -fsSL https://procboss.com/install.cmd | cmd
 ### Bun Global Install
 
 ```bash
-sudo bun add -g pboss
+bun add -g pboss
 ```
+
+No sudo needed: the boot service pboss installs is a **per-user systemd unit** (`~/.config/systemd/user`), so a user-local install is the recommended setup.
 
 ### Verify Installation
 
@@ -119,7 +124,7 @@ pboss list
 Servers have no browser — so the login is a device code, approved from your laptop or phone:
 
 ```bash
-sudo pboss cloud connect
+pboss cloud connect
 
 # ⚡ ProcBoss Cloud — connect this server
 #

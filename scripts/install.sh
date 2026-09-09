@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # ProcBoss (pboss) Universal Installer for Linux and macOS
 # https://procboss.com
-# Usage: curl -fsSL https://procboss.com/install.sh | sudo bash
+# Usage: curl -fsSL https://procboss.com/install.sh | bash
 #
-# The installer places the compiled pboss executable in /usr/local/bin, so it
-# must run as root. It checks for the required privileges itself and tells you
-# exactly how to re-run it if sudo is missing.
+# No root required: the binary goes to ~/.local/bin (a user-writable dir on
+# PATH by default on modern distros), and the boot service is a per-user
+# systemd unit. Running the installer AS root (the legacy sudo pipe) still
+# works and installs to /usr/local/bin for all users of the machine.
 
 set -e
 
@@ -21,25 +22,9 @@ echo "  ⚡ ProcBoss (pboss) Installer"
 echo "  https://procboss.com"
 echo -e "${RESET}"
 
-# 1. Require root privileges (sudo) — the binary is installed system-wide
-if [ "$(id -u)" -ne 0 ]; then
-  echo -e "${RED}${BOLD}✗ Root privileges are required to install pboss.${RESET}"
-  echo ""
-  echo -e "The installer compiles the standalone executable and installs it to ${CYAN}/usr/local/bin${RESET},"
-  echo -e "so it must run as root. Re-run the installer with ${BOLD}sudo${RESET}:"
-  echo ""
-  echo -e "  ${CYAN}${BOLD}curl -fsSL https://procboss.com/install.sh | sudo bash${RESET}"
-  echo ""
-  exit 1
-fi
-echo -e "${GREEN}✓ Running with root privileges${RESET}"
-
-# 2. Bun build toolchain.
-#    Bun is only needed to COMPILE pboss — the final executable embeds the Bun
-#    runtime, so the system does not need Bun installed once pboss is built.
-
-# Resolve the invoking (non-root) user's home so Bun can be installed or found
-# where the actual user — not root — will keep using it.
+# 1. Install target — no root required.
+#    Default: ~/.local/bin (per-user, writable, on PATH on modern distros).
+#    Legacy/explicit system install: run AS root → /usr/local/bin.
 INVOKE_USER="${SUDO_USER:-}"
 INVOKE_HOME="$HOME"
 if [ -n "$INVOKE_USER" ]; then
@@ -48,6 +33,20 @@ if [ -n "$INVOKE_USER" ]; then
     INVOKE_HOME="$CANDIDATE_HOME"
   fi
 fi
+
+if [ "$(id -u)" -eq 0 ]; then
+  INSTALL_DIR="/usr/local/bin"
+  echo -e "${GREEN}✓ Running as root — installing system-wide to ${INSTALL_DIR}${RESET}"
+  echo -e "${YELLOW}Note: sudo is NOT needed anymore. A plain user install goes to ~/.local/bin${RESET}"
+else
+  INSTALL_DIR="$HOME/.local/bin"
+  echo -e "${GREEN}✓ Installing as $(id -un) — no root required (${INSTALL_DIR})${RESET}"
+fi
+mkdir -p "$INSTALL_DIR"
+
+# 2. Bun build toolchain.
+#    Bun is only needed to COMPILE pboss — the final executable embeds the Bun
+#    runtime, so the system does not need Bun installed once pboss is built.
 
 # Look for an existing Bun: on PATH, in the invoking user's home, or root's.
 BUN_PATH=""
@@ -148,27 +147,35 @@ if [[ ":$PATH:" != *":$INSTALL_DIR:"* ]]; then
   echo -e "${YELLOW}Note: ${INSTALL_DIR} is not on the current PATH. Add it to your shell profile if 'pboss' is not found.${RESET}"
 fi
 
-# 7. Boot persistence — installed automatically.
+# 7. Boot persistence — installed automatically, WITHOUT sudo.
 #    The whole point of pboss: processes survive reboots by default. The boot
-#    service (systemd unit / launchd agent) makes the daemon start at boot,
-#    and the daemon resurrects the saved process list (auto-saved after every
-#    pboss start/stop/delete). SUDO_USER is honored, so a
-#    `curl | sudo bash` install targets the invoking user's ~/.pboss, not
-#    root's. Best-effort: hosts without systemd (containers, WSL1) get a note
-#    instead of an error.
+#    service is PER-USER (systemd user unit / launchd agent), starts the
+#    daemon, and the daemon resurrects the saved process list (auto-saved
+#    after every pboss start/stop/delete). When the installer itself runs as
+#    root (legacy sudo pipe), the service install runs as the INVOKING user
+#    instead — root has no user systemd session. Best-effort: hosts without
+#    systemd (containers, WSL1) get a note instead of an error.
 echo -e "${CYAN}Enabling boot persistence...${RESET}"
 if [ "$(uname -s)" = "Linux" ] && { ! command -v systemctl >/dev/null 2>&1 || [ ! -d /run/systemd/system ]; }; then
   echo -e "${YELLOW}⚠ systemd is not running on this host — skipping the boot service.${RESET}"
   echo -e "  (Containers and minimal VMs usually have no systemd. On a systemd host, run:)"
-  echo -e "  ${CYAN}sudo ${INSTALL_DIR}/pboss startup install${RESET}"
+  echo -e "  ${CYAN}${INSTALL_DIR}/pboss startup install${RESET}"
 else
-  # SUDO_USER must survive into pboss: the service generator resolves the
-  # invoking user from it (User= and PBOSS_HOME=), so keep the env explicit.
-  if SUDO_USER="${SUDO_USER:-}" "$INSTALL_DIR/pboss" startup install; then
+  PBOSS_BIN="$INSTALL_DIR/pboss"
+  run_as_user() {
+    # Non-root: plain. Root via sudo: drop back to the invoking user — the
+    # service is per-user and `systemctl --user` needs THEIR session.
+    if [ "$(id -u)" -eq 0 ] && [ -n "$INVOKE_USER" ]; then
+      sudo -u "$INVOKE_USER" env PATH="$PATH" HOME="$INVOKE_HOME" "$@"
+    else
+      "$@"
+    fi
+  }
+  if run_as_user "$PBOSS_BIN" startup install; then
     echo -e "${GREEN}✓ Boot persistence enabled — pboss starts at boot and resurrects saved processes.${RESET}"
   else
     echo -e "${YELLOW}⚠ Boot persistence could not be configured automatically.${RESET}"
-    echo -e "  Run it yourself:  ${CYAN}sudo env PATH="$PATH" pboss startup install${RESET}"
+    echo -e "  Run it yourself:  ${CYAN}${PBOSS_BIN} startup install${RESET}"
   fi
 fi
 

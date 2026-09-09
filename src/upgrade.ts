@@ -29,7 +29,7 @@ import { colorize } from "./utils";
 export const CHANNEL_FILE = join(PBOSS_HOME, "channel.json");
 
 export type InstallChannel =
-  | "universal" // curl | sudo bash (linux/macOS) or install.ps1 (windows)
+  | "universal" // curl | bash (linux/macOS) or install.ps1 (windows)
   | "npm" // npm install -g pboss
   | "bun" // bun add -g pboss
   | "brew" // brew install pboss
@@ -236,6 +236,9 @@ export function buildUpgradePlan(
       return {
         channel,
         label: "snap",
+        // sudo here is inherent to snapd (system snaps refresh as root),
+        // not a pboss requirement — every pboss-managed channel is
+        // root-free.
         command: ["sudo", "snap", "refresh", "pboss"],
         manual: false,
         note: "The snap refreshes in place — no second CLI appears.",
@@ -254,7 +257,7 @@ export function buildUpgradePlan(
             "irm https://procboss.com/install.ps1 | iex",
           ],
           manual: false,
-          note: "Run it from an elevated shell (Administrator).",
+          note: "No Administrator needed — it installs per-user by default.",
         };
       }
       return {
@@ -263,10 +266,10 @@ export function buildUpgradePlan(
         command: [
           "bash",
           "-c",
-          "curl -fsSL https://procboss.com/install.sh | sudo bash",
+          "curl -fsSL https://procboss.com/install.sh | bash",
         ],
         manual: false,
-        note: "sudo will ask for your password — the installer is idempotent.",
+        note: "No root required — the installer is idempotent and refreshes in place.",
       };
     }
     case "source":
@@ -283,7 +286,7 @@ export function buildUpgradePlan(
         label: "unrecognized install",
         command: [],
         manual: true,
-        note: "pboss could not tell how it was installed, so it refuses to guess: re-install through one channel (curl | sudo bash, npm i -g, brew, snap) and `pboss upgrade` will track it from then on.",
+        note: "pboss could not tell how it was installed, so it refuses to guess: re-install through one channel (curl | bash, npm i -g, brew, snap) and `pboss upgrade` will track it from then on.",
       };
   }
 }
@@ -328,7 +331,7 @@ export async function fetchLatestVersion(
 
 /* ── execution ────────────────────────────────────────────────────────── */
 
-/** Run an upgrade plan's command with stdio inherited (sudo prompts work). */
+/** Run an upgrade plan's command with stdio inherited (password prompts — snap's — work). */
 export async function runUpgradePlan(
   plan: UpgradePlan,
   spawnFn: (cmd: string[]) => Promise<number> = defaultSpawn,

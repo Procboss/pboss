@@ -44,12 +44,12 @@ import {
 /**
  * The user the generated service should run as.
  *
- * `pboss startup install` needs root on Linux (to write /etc/systemd/system),
- * so it is typically invoked with sudo — but the daemon itself should keep
- * running as the *invoking* human, not as root: their daemon data lives in
- * their own ~/.pboss, and a root daemon would silently split off into
- * /root/.pboss. When SUDO_USER is present we resolve that user's home and
- * use it for the service's User= and PBOSS_HOME.
+ * Boot persistence is PER-USER: the Linux systemd unit is a user unit
+ * (~/.config/systemd/user) and macOS uses a per-user LaunchAgent, so the
+ * service always targets the INVOKING user's ~/.pboss. SUDO_USER is still
+ * resolved for legacy `sudo pboss startup install` runs so paths stay sane,
+ * but install() actively tells sudo users to re-run as themselves (root has
+ * no user systemd session, and a root daemon would split into /root/.pboss).
  */
 function targetUserContext(): { user: string; home: string } {
   const sudoUser = process.env.SUDO_USER;
@@ -92,19 +92,88 @@ function homeForUser(user: string): string | null {
   return null;
 }
 
+/** The re-run command printed when boot persistence is missing. No sudo —
+ *  the service is per-user, so the user's own shell is always enough. */
+function startupInstallHint(): string {
+  return "pboss startup install";
+}
+
 /**
- * The re-run command printed when privileges are missing. Preserving the
- * invoking user's PATH is the trick: `sudo` alone uses a minimal secure PATH
- * that does not include per-user bin dirs like ~/.bun/bin — which is exactly
- * why `sudo pboss` reports "command not found" on Bun-global installs.
+ * Directory holding the per-user systemd unit: ~/.config/systemd/user.
+ * User units need no root: `systemctl --user` talks to the user's own
+ * manager, and `WantedBy=default.target` enables it for their sessions.
  */
-function sudoRetryHint(): string {
-  return 'sudo env PATH="$PATH" pboss startup install';
+function userUnitDir(home: string): string {
+  return join(home, ".config", "systemd", "user");
+}
+
+/**
+ * Guard against the LEGACY habit this change exists to kill: running
+ * `sudo pboss startup install`. Under sudo, `systemctl --user` reaches
+ * root's session (or none at all) — never the invoking user's — so the
+ * install would land in the wrong home or fail opaquely. pboss now needs
+ * no root anywhere on this path; say so, clearly.
+ */
+function assertNotUnderSudo(): void {
+  if (isRoot() && process.env.SUDO_USER && process.env.SUDO_USER !== "root") {
+    throw new Error(
+      `pboss startup no longer needs sudo — the boot service is per-user.\n` +
+        `Re-run as yourself:  ${startupInstallHint()}`
+    );
+  }
 }
 
 /** True when the current process has root privileges on Linux/macOS. */
 function isRoot(): boolean {
   return typeof process.getuid === "function" && process.getuid() === 0;
+}
+
+/**
+ * Best-effort `loginctl enable-linger <user>`: with linger, the user's
+ * systemd instance (and the pboss daemon) starts at BOOT, before any
+ * login; without it, at the user's first login. Self-linger is polkit
+ * allowed for active local users on modern systemd; on hosts where it is
+ * not, the caller prints the one-line hint and moves on — never an error.
+ */
+async function enableLinger(user: string): Promise<boolean> {
+  try {
+    // env: process.env (the LIVE object) — Bun resolves the executable
+    // through the PATH of the env passed at spawn time (same as
+    // runSystemctl), so tests can substitute a loginctl shim by
+    // mutating PATH in-process.
+    const proc = Bun.spawn(["loginctl", "enable-linger", user], {
+      stdout: "ignore",
+      stderr: "ignore",
+      stdin: "ignore",
+      env: process.env,
+    });
+    return (await proc.exited) === 0;
+  } catch (err) {
+    ignore(`loginctl enable-linger ${user}`, err);
+    return false;
+  }
+}
+
+/**
+ * Read-only linger probe for `pboss startup status`: true/false, or null
+ * when loginctl is unavailable. `loginctl show-user --property=Linger`
+ * works for the invoking user without privileges.
+ */
+async function lingerEnabled(user: string): Promise<boolean | null> {
+  try {
+    const proc = Bun.spawn(
+      ["loginctl", "show-user", user, "--property=Linger", "--value"],
+      // env: process.env (the LIVE object) — see enableLinger.
+      { stdout: "pipe", stderr: "ignore", stdin: "ignore", env: process.env }
+    );
+    const out = (await new Response(proc.stdout).text()).trim();
+    const code = await proc.exited;
+    if (code !== 0) return null;
+    return out === "yes" || out === "true" || out === "1";
+  } catch (err) {
+    ignore(`loginctl show-user ${user} (status)`, err);
+    return null;
+  }
 }
 
 export class StartupManager {
@@ -168,7 +237,7 @@ export class StartupManager {
 # Install mode: ${installModeDescription()}
 #
 # To install as a Scheduled Task that starts automatically on user logon,
-# simply run this from an elevated shell (Run as Administrator):
+# run this from a regular shell:
 #
 # pboss startup install
 #
@@ -200,7 +269,10 @@ export class StartupManager {
     const execStop = cliSpawnCommand("kill").join(" ");
     const target = targetUserContext();
     const unitPath = this.servicePath(target.home);
+    const serviceDir = userUnitDir(target.home);
 
+    // A USER unit: no User= directive (it runs as the owning user), and
+    // WantedBy=default.target — the user manager has no multi-user.target.
     const unit = `[Unit]
 Description=ProcBoss Process Manager
 Documentation=https://procboss.com
@@ -216,7 +288,6 @@ StartLimitBurst=5
 
 [Service]
 Type=simple
-User=${target.user}
 LimitNOFILE=infinity
 LimitNPROC=infinity
 LimitCORE=infinity
@@ -243,20 +314,23 @@ ExecReload=${execReload}
 ExecStop=-${execStop}
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=default.target
 `;
 
-    const servicePath = "/etc/systemd/system/pboss.service";
-    return `# PBOSS Systemd Service
+    const servicePath = join(serviceDir, "pboss.service");
+    return `# PBOSS Systemd Service (per-user — no root required)
 # Install mode: ${installModeDescription()}
 # Runs as user: ${target.user} (home: ${target.home})
 # Save to: ${servicePath}
-# Or install it directly with:  ${sudoRetryHint()}
+# Or install it directly with:  ${startupInstallHint()}
 #
 # If saved manually, then run:
-#   sudo systemctl daemon-reload
-#   sudo systemctl enable pboss
-#   sudo systemctl start pboss
+#   systemctl --user daemon-reload
+#   systemctl --user enable pboss
+#   systemctl --user start pboss
+#
+# Start at BOOT (before any login) instead of at first login:
+#   loginctl enable-linger ${target.user}
 
 ${unit}`;
   }
@@ -265,8 +339,8 @@ ${unit}`;
     const programArgs = daemonCmd
       .map((arg) => `         <string>${escapeXml(arg)}</string>`)
       .join("\n");
-    // LaunchAgents are per-user — when installed via sudo, target the
-    // invoking user's home, not root's (SUDO_USER-aware).
+    // LaunchAgents are per-user — the agent targets the invoking user's
+    // home (SUDO_USER-aware only so legacy sudo runs keep sane paths).
     const target = targetUserContext();
     const home = target.home;
 
@@ -306,9 +380,8 @@ ${programArgs}
 # Install mode: ${installModeDescription()}
 # Runs as user: ${target.user}
 # Save to: ${plistPath}
-# Or install it directly with:  pboss startup install   (LaunchAgents are
-# per-user — no sudo needed; if you must use sudo, pboss targets the
-# SUDO_USER's home and loads the agent as that user)
+# Or install it directly with:  ${startupInstallHint()}
+#   (LaunchAgents are per-user — no sudo needed or wanted.)
 # Then run:
 # launchctl load -w ${plistPath}
 
@@ -322,89 +395,78 @@ ${plist}`;
    * @param opts.verifyTimeoutMs hard deadline for the post-install health
    *   verification (Linux). Default 30s; the npm postinstall hook passes a
    *   shorter one so a failing unit cannot stretch a package install.
+   * @param opts.cliSocket where to probe for (and stop) a stray CLI daemon
+   *   before the unit starts. Default: the CLI's own PBOSS_HOME socket;
+   *   overridable so tests can point it at a path nothing will ever answer.
    */
-  async install(opts: { verifyTimeoutMs?: number } = {}): Promise<string> {
+  async install(opts: { verifyTimeoutMs?: number; cliSocket?: string } = {}): Promise<string> {
     const os = process.platform;
     const content = await this.generate(os);
 
     if (os === "linux") {
-      if (!isRoot()) {
-        throw new Error(
-          `Root is required to install a system-wide systemd service.\n` +
-            `Re-run:  ${sudoRetryHint()}\n` +
-            `(keeping your PATH lets sudo find pboss wherever it is installed —\n` +
-            ` plain \`sudo pboss\` cannot see per-user dirs like ~/.bun/bin)`
-        );
-      }
+      // Sudo is not just unnecessary here — it is WRONG: root has no user
+      // systemd session, so `systemctl --user` could never reach the
+      // invoking user's manager. Tell the legacy habit to re-run plain.
+      assertNotUnderSudo();
 
-      const servicePath = "/etc/systemd/system/pboss.service";
+      const target = targetUserContext();
+      const servicePath = join(userUnitDir(target.home), "pboss.service");
 
       const unitStart = content.indexOf("[Unit]");
       const unitContent = content.substring(unitStart);
 
       try {
+        await mkdir(userUnitDir(target.home), { recursive: true });
         await Bun.write(servicePath, unitContent);
       } catch (err) {
         throw new Error(
-          `Failed to write ${servicePath} (${err instanceof Error ? err.message : String(err)}). Re-run with root:  ${sudoRetryHint()}`
+          `Failed to write ${servicePath} (${err instanceof Error ? err.message : String(err)}).`
         );
       }
 
-      const target = targetUserContext();
       return bringUpSystemdUnit({
         servicePath,
         targetUser: target.user,
         targetHome: target.home,
         verifyTimeoutMs: opts.verifyTimeoutMs,
+        cliSocket: opts.cliSocket,
+        userMode: true,
       });
     } else if (os === "darwin") {
       // LaunchAgents are per-user and need no root.
+      assertNotUnderSudo();
       const target = targetUserContext();
       const plistPath = join(target.home, "Library", "LaunchAgents", "com.pboss.daemon.plist");
       // Extract plist content
       const plistStart = content.indexOf("<?xml");
       const plistContent = content.substring(plistStart);
+      await mkdir(join(target.home, "Library", "LaunchAgents"), { recursive: true });
       await Bun.write(plistPath, plistContent);
 
       // launchd opens StandardOut/StandardErrorPath BEFORE starting the
       // program: if the target user's ~/.pboss/logs does not exist yet, the
       // agent refuses to start with a cryptic "Path had bad permissions"
-      // error. The CLI's own ensureDirs() ran for the INVOKING user's home —
-      // under sudo that is /root/.pboss, not the target user's, so create
-      // the directory explicitly for the user the agent will run as.
+      // error — create the directory explicitly for the user the agent
+      // will run as.
       await mkdir(join(target.home, ".pboss", "logs"), { recursive: true });
 
-      // launchctl is per-user: under sudo, run it AS the SUDO_USER so the
-      // agent is loaded into their session domain — root's launchctl would
-      // load it into the system domain and it would never start at login.
-      const asUser = this.launchctlAsUser();
       try {
-        await $`${asUser} launchctl unload ${plistPath}`; // reload if it was already loaded
+        await $`launchctl unload ${plistPath}`; // reload if it was already loaded
       } catch (err) {
         ignore(`launchctl unload ${plistPath} (first install)`, err);
       }
       try {
-        await $`${asUser} launchctl load -w ${plistPath}`;
+        await $`launchctl load -w ${plistPath}`;
         return `Plist installed and loaded: ${plistPath}`;
       } catch (err) {
         ignore(`launchctl load -w ${plistPath}`, err);
         return `Plist installed at ${plistPath}\nLoad it:  launchctl load -w ${plistPath}`;
       }
     } else if (os === "win32") {
-      if (!(await this.isAdmin())) {
-        throw new Error(
-          `Administrator rights are required to register the startup task.\n` +
-            `Open a terminal as Administrator (Windows Terminal → right-click →\n` +
-            ` Run as Administrator) and re-run:  pboss startup install`
-        );
-      }
-
-      // Registration goes through PowerShell's Register-ScheduledTask
-      // (built into Windows 8+), not `schtasks /create`: the daemon command
-      // line regularly contains quoted paths ("C:\Program Files\..."), and
-      // schtasks' /tr quoting rules mangle nested quotes into a broken
-      // command line. PowerShell takes -Execute/-Argument as separate
-      // values, so no shell layer ever re-parses them.
+      // The task is registered for the CURRENT user (their logon, their
+      // %USERPROFILE%\.pboss) — no Administrator gate upfront: per-user
+      // registration is allowed unelevated. If THIS host's policy refuses
+      // it, the failure path below names the elevated re-run honestly.
       const daemonCmd = daemonSpawnCommand();
       const taskName = "PBOSS_Daemon";
       const script = buildWindowsTaskRegistrationScript(daemonCmd, taskName);
@@ -426,92 +488,60 @@ ${plist}`;
           return (
             `Failed to create the scheduled task (powershell exit code ${code}).` +
             (detail ? `\n${detail}` : "") +
-            `\nTry running as Administrator.`
+            `\nIf this host requires elevation for per-user tasks, re-run from an\nAdministrator shell:  pboss startup install`
           );
         }
 
         return `Windows Scheduled Task "${taskName}" installed successfully.\nRun on demand: schtasks /run /tn "${taskName}"`;
       } catch (err: any) {
-        return `Failed to create scheduled task: ${err.message}. Try running as Administrator.`;
+        return `Failed to create scheduled task: ${err.message}. If this host requires elevation for per-user tasks, re-run from an Administrator shell.`;
       }
     }
 
     return "Unsupported platform for auto-install. Manual setup required.";
   }
 
-  /** Detect whether the Windows shell is elevated (`net session` needs admin). */
-  private async isAdmin(): Promise<boolean> {
-    try {
-      const proc = Bun.spawn(["net", "session"], {
-        stdout: "ignore",
-        stderr: "ignore",
-        stdin: "ignore",
-      });
-      return (await proc.exited) === 0;
-    } catch (err) {
-      // Can't tell — let the task registration surface the real error
-      // instead. Recorded so PBOSS_DEBUG=1 shows why the probe was skipped.
-      ignore("net session (admin probe)", err);
-      return true;
-    }
-  }
-
-  /**
-   * Prefix that makes launchctl act on the SUDO_USER's session domain when
-   * `pboss startup install|uninstall` was run through sudo on macOS.
-   * LaunchAgents are per-user, so running launchctl as root would load the
-   * agent into the wrong (system) domain and it would never start at login.
-   */
-  private launchctlAsUser(): string[] {
-    if (isRoot() && process.env.SUDO_USER && process.env.SUDO_USER !== "root") {
-      return ["sudo", "-u", process.env.SUDO_USER];
-    }
-    return [];
-  }
-
   async uninstall(): Promise<string> {
     const os = process.platform;
 
     if (os === "linux") {
-      if (!isRoot()) {
-        throw new Error(
-          `Root is required to remove the system service.\n` +
-            `Re-run:  sudo env PATH="$PATH" pboss startup uninstall`
-        );
-      }
+      // The unit is per-user — removing it is the user's own operation.
+      assertNotUnderSudo();
+      const target = targetUserContext();
+      const servicePath = join(userUnitDir(target.home), "pboss.service");
+
       // Stop with --no-block + our own bounded wait: a plain `systemctl stop`
       // waits on the stop job, and a unit stuck in a restart loop (or with a
       // D-state process) can hold that job — and the whole uninstall — for
       // minutes. Also best-effort, to tolerate hosts without systemd.
-      const stop = await runSystemctl(["--no-block", "stop", "pboss"]);
+      const stop = await runSystemctl(["--no-block", "stop", "pboss"], { user: true });
       if (stop.code === 0) {
         const deadline = Date.now() + 15_000;
         while (Date.now() < deadline) {
-          const state = (await runSystemctl(["is-active", "pboss"])).out;
+          const state = (await runSystemctl(["is-active", "pboss"], { user: true })).out;
           if (state === "inactive" || state === "failed" || state === "") break;
           await Bun.sleep(300);
         }
       } else {
-        ignore("systemctl --no-block stop pboss (uninstall)", stop.err);
+        ignore("systemctl --user --no-block stop pboss (uninstall)", stop.err);
       }
-      const disable = await runSystemctl(["disable", "pboss"]);
-      if (disable.code !== 0) ignore("systemctl disable pboss (uninstall)", disable.err);
+      const disable = await runSystemctl(["disable", "pboss"], { user: true });
+      if (disable.code !== 0) ignore("systemctl --user disable pboss (uninstall)", disable.err);
       try {
-        rmSync("/etc/systemd/system/pboss.service", { force: true });
+        rmSync(servicePath, { force: true });
       } catch (err) {
-        ignore("rm service file (uninstall)", err);
+        ignore(`rm ${servicePath} (uninstall)`, err);
       }
-      const reload = await runSystemctl(["daemon-reload"]);
-      if (reload.code !== 0) ignore("systemctl daemon-reload (uninstall)", reload.err);
+      const reload = await runSystemctl(["daemon-reload"], { user: true });
+      if (reload.code !== 0) ignore("systemctl --user daemon-reload (uninstall)", reload.err);
 
       return "PBOSS service removed";
     } else if (os === "darwin") {
+      assertNotUnderSudo();
       const target = targetUserContext();
       const plistPath = join(target.home, "Library", "LaunchAgents", "com.pboss.daemon.plist");
-      // Same domain rule as install(): launchctl as the SUDO_USER under sudo.
-      const asUser = this.launchctlAsUser();
 
-      try { await $`${asUser} launchctl unload ${plistPath}`; } catch (err) { ignore(`launchctl unload ${plistPath} (uninstall)`, err); }
+      try { await $`launchctl unload ${plistPath}`; } catch (err) { ignore(`launchctl unload ${plistPath} (uninstall)`, err); }
       try { await $`rm -f ${plistPath}`; } catch (err) { ignore(`rm ${plistPath} (uninstall)`, err); }
       return "PBOSS launch agent removed";
     } else if (os === "win32") {
@@ -554,41 +584,50 @@ ${plist}`;
    * reboot would restore from the auto-saved dump. Never mutates anything.
    *
    * `opts.unitDir` redirects where the systemd unit is looked up
-   * (default /etc/systemd/system) so tests can point it at a fixture
-   * directory without root.
+   * (default ~/.config/systemd/user) so tests can point it at a fixture
+   * directory.
    */
   async status(opts: { unitDir?: string } = {}): Promise<string> {
     const os = process.platform;
     const target = targetUserContext();
-    const unitDir = opts.unitDir ?? "/etc/systemd/system";
+    const unitDir = opts.unitDir ?? userUnitDir(target.home);
     // The pboss home the daemon actually uses: an explicit PBOSS_HOME env
     // wins (the daemon started under it honors the same pointer), else the
-    // TARGET user's ~/.pboss (sudo/SUDO_USER-aware, same rule as the unit).
+    // target user's ~/.pboss (same rule as the unit).
     const pbossHome = process.env.PBOSS_HOME || join(target.home, ".pboss");
     const lines: string[] = [];
     let installed = false;
 
     if (os === "linux") {
       const unitPath = join(unitDir, "pboss.service");
-      const wantsPath = join(unitDir, "multi-user.target.wants", "pboss.service");
+      const wantsPath = join(unitDir, "default.target.wants", "pboss.service");
       installed = existsSync(unitPath);
 
-      lines.push("Boot startup service (systemd)");
+      lines.push("Boot startup service (systemd, per-user)");
       lines.push(`  Service:    ${unitPath}`);
       lines.push(`  Installed:  ${installed ? "yes" : "no"}`);
       if (installed) {
         lines.push(
           existsSync(wantsPath)
-            ? "  Enabled:    yes — starts at boot (multi-user.target)"
-            : "  Enabled:    no — run:  sudo systemctl enable pboss"
+            ? "  Enabled:    yes — starts with your session (default.target)"
+            : "  Enabled:    no — run:  systemctl --user enable pboss"
         );
         // 127 = no systemctl on this host (container): nothing to report.
-        const active = await runSystemctl(["is-active", "pboss"]);
+        const active = await runSystemctl(["is-active", "pboss"], { user: true });
         if (active.code !== 127) {
           lines.push(`  Active:     ${active.out || "unknown"}`);
         }
+        // Linger decides boot-vs-first-login: report it read-only.
+        const linger = await lingerEnabled(target.user);
+        lines.push(
+          linger === null
+            ? "  Linger:     unknown (loginctl unavailable)"
+            : linger
+              ? "  Linger:     on — the daemon starts at BOOT, before login"
+              : "  Linger:     off — the daemon starts at first login (enable with:  loginctl enable-linger)"
+        );
       } else {
-        lines.push(`  → install it with:  ${sudoRetryHint()}`);
+        lines.push(`  → install it with:  ${startupInstallHint()}`);
       }
     } else if (os === "darwin") {
       const plistPath = join(target.home, "Library", "LaunchAgents", "com.pboss.daemon.plist");
@@ -597,7 +636,7 @@ ${plist}`;
       lines.push(`  Service:    ${plistPath}`);
       lines.push(`  Installed:  ${installed ? "yes" : "no"}`);
       if (!installed) {
-        lines.push("  → install it with:  pboss startup install");
+        lines.push(`  → install it with:  ${startupInstallHint()}`);
       }
     } else if (os === "win32") {
       let installed = false;
@@ -615,7 +654,7 @@ ${plist}`;
       lines.push(`  Service:    PBOSS_Daemon scheduled task`);
       lines.push(`  Installed:  ${installed ? "yes" : "no"}`);
       if (!installed) {
-        lines.push("  → install it with:  pboss startup install   (elevated shell)");
+        lines.push(`  → install it with:  ${startupInstallHint()}`);
       }
     } else {
       return `Unsupported platform for startup status: ${os}`;
@@ -675,13 +714,20 @@ export interface SystemctlResult {
  * ("is-active" exits 3 for "activating"), which is information here, not
  * failure. systemctl is resolved through PATH; a missing binary comes back
  * as code 127 so callers can fall back to manual instructions.
+ *
+ * `opts.user` prepends `--user`, addressing the invoking user's own
+ * manager — the no-root path user units live on.
  */
-export async function runSystemctl(args: string[]): Promise<SystemctlResult> {
+export async function runSystemctl(
+  args: string[],
+  opts: { user?: boolean } = {}
+): Promise<SystemctlResult> {
+  const fullArgs = [...(opts.user ? ["--user"] : []), ...args];
   try {
     // env: process.env (the LIVE object) — Bun resolves the executable
     // through the PATH of the env passed at spawn time, so tests can
     // substitute a systemctl shim by mutating PATH in-process.
-    const proc = Bun.spawn(["systemctl", ...args], {
+    const proc = Bun.spawn(["systemctl", ...fullArgs], {
       stdout: "pipe",
       stderr: "pipe",
       env: process.env,
@@ -693,7 +739,7 @@ export async function runSystemctl(args: string[]): Promise<SystemctlResult> {
     ]);
     return { code: code ?? 127, out: out.trim(), err: err.trim() };
   } catch (err) {
-    ignore(`systemctl ${args.join(" ")}`, err);
+    ignore(`systemctl ${fullArgs.join(" ")}`, err);
     return { code: 127, out: "", err: err instanceof Error ? err.message : String(err) };
   }
 }
@@ -718,24 +764,29 @@ export async function journalctlText(args: string[]): Promise<string> {
 export interface BringUpOptions {
   /** Where the unit file was written (used in the result messages). */
   servicePath: string;
-  /** The user the unit runs as (User=) — used in messages. */
+  /** The user the unit runs as — used in messages and linger. */
   targetUser: string;
-  /** Home of User= — the unit's PBOSS_HOME lives under it. */
+  /** Home of the unit's user — the unit's PBOSS_HOME lives under it. */
   targetHome: string;
   /** Overall deadline for the unit to become healthy. Default 30s. */
   verifyTimeoutMs?: number;
   /**
-   * Socket of the INVOKING CLI's own daemon (root's /root/.pboss under
-   * sudo). Default: the CLI's own PBOSS_HOME socket. Overridable so
-   * tests can point it at a path nothing will ever answer.
+   * Socket of the INVOKING CLI's own daemon. Default: the CLI's own
+   * PBOSS_HOME socket. Overridable so tests can point it at a path nothing
+   * will ever answer.
    */
   cliSocket?: string;
+  /**
+   * User-unit mode: drive `systemctl --user` (the no-root path). The
+   * manual fallback commands then lose their sudo prefix.
+   */
+  userMode?: boolean;
 }
 
 /**
  * Bring the freshly written unit up and VERIFY it — the half of
- * `pboss startup install` that runs after the unit file lands in
- * /etc/systemd/system.
+ * `pboss startup install` that runs after the unit file lands on disk
+ * (~/.config/systemd/user/pboss.service for user units).
  *
  * THE HANG THIS CODE EXISTS TO PREVENT: `systemctl start pboss` BLOCKS
  * until the start job completes, and this unit can keep the job pending
@@ -755,13 +806,14 @@ export interface BringUpOptions {
  */
 export async function bringUpSystemdUnit(opts: BringUpOptions): Promise<string> {
   const unitSocket = join(opts.targetHome, ".pboss", "daemon.sock");
+  const user = opts.userMode === true;
+  const ctl = { user };
 
   // A detached daemon from an earlier CLI command would hold the socket
   // the unit's ExecStart needs — the loser used to exit 1 and the unit
   // restart-looped. Ask any stray to stop BEFORE starting the unit, on
-  // BOTH sockets involved: the CLI's own PBOSS_HOME (root's /root/.pboss
-  // under sudo) and the target user's home (the unit runs as them). Never
-  // spawns: it only acts when a daemon already answers.
+  // BOTH sockets involved: the CLI's own PBOSS_HOME and the unit user's
+  // home. Never spawns: it only acts when a daemon already answers.
   await stopDaemonIfRunning(15_000, opts.cliSocket ?? DAEMON_SOCKET);
   if (unitSocket !== (opts.cliSocket ?? DAEMON_SOCKET)) {
     await stopDaemonIfRunning(15_000, unitSocket);
@@ -770,24 +822,24 @@ export async function bringUpSystemdUnit(opts: BringUpOptions): Promise<string> 
   const manual: string[] = [];
   // daemon-reload and enable submit no job — safe to wait on.
   for (const args of [["daemon-reload"], ["enable", "pboss"]] as const) {
-    const r = await runSystemctl([...args]);
+    const r = await runSystemctl([...args], ctl);
     if (r.code !== 0) {
-      ignore(`systemctl ${args.join(" ")} (bring-up)`, r.err);
-      manual.push(`systemctl ${args.join(" ")}`);
+      ignore(`systemctl ${user ? "--user " : ""}${args.join(" ")} (bring-up)`, r.err);
+      manual.push(`systemctl ${user ? "--user " : ""}${args.join(" ")}`);
     }
   }
   // The start job is the only hangable one — submit it, never await it.
-  const start = await runSystemctl(["--no-block", "start", "pboss"]);
+  const start = await runSystemctl(["--no-block", "start", "pboss"], ctl);
   if (start.code !== 0) {
-    ignore("systemctl --no-block start pboss (bring-up)", start.err);
-    manual.push("systemctl start pboss");
+    ignore(`systemctl ${user ? "--user " : ""}--no-block start pboss (bring-up)`, start.err);
+    manual.push(`systemctl ${user ? "--user " : ""}start pboss`);
   }
 
   if (manual.length > 0) {
     return (
       `Service file installed at ${opts.servicePath}, but systemd could not be\n` +
       `controlled from here. Finish enabling it with:\n  ` +
-      manual.map((c) => `sudo ${c}`).join("\n  ")
+      manual.join("\n  ")
     );
   }
 
@@ -800,7 +852,7 @@ export async function bringUpSystemdUnit(opts: BringUpOptions): Promise<string> 
   let state = "";
   let responsive = false;
   while (Date.now() < deadline) {
-    state = (await runSystemctl(["is-active", "pboss"])).out;
+    state = (await runSystemctl(["is-active", "pboss"], ctl)).out;
     responsive = (await probeDaemon(unitSocket)) !== null;
     if (state === "active" && responsive) break;
     // The unit gave up (start-rate limited / permanent failure) — polling
@@ -809,16 +861,30 @@ export async function bringUpSystemdUnit(opts: BringUpOptions): Promise<string> 
     await Bun.sleep(500);
   }
 
-  if (state === "active" && responsive) {
-    return `Service installed and started: ${opts.servicePath}`;
+  // Linger (user units): with it the daemon runs from BOOT; without, from
+  // the user's first login. Best-effort — the install itself already
+  // succeeded at this point, so a refused linger is a NOTE, never a fail.
+  let lingerNote = "";
+  if (user) {
+    const lingerOn = await enableLinger(opts.targetUser);
+    lingerNote = lingerOn
+      ? "\nLinger: on — the daemon starts at BOOT (before any login)."
+      : "\nLinger: off — the daemon starts at your FIRST LOGIN. Start it at boot with:\n  loginctl enable-linger " +
+        opts.targetUser;
   }
 
-  const journal = await journalctlText(["-u", "pboss", "-n", "25", "--no-pager"]);
+  if (state === "active" && responsive) {
+    return `Service installed and started: ${opts.servicePath}${lingerNote}`;
+  }
+
+  const journal = await journalctlText(
+    user ? ["--user", "-u", "pboss", "-n", "25", "--no-pager"] : ["-u", "pboss", "-n", "25", "--no-pager"]
+  );
   return (
     `Service installed but is not healthy (unit state: ${state || "unknown"},\n` +
     `daemon at ${unitSocket} ${responsive ? "is" : "is not"} answering).\n` +
     `Recent unit output:\n${journal || "  (journalctl unavailable)"}\n` +
-    `Inspect with:  systemctl status pboss  ·  journalctl -u pboss -n 50 --no-pager`
+    `Inspect with:  systemctl ${user ? "--user " : ""}status pboss  ·  journalctl ${user ? "--user " : ""}-u pboss -n 50 --no-pager`
   );
 }
 
@@ -890,7 +956,7 @@ export interface BootServicePresence {
  * anywhere — the first-start persistence hint runs this after `pboss start`.
  *
  * `opts.unitDir` redirects where the systemd unit is looked up
- * (default /etc/systemd/system) so tests can point it at a fixture
+ * (default ~/.config/systemd/user) so tests can point it at a fixture
  * directory. The real path stays the default for production callers, but
  * tests must never let the developer's own machine decide the outcome: a
  * host that followed the install docs genuinely has the unit.
@@ -900,17 +966,17 @@ export async function bootServiceInstalled(
 ): Promise<BootServicePresence> {
   const os = process.platform;
   if (os === "linux") {
-    const unitDir = opts.unitDir ?? "/etc/systemd/system";
+    const unitDir = opts.unitDir ?? userUnitDir(targetUserContext().home);
     return {
       installed: existsSync(join(unitDir, "pboss.service")),
-      howToInstall: sudoRetryHint(),
+      howToInstall: startupInstallHint(),
     };
   }
   if (os === "darwin") {
     const home = targetUserContext().home;
     return {
       installed: existsSync(join(home, "Library", "LaunchAgents", "com.pboss.daemon.plist")),
-      howToInstall: "pboss startup install",
+      howToInstall: startupInstallHint(),
     };
   }
   if (os === "win32") {
@@ -923,14 +989,14 @@ export async function bootServiceInstalled(
       const installed = (await proc.exited) === 0;
       return {
         installed,
-        howToInstall: "pboss startup install   (elevated shell)",
+        howToInstall: startupInstallHint(),
       };
     } catch (err) {
       ignore("schtasks /query (boot presence check)", err);
-      return { installed: false, howToInstall: "pboss startup install   (elevated shell)" };
+      return { installed: false, howToInstall: startupInstallHint() };
     }
   }
-  return { installed: false, howToInstall: "pboss startup install" };
+  return { installed: false, howToInstall: startupInstallHint() };
 }
 
 /**

@@ -14,7 +14,7 @@
  */
 import { describe, test, expect } from "bun:test";
 import { join } from "node:path";
-import { mkdtempSync, rmSync, existsSync } from "node:fs";
+import { mkdtempSync, rmSync, existsSync, mkdirSync, writeFileSync, readFileSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
 
 const CLI = join(import.meta.dir, "..", "src", "index.ts");
@@ -52,55 +52,146 @@ async function drain(p: {
   return { out, err, code };
 }
 
-const NON_ROOT =
-  typeof process.getuid === "function" && process.getuid() !== 0 && process.platform === "linux";
+/**
+ * systemctl shim for CLI subprocesses: logs every invocation, daemon-reload
+ * fails (exactly like a host without a user systemd session → the
+ * deterministic manual-fallback path; no daemon is ever started), the rest
+ * succeed with is-active "inactive". A leading `--user` is stripped before
+ * matching, so both system- and user-form invocations hit the same cases
+ * (the log still records the original, full argument list).
+ */
+function makeSystemctlShim(): { dir: string; log: string } {
+  const dir = mkdtempSync(join(tmpdir(), "pboss-cli-shim-"));
+  const log = join(dir, "systemctl.log");
+  const script = [
+    "#!/bin/sh",
+    `echo "$@" >> "${log}"`,
+    'case "$1" in --user) shift ;; esac',
+    'case "$*" in',
+    '  "daemon-reload") exit 1 ;;',
+    '  "is-active pboss") echo inactive; exit 3 ;;',
+    '  *) exit 0 ;;',
+    'esac',
+  ].join("\n");
+  writeFileSync(join(dir, "systemctl"), script);
+  chmodSync(join(dir, "systemctl"), 0o755);
+  return { dir, log };
+}
+
+/** Hermetic env for a CLI run: everything lands under a temp HOME. */
+function hermeticEnv(home: string, shimDir: string): Record<string, string> {
+  return {
+    HOME: home,
+    PBOSS_HOME: join(home, ".pboss"),
+    SUDO_USER: "", // never set: the legacy sudo flow must not engage
+    PATH: `${shimDir}:${process.env.PATH}`,
+  };
+}
 
 describe("pboss startup — option dispatch", () => {
-  test.skipIf(!NON_ROOT)(
+  test.skipIf(process.platform !== "linux")(
     "bare `pboss startup` prints the options and installs NOTHING",
     async () => {
-      const { out, err, code } = await runCli(["startup"]);
+      const home = mkdtempSync(join(tmpdir(), "pboss-cli-bare-"));
+      const { dir } = makeSystemctlShim();
+      try {
+        const { out, err, code } = await runCli(["startup"], hermeticEnv(home, dir));
 
-      // Guidance, not action.
-      expect(code).toBe(0);
-      expect(out).toContain("Usage: pboss startup <install | uninstall | status>");
-      expect(out).toContain("install");
-      expect(out).toContain("uninstall");
-      expect(out).toContain("does nothing");
+        // Guidance, not action.
+        expect(code).toBe(0);
+        expect(out).toContain("Usage: pboss startup <install | uninstall | status>");
+        expect(out).toContain("install");
+        expect(out).toContain("uninstall");
+        expect(out).toContain("does nothing");
 
-      // Proof it did not fall through to install(): non-root Linux would
-      // print the sudo error and exit 1.
-      expect(err).toBe("");
-      expect(out).not.toContain("Root is required");
+        // Proof it did not fall through to install(): the user unit was
+        // never written (install as a normal user now SUCCEEDS, so the
+        // missing file is the real proof — the old "Root is required"
+        // error no longer exists to lean on).
+        expect(err).toBe("");
+        expect(existsSync(join(home, ".config", "systemd", "user", "pboss.service"))).toBe(false);
+      } finally {
+        rmSync(home, { recursive: true, force: true });
+        rmSync(dir, { recursive: true, force: true });
+      }
     }
   );
 
-  test.skipIf(!NON_ROOT)(
-    "`pboss startup install` reaches the installer (non-root → exact sudo re-run hint)",
+  test.skipIf(process.platform !== "linux")(
+    "`pboss startup install` works as a normal user (no root, no sudo)",
     async () => {
-      const { err, code } = await runCli(["startup", "install"]);
-      expect(code).toBe(1);
-      expect(err).toContain("Root is required");
-      expect(err).toContain('sudo env PATH="$PATH" pboss startup install');
-    }
+      const home = mkdtempSync(join(tmpdir(), "pboss-cli-install-"));
+      const { dir, log } = makeSystemctlShim();
+      try {
+        const { out, err, code } = await runCli(["startup", "install"], hermeticEnv(home, dir));
+
+        // Completes successfully for a normal user — no privilege error.
+        expect(code).toBe(0);
+        expect(err).not.toContain("Root is required");
+        expect(err).toBe("");
+
+        // The per-user unit landed under the invoking user's HOME...
+        const unitPath = join(home, ".config", "systemd", "user", "pboss.service");
+        expect(existsSync(unitPath)).toBe(true);
+        expect(readFileSync(unitPath, "utf-8")).toContain("WantedBy=default.target");
+
+        // ...only the USER manager was addressed...
+        const calls = readFileSync(log, "utf-8")
+          .split("\n")
+          .filter((l) => l.trim() !== "");
+        expect(calls.length).toBeGreaterThan(0);
+        expect(calls.every((c) => c.startsWith("--user"))).toBe(true);
+
+        // ...and the printed instructions are sudo-free.
+        expect(out).toContain("systemctl --user daemon-reload");
+        expect(out).not.toContain("sudo");
+      } finally {
+        rmSync(home, { recursive: true, force: true });
+        rmSync(dir, { recursive: true, force: true });
+      }
+    },
+    30_000
   );
 
-  test.skipIf(!NON_ROOT)(
-    "`pboss startup uninstall` reaches the uninstaller with its own hint",
+  test.skipIf(process.platform !== "linux")(
+    "`pboss startup uninstall` removes the per-user unit without root",
     async () => {
-      const { err, code } = await runCli(["startup", "uninstall"]);
-      expect(code).toBe(1);
-      expect(err).toContain("Root is required to remove the system service");
-      expect(err).toContain('sudo env PATH="$PATH" pboss startup uninstall');
+      const home = mkdtempSync(join(tmpdir(), "pboss-cli-uninstall-"));
+      const { dir } = makeSystemctlShim();
+      const unitDir = join(home, ".config", "systemd", "user");
+      mkdirSync(unitDir, { recursive: true });
+      writeFileSync(join(unitDir, "pboss.service"), "[Unit]\n");
+      try {
+        const { out, err, code } = await runCli(["startup", "uninstall"], hermeticEnv(home, dir));
+        expect(code).toBe(0);
+        expect(err).not.toContain("Root is required");
+        expect(out).toContain("PBOSS service removed");
+        expect(existsSync(join(unitDir, "pboss.service"))).toBe(false);
+      } finally {
+        rmSync(home, { recursive: true, force: true });
+        rmSync(dir, { recursive: true, force: true });
+      }
     }
   );
 
-  test.skipIf(!NON_ROOT)(
+  test.skipIf(process.platform !== "linux")(
     "`pboss startup remove` remains an alias of uninstall",
     async () => {
-      const { err, code } = await runCli(["startup", "remove"]);
-      expect(code).toBe(1);
-      expect(err).toContain("Root is required to remove the system service");
+      const home = mkdtempSync(join(tmpdir(), "pboss-cli-remove-"));
+      const { dir } = makeSystemctlShim();
+      const unitDir = join(home, ".config", "systemd", "user");
+      mkdirSync(unitDir, { recursive: true });
+      writeFileSync(join(unitDir, "pboss.service"), "[Unit]\n");
+      try {
+        const { out, err, code } = await runCli(["startup", "remove"], hermeticEnv(home, dir));
+        expect(code).toBe(0);
+        expect(err).not.toContain("Root is required");
+        expect(out).toContain("PBOSS service removed");
+        expect(existsSync(join(unitDir, "pboss.service"))).toBe(false);
+      } finally {
+        rmSync(home, { recursive: true, force: true });
+        rmSync(dir, { recursive: true, force: true });
+      }
     }
   );
 

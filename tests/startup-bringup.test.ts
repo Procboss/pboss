@@ -50,7 +50,7 @@ interface ShimScenario {
 }
 
 /**
- * Install systemctl + journalctl shims on PATH and return:
+ * Install systemctl + journalctl + loginctl shims on PATH and return:
  *   dir   — the shim dir (also usable for the dead cliSocket path)
  *   log   — file every systemctl invocation is appended to, one line each
  */
@@ -64,6 +64,10 @@ function installShims(scenario: ShimScenario): { dir: string; log: string } {
   const systemctl = [
     "#!/bin/sh",
     `echo "$@" >> ${shq(log)}`,
+    // --user invocations (the only kind install() makes now) are matched
+    // by the same cases after stripping the flag; the log keeps the full
+    // original argument list.
+    'case "$1" in --user) shift ;; esac',
     `case "$*" in`,
     // A blocking start (no --no-block) is THE bug: the start job never
     // completes. If the code ever regresses to this form, the shim hangs
@@ -87,6 +91,11 @@ function installShims(scenario: ShimScenario): { dir: string; log: string } {
   writeFileSync(join(dir, "journalctl"), journalctl);
   chmodSync(join(dir, "journalctl"), 0o755);
 
+  // Linger always succeeds in the sim: bring-up should report "Linger: on".
+  const loginctl = ["#!/bin/sh", "exit 0"].join("\n");
+  writeFileSync(join(dir, "loginctl"), loginctl);
+  chmodSync(join(dir, "loginctl"), 0o755);
+
   process.env.PATH = `${dir}:${SAVED_PATH}`;
   return { dir, log };
 }
@@ -108,11 +117,14 @@ function makeTargetHome(): string {
 
 function optsFor(home: string, cliSocket: string, verifyTimeoutMs = 2_500) {
   return {
-    servicePath: "/etc/systemd/system/pboss.service",
+    // A USER unit: written under the target user's own config, brought up
+    // through their user manager — the no-root path install() drives.
+    servicePath: join(home, ".config", "systemd", "user", "pboss.service"),
     targetUser: "testy",
     targetHome: home,
     verifyTimeoutMs,
     cliSocket,
+    userMode: true,
   };
 }
 
@@ -144,17 +156,19 @@ describe("bringUpSystemdUnit — the install() hang", () => {
 
       expect(msg).toContain("is not healthy");
       expect(msg).toContain("activating");
-      // The diagnosis includes the journal tail and how to inspect further.
+      // The diagnosis includes the journal tail and how to inspect further
+      // — through the USER manager, since the unit is a user unit.
       expect(msg).toContain("Recent unit output:");
       expect(msg).toContain("systemd-sim journal");
-      expect(msg).toContain("journalctl -u pboss");
+      expect(msg).toContain("journalctl --user -u pboss");
 
       // THE regression guard: start must be submitted --no-block, never
       // awaited as a blocking job. The shim's bare "start pboss" sleeps —
       // the hang guard would have caught any invocation of it.
       const calls = readLog(log);
-      expect(calls).toContain("--no-block start pboss");
+      expect(calls).toContain("--user --no-block start pboss");
       expect(calls).not.toContain("start pboss");
+      expect(calls).not.toContain("--no-block start pboss");
     },
     30_000
   );
@@ -182,7 +196,12 @@ describe("bringUpSystemdUnit — the install() hang", () => {
         // not just that is-active said "active" (Type=simple says that at
         // fork time, before any socket exists).
         expect(await probeDaemon(unitSocket)).not.toBeNull();
-        expect(readLog(log)).toContain("--no-block start pboss");
+        expect(readLog(log)).toContain("--user --no-block start pboss");
+        // User mode: linger is best-effort-enabled so the daemon runs from
+        // BOOT, not just from the user's first login (loginctl is shimmed
+        // to succeed — deterministic).
+        expect(msg).toContain("Linger: on");
+        expect(msg).not.toContain("sudo");
       } finally {
         // Leave no daemon behind.
         await stopDaemonIfRunning(10_000, unitSocket);
@@ -250,9 +269,11 @@ describe("bringUpSystemdUnit — the install() hang", () => {
       );
 
       expect(msg).toContain("could not be");
-      expect(msg).toContain("sudo systemctl daemon-reload");
+      // The manual fallback drives the USER manager and needs no sudo.
+      expect(msg).toContain("systemctl --user daemon-reload");
+      expect(msg).not.toContain("sudo");
       // The fallback still names the unit start command.
-      expect(msg).toMatch(/sudo systemctl (start|daemon-reload|enable)/);
+      expect(msg).toMatch(/systemctl --user (start|daemon-reload|enable)/);
     },
     30_000
   );

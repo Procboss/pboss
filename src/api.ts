@@ -238,10 +238,11 @@ export async function waitForDaemon(timeoutMs: number): Promise<boolean> {
  * earlier CLI command) cannot hold the socket the unit needs. Never
  * spawns. Returns true if a daemon was found and asked to stop.
  *
- * The socket defaults to the CLI's own PBOSS_HOME, but under `sudo pboss
- * startup install` the unit's daemon runs as the SUDO_USER with THEIR
- * ~/.pboss — callers pass that path explicitly so a stray there is stopped
- * too (otherwise the unit's daemon would hit EADDRINUSE and exit 81).
+ * The socket defaults to the CLI's own PBOSS_HOME, but the unit's daemon
+ * runs with its own home (per-user installs can point the unit at any
+ * user's ~/.pboss) — callers pass that path explicitly so a stray there
+ * is stopped too (otherwise the unit's daemon would hit EADDRINUSE and
+ * exit 81).
  */
 export async function stopDaemonIfRunning(
   timeoutMs: number = 15_000,

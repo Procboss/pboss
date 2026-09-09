@@ -45,9 +45,9 @@ describe("postinstall: manualInstallHint", () => {
     expect(hint.length).toBeGreaterThan(0);
     expect(hint).toContain("pboss startup install");
 
-    if (process.platform === "linux") {
-      // Linux needs the PATH-preserving sudo form.
-      expect(hint).toContain("sudo env PATH=");
-    }
+    // The service is per-user on every platform: the hint is sudo-free
+    // everywhere (no "sudo", no "Administrator", no elevated shell).
+    expect(hint).not.toContain("sudo");
+    expect(hint).not.toContain("Administrator");
   });
 });

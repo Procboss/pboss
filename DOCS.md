@@ -144,48 +144,38 @@ ProcBoss replaces complex, heavyweight process managers with a clean, ultra-fast
 
 ### One-Line Universal Install
 
-Install and compile the native standalone `pboss` executable directly on your device. The installer installs system-wide (`/usr/local/bin`) and therefore requires root — pipe it through `sudo`:
+Install and compile the native standalone `pboss` executable directly on your device — **no root required**. The installer puts the binary in `~/.local/bin` (user-writable, on PATH by default on modern distros) and sets up the per-user boot service:
 
 **Linux / macOS:**
 ```bash
-curl -fsSL https://procboss.com/install.sh | sudo bash
+curl -fsSL https://procboss.com/install.sh | bash
 ```
 
-**Windows (PowerShell, run as Administrator):**
+(Running the installer as root still works and installs system-wide to `/usr/local/bin` — but sudo is never required.)
+
+**Windows (PowerShell):**
 ```powershell
 powershell -c "irm https://procboss.com/install.ps1 | iex"
 ```
 
-**Windows (Command Prompt, run as Administrator):**
+(No Administrator needed — installs per-user to `%LOCALAPPDATA%\pboss`; an elevated shell installs machine-wide instead.)
+
+**Windows (Command Prompt):**
 ```cmd
 curl -fsSL https://procboss.com/install.cmd | cmd
 ```
-
-The installers check for the required privileges themselves and tell you exactly how to re-run them if `sudo` / Administrator rights are missing.
 
 ---
 
 ### Bun Global Install
 
-If you already use Bun, install pboss **system-wide** — `pboss startup install` needs sudo on Linux, and sudo's PATH does not include per-user directories like `~/.bun/bin` (that's why plain `sudo pboss` says "command not found"):
-
 ```bash
-sudo BUN_INSTALL=/usr/local bun add -g pboss
+bun add -g pboss
 ```
 
-This expects a system-wide Bun. To install one, put the sudo on the **bash** side of the pipe — `sudo curl … | bash` still runs the installer as your normal user, because sudo would only apply to curl:
+No sudo needed anywhere: the boot service pboss installs is a **per-user systemd unit** (`~/.config/systemd/user`), driven with `systemctl --user`, so a user-local install (the default for `bun add -g`) is the recommended setup. Update later with `bun update -g pboss`.
 
-```bash
-curl -fsSL https://bun.sh/install | sudo BUN_INSTALL=/usr/local bash
-```
-
-Update later with `sudo BUN_INSTALL=/usr/local bun update -g pboss`.
-
-Both `BUN_INSTALL=/usr/local` flags are load-bearing: the global `pboss` shim is a symlink whose target starts with `#!/usr/bin/env bun`, so `sudo pboss` must find the shim **and** bun itself on root's PATH. The variable puts bun in `/usr/local/bin` (installer line) and the shim in `$BUN_INSTALL/bin` (add/update lines); without it, everything sits in `~/.bun/bin`, invisible to sudo.
-
-A user-local install (`bun add -g pboss` without sudo) works too — whenever a command needs root, keep your PATH visible to sudo: `sudo env PATH="$PATH" pboss startup install`.
-
-On Windows, elevated shells keep your user PATH, so a regular `bun add -g pboss` is fine — just open the shell as Administrator for `pboss startup install`.
+On Windows, a regular `bun add -g pboss` is fine too — the scheduled task is registered for your user and needs no elevation.
 
 ---
 
@@ -270,13 +260,13 @@ That is the whole setup. The process list is saved automatically to `~/.pboss/du
 
 `pboss startup status` shows the whole picture read-only: whether the boot service is installed and enabled, whether the daemon is up, and exactly what a reboot would restore from the dump.
 
-If the boot service could not be installed automatically (user-level install without root, or a host without systemd), one command enables it:
+If the boot service could not be installed automatically (a host without a user systemd session, e.g. some containers), one command enables it:
 
 ```
-sudo env PATH="$PATH" pboss startup install
+pboss startup install
 ```
 
-(The env form keeps your PATH visible to sudo; on macOS plain `pboss startup install` works, and on a compiled one-line install plain `sudo pboss startup install` is enough.)
+(No sudo — the service is per-user. On hosts where it matters, `loginctl enable-linger $USER` additionally starts the daemon at BOOT instead of at your first login.)
 
 ---
 
@@ -1216,26 +1206,20 @@ pboss startup
 #   generate [os]  Print the service config without installing
 ```
 
-The boot service is normally installed **automatically** — the one-line installer does it as its final step, and global npm installs attempt it (printing the exact manual command when privileges are missing). These commands are for the cases the automation could not cover: a user-level install without root, a host without systemd at install time, or re-enabling after an uninstall.
+The boot service is normally installed **automatically** — the one-line installer does it as its final step, and global npm installs attempt it (printing the exact manual command on hosts without a user systemd session). These commands are for the cases the automation could not cover: a host without systemd at install time, or re-enabling after an uninstall.
 
 #### pboss startup install
 
 Install the boot startup service:
 
-- **Linux:** writes and enables a `systemd` service (`/etc/systemd/system/pboss.service`). Requires root — when run without sudo, pboss exits with the exact command to re-run, `sudo env PATH="$PATH" pboss startup install`. The env form keeps your PATH visible to sudo, so it finds pboss even in per-user locations like `~/.bun/bin` (plain `sudo pboss` cannot see those directories). The start is submitted with `--no-block` and health is verified with a hard deadline — the unit state plus a ping on the socket the unit's daemon actually binds (`SUDO_USER`'s `~/.pboss/daemon.sock` under sudo, not root's) — with the recent journal output printed when the unit does not come up. `pboss startup install` therefore always returns; a failing daemon produces a diagnosis, never a hang (the unit also rate-limits its own restarts, so a failing daemon cannot loop forever).
-- **macOS:** writes and loads a `launchd` LaunchAgent (`~/Library/LaunchAgents/com.pboss.daemon.plist`). No root needed — and if you do use sudo, pboss targets the `SUDO_USER`'s home, creates their `~/.pboss/logs` (launchd opens the log paths before starting the program), and loads the agent as that user. The plist pins `PATH`, `HOME`, and `PBOSS_HOME` so the daemon resolves the same `~/.pboss` as your interactive commands.
-- **Windows:** registers a Scheduled Task (`PBOSS_Daemon`) that starts the daemon at **this user's logon** with highest privileges. Requires an elevated shell (Run as Administrator) — pboss checks and tells you when the shell is not elevated. Registration goes through PowerShell's `Register-ScheduledTask`, which passes the executable and its arguments as separate values (no `schtasks /tr` nested-quoting to break on paths with spaces).
+- **Linux:** writes and enables a **per-user systemd unit** (`~/.config/systemd/user/pboss.service`) and drives it with `systemctl --user` — no root, no sudo. After the unit comes up, pboss best-effort runs `loginctl enable-linger <user>` so the daemon starts at BOOT rather than at first login; where linger is refused (older systemd / polkit), the install still succeeds and says the daemon will start at first login instead. The start is submitted with `--no-block` and health is verified with a hard deadline — the unit state plus a ping on the socket the unit's daemon actually binds — with the recent journal output printed when the unit does not come up. `pboss startup install` therefore always returns; a failing daemon produces a diagnosis, never a hang (the unit also rate-limits its own restarts, so a failing daemon cannot loop forever). Running it under sudo is rejected with a clear "re-run as yourself" message — root has no user systemd session.
+- **macOS:** writes and loads a `launchd` LaunchAgent (`~/Library/LaunchAgents/com.pboss.daemon.plist`). No root needed or wanted. The plist pins `PATH`, `HOME`, and `PBOSS_HOME` so the daemon resolves the same `~/.pboss` as your interactive commands.
+- **Windows:** registers a Scheduled Task (`PBOSS_Daemon`) that starts the daemon at **this user's logon**. No elevation required for per-user registration — only hosts whose policy refuses it ask for an elevated re-run. Registration goes through PowerShell's `Register-ScheduledTask`, which passes the executable and its arguments as separate values (no `schtasks /tr` nested-quoting to break on paths with spaces).
 
-When installed with sudo on Linux/macOS, the generated service runs as the invoking user (resolved from `SUDO_USER`), not as root — the boot daemon then uses the same `~/.pboss` data as your daily `pboss` commands instead of silently splitting off into `/root/.pboss`.
+The generated service runs as the invoking user and uses the same `~/.pboss` data as your daily `pboss` commands — never root's `/root/.pboss`.
 
 ```bash
-# Linux (script installs — keeps your PATH visible to sudo)
-sudo env PATH="$PATH" pboss startup install
-
-# Linux (compiled one-line install — pboss is already system-wide)
-sudo pboss startup install
-
-# macOS / Windows (elevated shell)
+# Linux, macOS, Windows alike — your own shell, no sudo:
 pboss startup install
 ```
 
@@ -1276,7 +1260,7 @@ pboss startup generate win32   # generate for another OS
 
 #### pboss startup uninstall (alias: pboss startup remove)
 
-Remove the installed startup service (root on Linux — `sudo env PATH="$PATH" pboss startup uninstall`):
+Remove the installed startup service (per-user on every platform — no root):
 
 ```bash
 pboss startup uninstall
@@ -1311,7 +1295,7 @@ Running processes are kept as-is (no duplicates); saved-stopped processes are re
 
 ```
 # once, at install time (the one-line installer does all of this):
-curl -fsSL https://procboss.com/install.sh | sudo bash
+curl -fsSL https://procboss.com/install.sh | bash
 
 # then just use pboss — every change is already persisted:
 pboss start ecosystem.config.json
@@ -1404,7 +1388,7 @@ ProcBoss Cloud (procboss.com) is the optional hosted layer on top of pboss. Link
 Servers are headless, so the login can't be "open a browser here." Instead it's an RFC-8628-style device code, approved from **any** device:
 
 ```bash
-sudo pboss cloud connect
+pboss cloud connect
 
 # ⚡ ProcBoss Cloud — connect this server
 #
@@ -1449,7 +1433,7 @@ Revoking a server in the dashboard never logs you out of your CLI, and logging o
 
 | Installed via | Upgrade runs |
 |---|---|
-| universal installer (curl \| sudo bash / install.ps1) | the same installer, again — it's idempotent |
+| universal installer (curl \| bash / install.ps1) | the same installer, again — it's idempotent |
 | `npm i -g pboss` | `npm install -g pboss@latest` |
 | `bun add -g pboss` | `bun add -g pboss@latest` |
 | Homebrew | `brew upgrade pboss` |
@@ -2707,7 +2691,7 @@ CMD ["pboss", "start", "--no-daemon", "./server.ts"]
 ```
 pboss start ecosystem.config.json
 pboss save
-sudo env PATH="$PATH" pboss startup install
+pboss startup install
 pboss dashboard
 pboss list
 ```

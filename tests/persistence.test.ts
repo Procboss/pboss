@@ -253,10 +253,11 @@ describe("Persistence onboarding hint (PM2 contrast: pboss states its default)",
     const { persistenceHintLine } = await import("../src/startup-manager");
     const line = persistenceHintLine({
       installed: false,
-      howToInstall: 'sudo env PATH="$PATH" pboss startup install',
+      howToInstall: "pboss startup install",
     });
     expect(line).toContain("Reboot persistence is off");
-    expect(line).toContain('sudo env PATH="$PATH" pboss startup install');
+    expect(line).toContain("pboss startup install");
+    expect(line).not.toContain("sudo");
     expect(line).toContain("pboss startup status");
   });
 

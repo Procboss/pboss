@@ -8,17 +8,19 @@
  * npm/bun package `postinstall` lifecycle hook.
  *
  * Goal: boot persistence BY DEFAULT. A GLOBAL install of pboss should end
- * with the boot service (systemd unit / launchd agent / Windows scheduled
- * task) installed, so the daemon starts at boot and resurrects the saved
- * process list. This hook attempts that automatically.
+ * with the boot service (per-user systemd unit / launchd agent / Windows
+ * scheduled task) installed, so the daemon starts at boot and resurrects
+ * the saved process list. This hook attempts that automatically — WITHOUT
+ * root: the service is per-user, so `npm i -g pboss` from a normal user
+ * account is enough.
  *
  * Hard rules — the hook must NEVER break a package install:
  *   1. Only GLOBAL installs act. Local/dev installs (the repo itself, CI
  *      checkout, `npm i pboss` inside an app) stay completely silent —
  *      nobody wants a systemd unit from a dev dependency.
- *   2. Best-effort only. Missing privileges (non-root Linux, non-elevated
- *      Windows) print ONE hint line with the exact command to run and exit
- *      0. The user installed a CLI, not a nag screen.
+ *   2. Best-effort only. Hosts without a user systemd session (containers,
+ *      minimal VMs) print ONE hint line with the exact command to run and
+ *      exit 0. The user installed a CLI, not a nag screen.
  *   3. Always exits 0. Any failure is reported as a hint, never as an npm
  *      error.
  *
@@ -38,16 +40,19 @@ export function isGlobalInstall(env: NodeJS.ProcessEnv = process.env): boolean {
   return env.npm_config_global === "true" || env.npm_config_global === "1";
 }
 
-/** The one-line manual command to print when auto-install was not possible. */
+/**
+ * The one-line manual command to print when auto-install was not possible.
+ * No sudo anywhere: the boot service is per-user (user systemd unit /
+ * LaunchAgent / per-user scheduled task), so the user's own shell is
+ * always enough.
+ */
 export function manualInstallHint(): string {
-  const sudoForm = 'sudo env PATH="$PATH" pboss startup install';
   switch (process.platform) {
     case "linux":
-      return `Boot persistence is not set up. To enable it:  ${sudoForm}`;
     case "darwin":
       return "Boot persistence is not set up. To enable it:  pboss startup install";
     case "win32":
-      return "Boot persistence is not set up. To enable it (elevated shell):  pboss startup install";
+      return "Boot persistence is not set up. To enable it:  pboss startup install";
     default:
       return "Boot persistence is not available on this platform.";
   }

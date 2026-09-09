@@ -1,11 +1,11 @@
 # ProcBoss (pboss) Universal Installer for Windows
 # https://procboss.com
-# Usage (from an elevated PowerShell): powershell -c "irm https://procboss.com/install.ps1 | iex"
+# Usage: powershell -c "irm https://procboss.com/install.ps1 | iex"
 #
-# The installer places the compiled pboss.exe in %ProgramFiles%\pboss and adds
-# it to the system PATH, so it must run as Administrator. It checks for the
-# required privileges itself and tells you exactly how to re-run it if
-# elevation is missing.
+# No Administrator required: by default the compiled pboss.exe goes to
+# %LOCALAPPDATA%\pboss and is added to the USER PATH. Running the installer
+# from an elevated shell still works and installs machine-wide to
+# %ProgramFiles%\pboss with the system PATH (legacy behavior).
 
 $ErrorActionPreference = "Stop"
 
@@ -14,23 +14,25 @@ Write-Host "  ⚡ ProcBoss (pboss) Windows Installer" -ForegroundColor Cyan
 Write-Host "  https://procboss.com" -ForegroundColor DarkGray
 Write-Host ""
 
-# 1. Require Administrator privileges — the binary is installed machine-wide
+# 1. Install target — elevation only for the machine-wide legacy path.
 $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
 $principal = New-Object System.Security.Principal.WindowsPrincipal($identity)
-if (-not $principal.IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)) {
-    Write-Host "✗ Administrator privileges are required to install pboss." -ForegroundColor Red
-    Write-Host ""
-    Write-Host "The installer compiles the standalone executable, installs it to" -ForegroundColor Yellow
-    Write-Host "$env:ProgramFiles\pboss, and adds it to the system PATH — so it" -ForegroundColor Yellow
-    Write-Host "must run elevated. To re-run it:" -ForegroundColor Yellow
-    Write-Host ""
-    Write-Host "  1. Right-click PowerShell (or Windows Terminal) and choose 'Run as Administrator'" -ForegroundColor Cyan
-    Write-Host "  2. Run:" -ForegroundColor Cyan
-    Write-Host "     powershell -c `"irm https://procboss.com/install.ps1 | iex`"" -ForegroundColor Cyan
-    Write-Host ""
-    exit 1
+$isAdmin = $principal.IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)
+
+if ($isAdmin) {
+    $installDir = Join-Path $env:ProgramFiles "pboss"
+    $pathTarget = [System.EnvironmentVariableTarget]::Machine
+    Write-Host "✓ Running elevated — installing machine-wide to $installDir" -ForegroundColor Green
+    Write-Host "  (Administrator is NOT required: a normal shell installs per-user)" -ForegroundColor Yellow
+} else {
+    $installDir = Join-Path $env:LOCALAPPDATA "pboss"
+    $pathTarget = [System.EnvironmentVariableTarget]::User
+    Write-Host "✓ Installing per-user to $installDir — no Administrator required" -ForegroundColor Green
 }
-Write-Host "✓ Running with Administrator privileges" -ForegroundColor Green
+
+if (-not (Test-Path $installDir)) {
+    New-Item -ItemType Directory -Path $installDir -Force | Out-Null
+}
 
 # 2. Bun build toolchain.
 #    Bun is only needed to COMPILE pboss — the final executable embeds the Bun
@@ -75,12 +77,7 @@ if (-not $bunCmd) {
 $bunVersion = & bun --version
 Write-Host "✓ Build toolchain ready: Bun v$bunVersion" -ForegroundColor Green
 
-# 3. Target installation directory (machine-wide, requires elevation)
-$installDir = Join-Path $env:ProgramFiles "pboss"
-
-if (-not (Test-Path $installDir)) {
-    New-Item -ItemType Directory -Path $installDir -Force | Out-Null
-}
+# 3. Target installation directory — created in step 1 (per-user default).
 
 # 4. Temporary workspace: download source and compile the binary
 $tempDir = Join-Path ([System.IO.Path]::GetTempPath()) ("pboss-install-" + [System.Guid]::NewGuid().ToString("N"))
@@ -122,15 +119,16 @@ finally {
     Remove-Item -Path $tempDir -Recurse -Force -ErrorAction SilentlyContinue
 }
 
-# 5. Add pboss to the system PATH (machine-wide) if needed
-$machinePath = [System.Environment]::GetEnvironmentVariable("Path", [System.EnvironmentVariableTarget]::Machine)
-$pathEntries = @($machinePath -split ';' | Where-Object { $_ -ne '' })
+# 5. Add pboss to the PATH if needed — USER scope for per-user installs
+#    (no elevation), Machine scope only for the elevated legacy path.
+$scopePath = [System.Environment]::GetEnvironmentVariable("Path", $pathTarget)
+$pathEntries = @($scopePath -split ';' | Where-Object { $_ -ne '' })
 
 if ($pathEntries -notcontains $installDir) {
-    Write-Host "Adding $installDir to the system PATH..." -ForegroundColor Yellow
-    $newMachinePath = ($pathEntries + $installDir) -join ';'
-    [System.Environment]::SetEnvironmentVariable("Path", $newMachinePath, [System.EnvironmentVariableTarget]::Machine)
-    Write-Host "✓ Added $installDir to the system PATH" -ForegroundColor Green
+    Write-Host "Adding $installDir to the $pathTarget PATH..." -ForegroundColor Yellow
+    $newPath = ($pathEntries + $installDir) -join ';'
+    [System.Environment]::SetEnvironmentVariable("Path", $newPath, $pathTarget)
+    Write-Host "✓ Added $installDir to the $pathTarget PATH" -ForegroundColor Green
 }
 
 $env:PATH = "$installDir;$env:PATH"
@@ -150,11 +148,11 @@ try {
         Write-Host "✓ Boot persistence enabled — pboss starts at logon and resurrects saved processes." -ForegroundColor Green
     } else {
         Write-Host "⚠ Boot persistence could not be configured automatically (exit $LASTEXITCODE)." -ForegroundColor Yellow
-        Write-Host "  Run it yourself from an elevated shell:  pboss startup install" -ForegroundColor Cyan
+        Write-Host "  Run it yourself:  pboss startup install" -ForegroundColor Cyan
     }
 } catch {
     Write-Host "⚠ Boot persistence could not be configured automatically." -ForegroundColor Yellow
-    Write-Host "  Run it yourself from an elevated shell:  pboss startup install" -ForegroundColor Cyan
+    Write-Host "  Run it yourself:  pboss startup install" -ForegroundColor Cyan
 }
 
 Write-Host ""

@@ -7,7 +7,8 @@ reproduces EXACTLY what systemd does when it launches a Type=simple unit
 like the pboss.service our startup-manager generates:
 
   - minimal environment (only what the unit's Environment= lines provide,
-    plus USER/LOGNAME/HOME which systemd sets from User=)
+    plus USER/LOGNAME/HOME which the user manager sets for the owning
+    user — user units carry no User= directive)
   - working directory = /
   - stdin  = /dev/null
   - stdout/stderr = a UNIX SOCKET (journald-style), not a pipe, not a TTY
@@ -35,8 +36,9 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BIN = os.path.join(REPO, "dist", "pboss")
 UNIT_HOME = tempfile.mkdtemp(prefix="pboss-systemd-sim-")
 
-# Environment exactly like the generated unit provides (see startup-manager.ts):
-#   Environment=PATH=...   Environment=PBOSS_HOME=...   User=...
+# Environment exactly like the generated user unit provides (see
+# startup-manager.ts): Environment=PATH=...  Environment=PBOSS_HOME=...
+# (a user unit runs as its owning user — no User= directive)
 UNIT_ENV = {
     "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
     "PBOSS_HOME": UNIT_HOME,
