@@ -187,6 +187,17 @@ else
   fi
 fi
 
+# 7. Existing cloud link — the machine credential in ~/.pboss/cloud.json is
+#    the permanent cache: it outlives the binary across deletes, reinstalls
+#    and upgrades. The boot-persistence step above (re)started the daemon,
+#    which resumes the link; the next CLI command does the same on hosts
+#    without a service. Say so instead of making a reinstalled machine look
+#    unlinked.
+if [ -f "$INVOKE_HOME/.pboss/cloud.json" ]; then
+  echo -e "${GREEN}✓ Existing cloud link detected — the daemon will resume it automatically.${RESET}"
+  echo -e "  Check its state:  ${CYAN}${INSTALL_DIR}/pboss cloud status${RESET}"
+fi
+
 echo -e "${GREEN}${BOLD}"
 echo "✓ ProcBoss (pboss) successfully installed to ${INSTALL_DIR}/pboss!"
 echo -e "${RESET}"

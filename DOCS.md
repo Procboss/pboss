@@ -1397,6 +1397,8 @@ pboss logout                    # revokes the CLI token server-side (this device
 
 Revoking a server in the dashboard never logs you out of your CLI, and logging out never unlinks a server — each credential dies alone.
 
+The machine credential in `~/.pboss/cloud.json` is a **permanent cache**: it lives in the home directory, never inside the package, so reinstalls and upgrades leave it intact. Every daemon start resumes the link, installers report a detected link at install time, `pboss cloud status` picks one up even if it appeared after the daemon started, and `pboss upgrade` restarts the daemon and verifies the link came back before it exits.
+
 ### Updating pboss (pboss upgrade)
 
 `pboss upgrade` self-updates the CLI through the **same channel that installed it**, so a machine never accumulates two copies of pboss. The installers record their channel in `~/.pboss/channel.json` at install time, and the upgrade honors it:

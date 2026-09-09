@@ -30,6 +30,7 @@
 
 import { StartupManager } from "./startup-manager";
 import { writeChannelStamp, parseUserAgent } from "./upgrade";
+import { loadCloudConfig } from "./cloud";
 
 /**
  * True when the package manager is performing a GLOBAL install (npm sets
@@ -38,6 +39,21 @@ import { writeChannelStamp, parseUserAgent } from "./upgrade";
  */
 export function isGlobalInstall(env: NodeJS.ProcessEnv = process.env): boolean {
   return env.npm_config_global === "true" || env.npm_config_global === "1";
+}
+
+/**
+ * The reinstall contract, made visible at install time: the machine
+ * credential in ~/.pboss/cloud.json is the PERMANENT cache — it outlives
+ * the package directory across deletes, reinstalls and upgrades. When a
+ * fresh install finds one, say so: nobody should re-link a machine that
+ * is already linked. Read-only, never throws; null = nothing to report.
+ * Exported for tests.
+ */
+export function existingCloudLinkNote(): string | null {
+  const cfg = loadCloudConfig();
+  if (!cfg) return null;
+  const name = cfg.serverName ?? cfg.serverId;
+  return `Existing cloud link found (${name}) — the daemon will resume it automatically. State: pboss cloud status`;
 }
 
 /**
@@ -85,6 +101,13 @@ async function main(): Promise<void> {
     );
     console.log(manualInstallHint());
   }
+
+  // Reinstall/upgrade contract: if this machine was already linked, the
+  // credential survived the package swap — the daemon (re)started by the
+  // step above resumes it. Say so instead of leaving the user to discover
+  // the link state by asking for status.
+  const linkNote = existingCloudLinkNote();
+  if (linkNote) console.log(linkNote);
 }
 
 // Only act when run as the package postinstall (module is the entry), not

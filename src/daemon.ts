@@ -140,7 +140,9 @@ export default class Daemon {
     // Standalone cron jobs: load persisted jobs and start the scheduler
     await this.cronJobManager.start();
 
-    // Cloud link: if this machine was already enrolled, resume the agent
+    // Cloud link: if this machine was already enrolled, resume the agent.
+    // start() never throws (a refused transport degrades to a visible
+    // stopped state) — a stale credential file must never brick the boot.
     this.cloudAgent = new CloudAgent(this.pm);
     const cloudCfg = loadCloudConfig();
     if (cloudCfg) {
@@ -449,6 +451,13 @@ export default class Daemon {
           };
         }
         case "cloudStatus": {
+          // Reinstall/upgrade contract: the credential in ~/.pboss/cloud.json
+          // is the PERMANENT cache — it survives binary swaps and
+          // reinstalls. A daemon that came up before the file existed (fresh
+          // install racing a restore/sync), or whose start attempt degraded,
+          // must pick the link back up the moment someone asks instead of
+          // reporting "not linked" while the credential sits on disk.
+          this.cloudAgent!.resumeFromDisk();
           const status = this.cloudAgent!.status();
           return { type: "cloudStatus", data: status, success: true, id: msg.id };
         }

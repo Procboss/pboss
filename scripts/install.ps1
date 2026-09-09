@@ -162,6 +162,16 @@ try {
     Write-Host "  Run it yourself:  pboss startup install" -ForegroundColor Cyan
 }
 
+# Existing cloud link — the machine credential in ~\.pboss\cloud.json is the
+# permanent cache: it outlives the binary across deletes, reinstalls and
+# upgrades. The step above (re)started the daemon, which resumes the link.
+# Say so instead of making a reinstalled machine look unlinked.
+$cloudCred = Join-Path $env:USERPROFILE ".pboss\cloud.json"
+if (Test-Path $cloudCred) {
+    Write-Host "✓ Existing cloud link detected — the daemon will resume it automatically." -ForegroundColor Green
+    Write-Host "  Check its state:  pboss cloud status" -ForegroundColor Cyan
+}
+
 Write-Host ""
 Write-Host "✓ ProcBoss (pboss) successfully installed to $installDir\pboss.exe!" -ForegroundColor Green
 Write-Host "Open a NEW terminal (so the PATH refreshes) and run 'pboss --version' to verify." -ForegroundColor Cyan

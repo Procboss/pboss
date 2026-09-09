@@ -498,6 +498,39 @@ export interface CloudAgentStatus {
   lastError: string | null;
 }
 
+/**
+ * One-line verdict for the post-upgrade / post-install link check: the
+ * machine's cloud link exists (or doesn't) and what state it is in right
+ * now. Shared by `pboss upgrade`'s verification step and the docs' contract.
+ * Structural on purpose: the daemon RPC's status shape widens `streamState`
+ * to string on its way through JSON.
+ */
+export function describeCloudLink(status: {
+  configured: boolean;
+  serverId: string | null;
+  serverName: string | null;
+  streamState: string;
+  nextRetryInMs: number | null;
+  lastError: string | null;
+}): string {
+  if (!status.configured) {
+    return "no cloud link on this machine — link with `pboss cloud connect`";
+  }
+  const name = status.serverName ?? status.serverId ?? "?";
+  switch (status.streamState) {
+    case "connected":
+      return `cloud link resumed: ${name} — connected, command channel live`;
+    case "connecting":
+      return `cloud link resumed: ${name} — connecting…`;
+    case "backoff": {
+      const inSec = Math.max(1, Math.round((status.nextRetryInMs ?? 0) / 1000));
+      return `cloud link resumed: ${name} — reconnecting (next try in ~${inSec}s)`;
+    }
+    default:
+      return `cloud link present: ${name} — stopped${status.lastError ? ` (${status.lastError})` : ""}`;
+  }
+}
+
 export class CloudAgent {
   private pm: ProcessManager;
   private cfg: CloudConfig | null = null;
@@ -619,11 +652,30 @@ export class CloudAgent {
     return { serverId: cfg.serverId, serverName: cfg.serverName ?? cfg.serverId };
   }
 
-  /** Start (or restart) the connection loops from a saved config. */
+  /**
+   * Start (or restart) the connection loops from a saved config.
+   *
+   * Never throws: the daemon calls this on BOOT with whatever it found in
+   * ~/.pboss/cloud.json — a credential whose transport is refused (say, a
+   * plaintext http:// cloud URL) must degrade to "configured, link stopped,
+   * reason visible in `pboss cloud status`", not crash the daemon process
+   * that the whole machine depends on. The interactive paths (enroll) still
+   * fail loudly; the daemon's boot path fails honestly instead.
+   */
   start(cfg: CloudConfig): void {
-    assertSecureCloudUrl(cfg.cloudUrl);
     this.stop({ revoke: false, quiet: true });
     this.cfg = cfg;
+    try {
+      assertSecureCloudUrl(cfg.cloudUrl);
+    } catch (err) {
+      this.running = false;
+      this.streamState = "stopped";
+      this.lastError = err instanceof Error ? err.message : String(err);
+      console.error(
+        colorize(`☁  cloud: link NOT started — ${this.lastError}`, "yellow")
+      );
+      return;
+    }
     this.running = true;
     this.streamState = "connecting";
     // A manual (re)start dials immediately — the backoff ladder restarts too.
@@ -637,6 +689,27 @@ export class CloudAgent {
     this.reportNow = () => void this.reportState().catch((err: unknown) => ignore("cloud state report (interval)", err));
     void this.reportState().catch((err: unknown) => ignore("cloud state report (initial)", err));
     this.startWatchdog();
+  }
+
+  /**
+   * The reinstall/upgrade contract, in one method: if this agent is not
+   * currently running a link but a machine credential sits in
+   * ~/.pboss/cloud.json (the permanent credential cache — it survives
+   * binary swaps, reinstalls and upgrades by design), pick the link up
+   * NOW. Returns whether a link exists at all (already running, or
+   * freshly resumed from disk).
+   *
+   * Called from the daemon whenever the CLI asks for cloud status — a
+   * daemon that booted BEFORE the credential existed (fresh install
+   * racing a dotfiles sync / backup restore / manual migration) must not
+   * answer "not linked" while the credential sits on disk unread.
+   */
+  resumeFromDisk(): boolean {
+    if (this.cfg) return true; // already linked in memory (possibly erroring)
+    const cfg = loadCloudConfig();
+    if (!cfg) return false;
+    this.start(cfg); // never throws (see start)
+    return true;
   }
 
   /** Stop the agent. `revoke` also kills the credential server-side. */

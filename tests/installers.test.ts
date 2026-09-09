@@ -125,3 +125,28 @@ describe("install.cmd: launcher only, no target logic of its own", () => {
     expect(code).toMatch(/powershell .*install\.ps1/);
   });
 });
+
+/**
+ * Reinstall contract (owner report: "after pboss reinstalls, it fails to
+ * detect existing cloud connections"): the machine credential in
+ * ~/.pboss/cloud.json is the permanent cache — every installer must CHECK
+ * for it and say so, so a reinstalled machine never looks unlinked.
+ */
+describe("installers detect an existing cloud link (the permanent cache)", () => {
+  test("install.sh checks the credential before the success banner", () => {
+    const bannerIdx = sh.indexOf("successfully installed");
+    const checkIdx = sh.indexOf('"$INVOKE_HOME/.pboss/cloud.json"');
+    expect(checkIdx).toBeGreaterThan(0);
+    expect(checkIdx).toBeLessThan(bannerIdx);
+    expect(sh).toContain("Existing cloud link detected — the daemon will resume it automatically.");
+    expect(sh).toContain("pboss cloud status");
+  });
+
+  test("install.ps1 checks the credential before the success banner", () => {
+    const bannerIdx = ps1.indexOf("successfully installed");
+    const checkIdx = ps1.indexOf('Join-Path $env:USERPROFILE ".pboss\\cloud.json"');
+    expect(checkIdx).toBeGreaterThan(0);
+    expect(checkIdx).toBeLessThan(bannerIdx);
+    expect(ps1).toContain("Existing cloud link detected");
+  });
+});

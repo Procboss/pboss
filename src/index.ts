@@ -67,7 +67,7 @@ import {
   type InstallChannel,
   type ChannelContext,
 } from "./upgrade";
-import { resolveCloudUrl } from "./cloud";
+import { resolveCloudUrl, describeCloudLink } from "./cloud";
 
 // ---------------------------------------------------------------------------
 // PBossCLI class — Delegates all process engine operations to PBoss API
@@ -1667,25 +1667,49 @@ ${colorize("Notes:", "dim")}
     if (plan.note) {
       console.log(colorize(`  ${plan.note}`, "dim"));
     }
-    // A running daemon keeps the OLD code until restarted — say so instead
-    // of silently running yesterday's agent on today's install.
+
+    // A running daemon keeps the OLD code until restarted. Restart it NOW
+    // (the upgrade is half-done otherwise) and check the cloud link came
+    // back — the machine credential in ~/.pboss is the permanent cache, so
+    // the resumed link is the expected outcome, not a nice surprise.
     const daemonAlive = await this.pboss
       .ping()
       .then(() => true)
       .catch(() => false);
     if (daemonAlive) {
+      console.log(colorize("  Restarting the daemon onto the new binary…", "cyan"));
+      // kill is the same stop the service managers use (ExecStop):
+      // systemd Restart=always / launchd KeepAlive bring it straight back;
+      // on hosts without a service, the cloud-status call below spawns it
+      // on demand exactly like any other CLI command.
+      await this.pboss.kill();
+      const back = await waitForDaemon(15_000);
+      if (!back) {
+        console.log(
+          colorize(
+            "  The daemon has not come back yet — start it with: pboss resurrect",
+            "yellow"
+          )
+        );
+      }
+    }
+
+    // The post-upgrade cloud-connection check (the status RPC itself
+    // restarts the daemon via the on-demand spawn when nobody else did).
+    const link = await this.pboss.cloudStatus().catch((err: unknown) => {
+      ignore("post-upgrade cloud link check", err);
+      return null;
+    });
+    if (link) {
       console.log(
-        colorize(
-          "  The daemon is still running the previous version — restart it to pick up the new one:",
-          "yellow"
-        )
+        colorize(`  ☁  ${describeCloudLink(link)}`, link.configured ? "green" : "dim")
       );
-      console.log(colorize("    pboss kill && pboss resurrect", "cyan"));
     } else {
       console.log(
-        colorize(`  Verify with: pboss --version  (expect v${latest})`, "dim")
+        colorize("  ☁  cloud link state unknown — check with: pboss cloud status", "dim")
       );
     }
+    console.log(colorize(`  Verify with: pboss --version  (expect v${latest})`, "dim"));
   }
 
   async cmdEnv(args: string[]) {
