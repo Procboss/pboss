@@ -106,6 +106,22 @@ describe("detectChannel: runtime heuristics (stamp-less machines)", () => {
     ).toBe("universal");
   });
 
+  test("compiled binary at ~/.local/bin/pboss → universal (the no-sudo fallback)", () => {
+    // Home-agnostic: any user's per-user fallback install is still the
+    // universal installer's binary — it must upgrade through itself, not
+    // be reported as an unrecognized install.
+    expect(
+      detectChannel(
+        ctx({ execPath: "/home/ubuntu/.local/bin/pboss", isCompiled: true, moduleDir: "/home/ubuntu/.local/bin" })
+      )
+    ).toBe("universal");
+    expect(
+      detectChannel(
+        ctx({ execPath: "/Users/ra/.local/bin/pboss", isCompiled: true, moduleDir: "/Users/ra/.local/bin" })
+      )
+    ).toBe("universal");
+  });
+
   test("compiled exe under Program Files → universal (windows)", () => {
     expect(
       detectChannel(
@@ -199,10 +215,14 @@ describe("buildUpgradePlan: each channel upgrades through itself", () => {
     expect(plan.command[0]).toBe("bash");
     expect(plan.command[2]).toContain("https://procboss.com/install.sh");
     expect(plan.command[2]).toContain("| bash");
-    // Sudo is gone: the installer is per-user and needs no root.
+    // The upgrade COMMAND itself never needs sudo — the installer may
+    // prompt internally only when pboss lives in /usr/local/bin.
     expect(plan.command.join(" ")).not.toContain("sudo");
     // The plan must NOT install through a package manager.
     expect(plan.command.join(" ")).not.toContain("npm");
+    // The note tells the truth about the new target contract.
+    expect(plan.note).toContain("same install directory");
+    expect(plan.note).toContain("sudo may prompt");
   });
 
   test("universal on windows → the powershell installer (no elevation needed)", () => {

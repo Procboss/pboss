@@ -3,10 +3,21 @@
 # https://procboss.com
 # Usage: curl -fsSL https://procboss.com/install.sh | bash
 #
-# No root required: the binary goes to ~/.local/bin (a user-writable dir on
-# PATH by default on modern distros), and the boot service is a per-user
-# systemd unit. Running the installer AS root (the legacy sudo pipe) still
-# works and installs to /usr/local/bin for all users of the machine.
+# Install target, in order of preference:
+#   1. /usr/local/bin — on PATH for EVERY user, every shell, out of the box,
+#      so 'pboss' works the second the installer finishes. Used when the
+#      installer runs as root (legacy sudo pipe) or when sudo can elevate
+#      the binary copy (it may prompt once on the terminal — sudo asks on
+#      /dev/tty, which works even though this script arrives via a pipe).
+#      ONLY the binary is elevated: the daemon, the state (~/.pboss) and the
+#      boot service stay per-user, root-free.
+#   2. The same directory a previous install used (channel.json installDir)
+#      — upgrades refresh IN PLACE; a second pboss in another prefix is a
+#      bug, not a feature.
+#   3. ~/.local/bin — no root and no sudo at all: user-writable, plus an
+#      automatic PATH self-heal in the shell profile below.
+# Override with PBOSS_INSTALL_DIR=/custom/path; force the per-user fallback
+# with PBOSS_NO_SUDO=1.
 
 set -e
 
@@ -22,9 +33,7 @@ echo "  ⚡ ProcBoss (pboss) Installer"
 echo "  https://procboss.com"
 echo -e "${RESET}"
 
-# 1. Install target — no root required.
-#    Default: ~/.local/bin (per-user, writable, on PATH on modern distros).
-#    Legacy/explicit system install: run AS root → /usr/local/bin.
+# 1. Install target (see the header comment for the preference order).
 INVOKE_USER="${SUDO_USER:-}"
 INVOKE_HOME="$HOME"
 if [ -n "$INVOKE_USER" ]; then
@@ -34,15 +43,97 @@ if [ -n "$INVOKE_USER" ]; then
   fi
 fi
 
-if [ "$(id -u)" -eq 0 ]; then
+# A previous run of THIS installer records where the binary lives (step 4b).
+# One-line JSON from printf, or pretty JSON from the TypeScript writer — the
+# sed handles both.
+STAMPED_DIR=""
+if [ -f "$INVOKE_HOME/.pboss/channel.json" ]; then
+  STAMPED_DIR=$(sed -n 's/.*"installDir" *: *"\([^"]*\)".*/\1/p' "$INVOKE_HOME/.pboss/channel.json" 2>/dev/null || true)
+fi
+
+# sudo capability, probed at most once: passwordless cache first, else ONE
+# interactive prompt on the terminal. Without a terminal (CI) it fails fast
+# and the per-user fallback takes over — nothing ever hangs.
+CAN_SUDO="no"
+SUDO_PREFIX=""
+probe_sudo() {
+  [ "${PBOSS_NO_SUDO:-}" = "1" ] && return 1
+  [ "$CAN_SUDO" = "yes" ] && return 0
+  command -v sudo >/dev/null 2>&1 || return 1
+  if sudo -n true 2>/dev/null; then CAN_SUDO="yes"; return 0; fi
+  if [ "${1:-}" = "allow-prompt" ]; then
+    # Announce BEFORE prompting: a bare password prompt mid-install with
+    # no explanation reads as an attack.
+    echo -e "${CYAN}sudo may ask for your password — it elevates only the pboss binary copy; the daemon, state and boot service stay yours.${RESET}"
+    sudo -v >/dev/null 2>&1 && CAN_SUDO="yes"
+  fi
+  [ "$CAN_SUDO" = "yes" ]
+}
+
+# elev — run a command with sudo ONLY when the target needs elevation (the
+# current user cannot write it). Root and user-writable targets never sudo.
+elev() {
+  if [ -n "$SUDO_PREFIX" ]; then sudo "$@"; else "$@"; fi
+}
+
+# target_writable — can the current user create or write an install target?
+# A target that does not exist yet counts as writable when its nearest
+# EXISTING ancestor is (mkdir -p creates it a moment later): testing a
+# not-yet-existing ~/.local/bin with -w would falsely demand sudo on every
+# fresh box.
+target_writable() {
+  local dir="${1:-$INSTALL_DIR}"
+  if [ -e "$dir" ]; then
+    [ -d "$dir" ] && [ -w "$dir" ]
+  else
+    local p="$(dirname "$dir")"
+    while [ "$p" != "/" ] && [ ! -e "$p" ]; do p="$(dirname "$p")"; done
+    [ -w "$p" ]
+  fi
+}
+
+if [ -n "${PBOSS_INSTALL_DIR:-}" ]; then
+  INSTALL_DIR="${PBOSS_INSTALL_DIR}"
+  echo -e "${GREEN}✓ Installing to ${INSTALL_DIR} (PBOSS_INSTALL_DIR)${RESET}"
+elif [ "$(id -u)" -eq 0 ]; then
   INSTALL_DIR="/usr/local/bin"
   echo -e "${GREEN}✓ Running as root — installing system-wide to ${INSTALL_DIR}${RESET}"
-  echo -e "${YELLOW}Note: sudo is NOT needed anymore. A plain user install goes to ~/.local/bin${RESET}"
+elif [ -n "$STAMPED_DIR" ] && [ -d "$STAMPED_DIR" ]; then
+  # Upgrade path: keep the exact prefix this machine already owns.
+  INSTALL_DIR="$STAMPED_DIR"
+  echo -e "${GREEN}✓ Refreshing the existing install at ${INSTALL_DIR} — upgrades never move pboss${RESET}"
+elif [ "${PBOSS_NO_SUDO:-}" != "1" ] && target_writable "/usr/local/bin"; then
+  # The system path is directly writable (rare, e.g. containers): use it
+  # without a sudo round-trip at all. PBOSS_NO_SUDO opts out — the flag
+  # means "per-user install, period".
+  INSTALL_DIR="/usr/local/bin"
+  echo -e "${GREEN}✓ Installing system-wide to ${INSTALL_DIR} — writable without sudo, on PATH for every user${RESET}"
+elif probe_sudo allow-prompt; then
+  INSTALL_DIR="/usr/local/bin"
+  echo -e "${GREEN}✓ Installing system-wide to ${INSTALL_DIR} as $(id -un) — on PATH for every user${RESET}"
+  echo -e "${YELLOW}  (sudo elevated only the binary copy; the daemon, state and boot service stay yours)${RESET}"
 else
   INSTALL_DIR="$HOME/.local/bin"
-  echo -e "${GREEN}✓ Installing as $(id -un) — no root required (${INSTALL_DIR})${RESET}"
+  echo -e "${GREEN}✓ Installing as $(id -un) — no sudo available, no root required (${INSTALL_DIR})${RESET}"
 fi
-mkdir -p "$INSTALL_DIR"
+
+# Elevation decision for the chosen target. A stamped system target on a
+# machine where sudo just broke degrades to ~/.local/bin with a loud warning
+# instead of failing the install halfway.
+if [ "$(id -u)" -ne 0 ] && ! target_writable; then
+  # probe_sudo announces the (optional) password prompt itself.
+  if [ "$CAN_SUDO" != "yes" ]; then
+    probe_sudo allow-prompt
+  fi
+  if [ "$CAN_SUDO" = "yes" ]; then
+    SUDO_PREFIX="sudo"
+  else
+    echo -e "${YELLOW}⚠ Cannot write ${INSTALL_DIR} without sudo — installing to ${HOME}/.local/bin instead.${RESET}"
+    echo -e "  Remove the old copy at ${INSTALL_DIR}/pboss later to avoid two pboss binaries."
+    INSTALL_DIR="$HOME/.local/bin"
+  fi
+fi
+elev mkdir -p "$INSTALL_DIR"
 
 # 2. Bun build toolchain.
 #    Bun is only needed to COMPILE pboss — the final executable embeds the Bun
@@ -100,10 +191,11 @@ export PATH="$(dirname "$BUN_PATH"):$PATH"
 echo -e "${GREEN}✓ Build toolchain ready: Bun v$("$BUN_PATH" --version)${RESET}"
 
 # 3. Temporary build workspace
-#    (Install target was decided in step 1: root → /usr/local/bin, plain
-#     user → ~/.local/bin. Do NOT re-assign INSTALL_DIR here — a stale
-#     override here once sent non-root installs to /usr/local/bin and died
-#     on "cp: Permission denied".)
+#    (Install target was decided in step 1 — root/sudo/stamped/override. Do
+#     NOT re-assign INSTALL_DIR here: a stale override here once sent
+#     non-root installs to /usr/local/bin and died on "cp: Permission
+#     denied". The test suite pins "no INSTALL_DIR assignment after the
+#     step-1 mkdir".)
 TMP_DIR=$(mktemp -d -t pboss-install-XXXXXX)
 cleanup() {
   rm -rf "$TMP_DIR"
@@ -126,33 +218,73 @@ if ! bun build --compile --minify --bytecode ./src/index.ts --outfile "$TMP_DIR/
   exit 1
 fi
 
-# 4. Install the compiled binary
+# 4. Install the compiled binary (elevated only when the target needs it).
 #     Unlink first: `cp` straight over a RUNNING executable dies with
 #     "Text file busy" (ETXTBSY) — the classic broken `pboss upgrade` while
 #     the daemon runs. rm drops the old inode (the running daemon keeps its
 #     mapping), then cp lands the new one; the boot-persistence step below
 #     restarts the daemon onto the new binary.
 echo -e "${CYAN}Installing pboss to ${INSTALL_DIR}...${RESET}"
-rm -f "$INSTALL_DIR/pboss"
-cp "$TMP_DIR/pboss" "$INSTALL_DIR/pboss"
-chmod 755 "$INSTALL_DIR/pboss"
+elev rm -f "$INSTALL_DIR/pboss"
+elev cp "$TMP_DIR/pboss" "$INSTALL_DIR/pboss"
+elev chmod 755 "$INSTALL_DIR/pboss"
+
+# 4a. One pboss per machine: a legacy per-user copy from the old installer
+#     default (~/.local/bin) must not linger next to a system-wide install
+#     where it could shadow the new binary. User-owned, no sudo needed.
+LEGACY_LOCAL="$INVOKE_HOME/.local/bin/pboss"
+if [ "$INSTALL_DIR" != "$INVOKE_HOME/.local/bin" ] && [ -f "$LEGACY_LOCAL" ] && [ -w "$INVOKE_HOME/.local/bin" ]; then
+  rm -f "$LEGACY_LOCAL"
+  echo -e "${GREEN}✓ Removed the old per-user copy at ${INVOKE_HOME}/.local/bin/pboss (pboss now lives in ${INSTALL_DIR})${RESET}"
+fi
 
 # 4b. Record the install channel — `pboss upgrade` re-runs THIS installer
-#     (never npm/brew/snap) so a machine keeps exactly one pboss.
+#     (never npm/brew/snap) so a machine keeps exactly one pboss. installDir
+#     is the step-1 anchor: the next run refreshes THIS directory in place.
 STAMP_DIR="$INVOKE_HOME/.pboss"
 mkdir -p "$STAMP_DIR"
-printf '{"channel":"universal","by":"install.sh","stampedAt":%s,"version":"%s"}\n' \
-  "$(date +%s)" "$("$INSTALL_DIR/pboss" --version 2>/dev/null | awk '{print $NF}' | tr -d 'v')" \
+printf '{"channel":"universal","by":"install.sh","installDir":"%s","stampedAt":%s,"version":"%s"}\n' \
+  "$INSTALL_DIR" "$(date +%s)" "$("$INSTALL_DIR/pboss" --version 2>/dev/null | awk '{print $NF}' | tr -d 'v')" \
   > "$STAMP_DIR/channel.json"
 if [ -n "$INVOKE_USER" ]; then
   chown "${INVOKE_USER}:" "$STAMP_DIR" "$STAMP_DIR/channel.json" 2>/dev/null \
     || chown "$INVOKE_USER" "$STAMP_DIR" "$STAMP_DIR/channel.json" 2>/dev/null || true
 fi
 
-# 5. PATH sanity note (~/.local/bin is on PATH by default on modern distros;
-#     /usr/local/bin is on PATH essentially everywhere)
+# 5. PATH sanity — /usr/local/bin is on PATH essentially everywhere. The
+#    ~/.local/bin fallback self-heals the shell profile so FUTURE shells
+#    find pboss without manual edits (no child process can fix the CURRENT
+#    shell — say so honestly when there is nothing to heal).
 if [[ ":$PATH:" != *":$INSTALL_DIR:"* ]]; then
-  echo -e "${YELLOW}Note: ${INSTALL_DIR} is not on the current PATH. Add it to your shell profile if 'pboss' is not found.${RESET}"
+  dir_in_rc() {
+    # Referenced either by absolute path or via its $HOME-relative spelling.
+    grep -qF "$INSTALL_DIR" "$1" 2>/dev/null && return 0
+    case "$INSTALL_DIR" in
+      "$INVOKE_HOME"/*) grep -qF '$HOME'"${INSTALL_DIR#"$INVOKE_HOME"}" "$1" 2>/dev/null ;;
+    esac
+  }
+  healed=""
+  case "${SHELL:-}" in
+    *zsh) rc_candidates=("$INVOKE_HOME/.zshrc" "$INVOKE_HOME/.zprofile") ;;
+    *)    rc_candidates=("$INVOKE_HOME/.bashrc" "$INVOKE_HOME/.profile") ;;
+  esac
+  for rc in "${rc_candidates[@]}"; do
+    # Append only to rc files that already exist — never invent a shell
+    # config the user did not choose to have.
+    if [ ! -f "$rc" ] || dir_in_rc "$rc"; then
+      continue
+    fi
+    {
+      printf '\n# Added by the ProcBoss installer — keep pboss on PATH\n'
+      printf 'export PATH="%s:$PATH"\n' "$INSTALL_DIR"
+    } >> "$rc"
+    healed="$healed $(basename "$rc")"
+  done
+  if [ -n "$healed" ]; then
+    echo -e "${GREEN}✓ PATH self-healed in${healed} — open a NEW terminal and pboss will be on PATH.${RESET}"
+  else
+    echo -e "${YELLOW}Note: ${INSTALL_DIR} is not on the current PATH. Add it to your shell profile if 'pboss' is not found.${RESET}"
+  fi
 fi
 
 # 6. Boot persistence — installed automatically, WITHOUT sudo.

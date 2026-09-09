@@ -152,7 +152,10 @@ export function detectChannel(ctx: ChannelContext): InstallChannel {
     } else if (
       exec === "/usr/local/bin/pboss" ||
       exec === "/usr/bin/pboss" ||
-      exec === "/opt/pboss/pboss"
+      exec === "/opt/pboss/pboss" ||
+      // The universal installer's per-user fallback (no-sudo machines) —
+      // home-agnostic: any */.local/bin/pboss compiled binary is ours.
+      exec.endsWith("/.local/bin/pboss")
     ) {
       return "universal";
     }
@@ -269,7 +272,7 @@ export function buildUpgradePlan(
           "curl -fsSL https://procboss.com/install.sh | bash",
         ],
         manual: false,
-        note: "No root required — the installer is idempotent and refreshes in place.",
+        note: "No root required — it refreshes the same install directory in place (sudo may prompt once if pboss lives in /usr/local/bin).",
       };
     }
     case "source":

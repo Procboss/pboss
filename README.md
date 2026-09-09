@@ -39,14 +39,14 @@ ProcBoss is free and open-source. If it saves you time, star it on [GitHub](http
 
 ### One-Line Universal Install
 
-Install and compile the native standalone `pboss` executable directly on your device — no root required. The installer puts the binary in `~/.local/bin` (on PATH by default on modern distros) and sets up the per-user boot service:
+Install and compile the native standalone `pboss` executable directly on your device — no root required. The binary goes where every shell can find it immediately: `/usr/local/bin` when sudo can elevate the copy (on PATH for every user — only the binary is elevated; the daemon, state, and boot service stay per-user), otherwise `~/.local/bin` with an automatic PATH fix in your shell profile. Reinstalls and upgrades always refresh the same directory:
 
 **Linux / macOS:**
 ```bash
 curl -fsSL https://procboss.com/install.sh | bash
 ```
 
-(Running the installer as root still works and installs system-wide to `/usr/local/bin` — but sudo is never required.)
+(Without sudo the install is fully per-user; with it, the binary is system-wide — either way nothing runs as root afterwards. `PBOSS_INSTALL_DIR=/custom/path` overrides the target, `PBOSS_NO_SUDO=1` forces the per-user install.)
 
 **Windows (PowerShell):**
 ```powershell
