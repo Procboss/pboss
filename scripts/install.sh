@@ -99,10 +99,11 @@ fi
 export PATH="$(dirname "$BUN_PATH"):$PATH"
 echo -e "${GREEN}✓ Build toolchain ready: Bun v$("$BUN_PATH" --version)${RESET}"
 
-# 3. Install target — root privileges let us use the canonical system path
-INSTALL_DIR="/usr/local/bin"
-
-# 4. Temporary build workspace
+# 3. Temporary build workspace
+#    (Install target was decided in step 1: root → /usr/local/bin, plain
+#     user → ~/.local/bin. Do NOT re-assign INSTALL_DIR here — a stale
+#     override here once sent non-root installs to /usr/local/bin and died
+#     on "cp: Permission denied".)
 TMP_DIR=$(mktemp -d -t pboss-install-XXXXXX)
 cleanup() {
   rm -rf "$TMP_DIR"
@@ -125,12 +126,12 @@ if ! bun build --compile --minify --bytecode ./src/index.ts --outfile "$TMP_DIR/
   exit 1
 fi
 
-# 5. Install the compiled binary
+# 4. Install the compiled binary
 echo -e "${CYAN}Installing pboss to ${INSTALL_DIR}...${RESET}"
 cp "$TMP_DIR/pboss" "$INSTALL_DIR/pboss"
 chmod 755 "$INSTALL_DIR/pboss"
 
-# 5b. Record the install channel — `pboss upgrade` re-runs THIS installer
+# 4b. Record the install channel — `pboss upgrade` re-runs THIS installer
 #     (never npm/brew/snap) so a machine keeps exactly one pboss.
 STAMP_DIR="$INVOKE_HOME/.pboss"
 mkdir -p "$STAMP_DIR"
@@ -142,12 +143,13 @@ if [ -n "$INVOKE_USER" ]; then
     || chown "$INVOKE_USER" "$STAMP_DIR" "$STAMP_DIR/channel.json" 2>/dev/null || true
 fi
 
-# 6. PATH sanity note (rare — /usr/local/bin is on PATH almost everywhere)
+# 5. PATH sanity note (~/.local/bin is on PATH by default on modern distros;
+#     /usr/local/bin is on PATH essentially everywhere)
 if [[ ":$PATH:" != *":$INSTALL_DIR:"* ]]; then
   echo -e "${YELLOW}Note: ${INSTALL_DIR} is not on the current PATH. Add it to your shell profile if 'pboss' is not found.${RESET}"
 fi
 
-# 7. Boot persistence — installed automatically, WITHOUT sudo.
+# 6. Boot persistence — installed automatically, WITHOUT sudo.
 #    The whole point of pboss: processes survive reboots by default. The boot
 #    service is PER-USER (systemd user unit / launchd agent), starts the
 #    daemon, and the daemon resurrects the saved process list (auto-saved
