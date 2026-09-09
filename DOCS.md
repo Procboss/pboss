@@ -1223,7 +1223,7 @@ The generated service runs as the invoking user and uses the same `~/.pboss` dat
 pboss startup install
 ```
 
-The generated file detects how pboss was installed and adapts the daemon command accordingly. On a **compiled standalone install** (one-line installer, `build:bin`) the service re-executes the pboss binary itself (`ExecStart=/usr/local/bin/pboss __daemon`) — the Bun runtime is embedded in the binary and is **not required** on the system. On a **script install** (`bun add -g pboss`, npm) the service runs the source on the system Bun runtime (`ExecStart=/usr/local/bin/bun run .../daemon.ts`). The generated file's header comment states which mode was detected.
+The generated file detects how pboss was installed and adapts the daemon command accordingly. On a **compiled standalone install** (one-line installer, `build:bin`) the service re-executes the pboss binary itself (`ExecStart=/home/you/.local/bin/pboss __daemon`) — the Bun runtime is embedded in the binary and is **not required** on the system. On a **script install** (`bun add -g pboss`, npm) the service runs the source on the system Bun runtime (`ExecStart=/home/you/.bun/bin/bun run .../daemon.ts`). The generated file's header comment states which mode was detected.
 
 The unit/agent `PATH` deliberately includes the target user's `~/.bun/bin` whenever it exists (even on compiled installs): worker processes inherit the service's environment, so a worker shelling out to `bun` by name must resolve it. Independently of the unit file, the daemon self-heals its own `PATH` at startup (prepending the directory of the Bun it discovered) — so daemons started by **older** unit files also find Bun after a binary upgrade. See [Runtime discovery](#multi-language--runtime-support) for the full Bun discovery chain.
 
@@ -1233,11 +1233,12 @@ A read-only report of boot persistence — nothing is started, installed, or cha
 
 ```bash
 pboss startup status
-# Boot startup service (systemd)
-#   Service:    /etc/systemd/system/pboss.service
+# Boot startup service (systemd, per-user)
+#   Service:    /home/ra/.config/systemd/user/pboss.service
 #   Installed:  yes
-#   Enabled:    yes — starts at boot (multi-user.target)
+#   Enabled:    yes — starts with your session (default.target)
 #   Active:     active
+#   Linger:     on — the daemon starts at BOOT, before login
 #   Daemon:     reachable (pid 1234) at /home/ra/.pboss/daemon.sock
 #
 # Reboot persistence:
@@ -1245,7 +1246,7 @@ pboss startup status
 #   On boot:    3 process(es) come back running, 1 stopped
 ```
 
-When the service is missing, the report says so and prints the exact install command; saved processes are reported as *waiting* for the service. When the dump is absent or empty, it says "nothing to restore yet" — starts are saved automatically, so the count appears the moment you run `pboss start`. The daemon socket and dump are read from the home the daemon actually uses (an explicit `PBOSS_HOME` wins; otherwise the target user's `~/.pboss`, `SUDO_USER`-aware under sudo).
+When the service is missing, the report says so and prints the exact install command; saved processes are reported as *waiting* for the service. When the dump is absent or empty, it says "nothing to restore yet" — starts are saved automatically, so the count appears the moment you run `pboss start`. The daemon socket and dump are read from the home the daemon actually uses (an explicit `PBOSS_HOME` wins; otherwise the current user's `~/.pboss`).
 
 The first `pboss start` on an empty machine also states where persistence stands — one line, only on a TTY (piped output stays clean for scripts): `✓ Persistence on: this process is saved and will come back after reboot` when the boot service is active, or the one command that enables it when it is not.
 
@@ -2799,12 +2800,10 @@ pboss already searches `PATH`, `$BUN_INSTALL/bin`, `~/.bun/bin`, `/usr/local/bin
 ```
 ls -l ~/.bun/bin/bun                 # the default location
 echo $BUN_INSTALL                     # set by the bun.sh installer
-sudo -u <daemon-user> ls ~/.bun/bin   # the daemon runs as YOU only when
-                                      # startup install set User= correctly
 pboss startup status                  # shows whose ~/.pboss the daemon uses
 ```
 
-Fixes, in order of preference: install Bun for the daemon's user (`curl -fsSL https://bun.sh/install | bash`), set `BUN_INSTALL` in the unit (`systemctl edit pboss` → `Environment=BUN_INSTALL=/opt/bun`), or run the script under a different runtime (`--interpreter node`, `--interpreter none` for binaries). After installing Bun, restart the service (`sudo systemctl restart pboss`).
+Fixes, in order of preference: install Bun for the daemon's user (`curl -fsSL https://bun.sh/install | bash`), set `BUN_INSTALL` in the unit (`systemctl --user edit pboss` → `Environment=BUN_INSTALL=/opt/bun`), or run the script under a different runtime (`--interpreter node`, `--interpreter none` for binaries). After installing Bun, restart the service (`systemctl --user restart pboss`).
 
 ### Process keeps restarting
 
