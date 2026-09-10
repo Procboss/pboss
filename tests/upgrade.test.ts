@@ -215,14 +215,14 @@ describe("buildUpgradePlan: each channel upgrades through itself", () => {
     expect(plan.command[0]).toBe("bash");
     expect(plan.command[2]).toContain("https://procboss.com/install.sh");
     expect(plan.command[2]).toContain("| bash");
-    // The upgrade COMMAND itself never needs sudo — the installer may
-    // prompt internally only when pboss lives in /usr/local/bin.
+    // The upgrade COMMAND itself never needs sudo — and neither does the
+    // installer it re-runs (no-root contract, pinned in installers.test.ts).
     expect(plan.command.join(" ")).not.toContain("sudo");
     // The plan must NOT install through a package manager.
     expect(plan.command.join(" ")).not.toContain("npm");
-    // The note tells the truth about the new target contract.
-    expect(plan.note).toContain("same install directory");
-    expect(plan.note).toContain("sudo may prompt");
+    // The note tells the truth about the no-root contract.
+    expect(plan.note).toContain("No root required");
+    expect(plan.note).toContain("idempotent");
   });
 
   test("universal on windows → the powershell installer (no elevation needed)", () => {

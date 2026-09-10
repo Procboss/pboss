@@ -1,5 +1,5 @@
 import { describe, test, expect } from "bun:test";
-import { readFileSync, existsSync, mkdtempSync, rmSync, mkdirSync, writeFileSync, chmodSync, accessSync, constants } from "fs";
+import { readFileSync, existsSync, mkdtempSync, rmSync, writeFileSync, chmodSync } from "fs";
 import { join, dirname } from "path";
 import { tmpdir } from "os";
 
@@ -12,29 +12,37 @@ const ps1 = readFileSync(PS1_PATH, "utf8");
 const cmd = readFileSync(CMD_PATH, "utf8");
 
 /**
- * Target-selection contract (owner request, 2026-09-10): "why don't we save
- * pboss to /usr/local/bin instead?" — /usr/local/bin is on PATH for every
- * user out of the box, so the installer PREFERS it (as root, or via sudo
- * elevating only the binary copy) and keeps ~/.local/bin purely as the
- * no-sudo fallback. Upgrades never move an existing install: the stamp
- * written at install time (channel.json installDir) is the anchor step 1
- * re-reads on the next run.
+ * No-root target contract (owner request, 2026-09-10): "we still dont need
+ * root … no need for /usr/local/bin — if ~/.local/bin is not in PATH in
+ * ~/.bashrc, then add it." The installer NEVER invokes sudo: a plain user
+ * installs to ~/.local/bin, and when that dir is not on PATH the installer
+ * appends the export to the shell rc (~/.bashrc / ~/.zshrc — created when
+ * missing) plus the login profile when it exists, instead of printing a
+ * manual note. Running the installer AS root (the legacy sudo pipe) still
+ * installs system-wide to /usr/local/bin — but sudo is never required.
  *
- * The functional sims below are machine-independent (Task 67 lesson): temp
- * HOME, a stub `id`, and stub `sudo` binaries on PATH — never the real
- * /usr/local/bin, never the real sudo, no password prompts.
+ * The functional sims are machine-independent (Task 67 lesson): temp HOME
+ * and a stub `id` on PATH — never the real sudo, never a /usr/local/bin
+ * write, no password prompts.
  */
 
 /** Extract step 1 (target selection) from the real script. */
-function step1(endMarker: string): string {
+function step1(): string {
   const start = sh.indexOf('INVOKE_USER="${SUDO_USER:-}"');
-  const end = sh.indexOf(endMarker);
+  const end = sh.indexOf("# 2. Bun build toolchain");
   expect(start).toBeGreaterThan(0);
   expect(end).toBeGreaterThan(start);
   return sh.slice(start, end);
 }
 
-const MKDIR_LINE = 'elev mkdir -p "$INSTALL_DIR"';
+/** Extract step 5 (PATH self-heal) from the real script. */
+function step5(): string {
+  const start = sh.indexOf('if [[ ":$PATH:" != *":$INSTALL_DIR:"* ]]; then');
+  const end = sh.indexOf("# 6. Boot persistence");
+  expect(start).toBeGreaterThan(0);
+  expect(end).toBeGreaterThan(start);
+  return sh.slice(start, end);
+}
 
 /** A dir of stub executables injected at the FRONT of PATH. */
 function stubDir(files: Record<string, string>): string {
@@ -53,117 +61,91 @@ const ID_STUB = `case "$1" in
   *) echo "\${FAKE_UID:-1000}" ;;
 esac`;
 
-/** sudo stub flavors: unavailable, passwordless, or recording-everything. */
-const SUDO_FAIL = `exit 1`;
-const SUDO_PASS = `exit 0`;
+/** sudo stub that records every invocation — the regression proof: after
+ *  a non-root install the log file must still NOT exist. */
 const SUDO_RECORD = `echo "$@" >> "\${SUDO_LOG:-/dev/null}"
 exit 0`;
 
 /**
- * Run an extracted step-1 slice as a non-root (faked) user with a temp HOME.
- * `withMkdir` appends the real (elev-aware) mkdir line; `extra` injects env.
+ * Run an extracted slice with a temp HOME and stubbed `id`. `sudo` is also
+ * stubbed to a recorder so tests can prove it is never invoked.
  */
-function runStep1(
+function runSlice(
   block: string,
   home: string,
-  stubs: Record<string, string>,
   extra: Record<string, string> = {},
-  withMkdir = false,
-): { code: number; out: string } {
-  const dir = stubDir(stubs);
+): { code: number; out: string; sudoLog: string } {
+  const sudoLog = join(home, "sudo-probe.log");
+  const dir = stubDir({ id: ID_STUB, sudo: SUDO_RECORD });
   try {
-    const harness =
-      block +
-      (withMkdir ? `\n${MKDIR_LINE}` : "") +
-      '\nprintf "RESOLVED=%s|PREFIX=%s" "$INSTALL_DIR" "$SUDO_PREFIX"';
-    const proc = Bun.spawnSync(["bash", "-c", harness], {
+    const proc = Bun.spawnSync(["bash", "-c", block], {
       env: {
         ...process.env,
         HOME: home,
         SUDO_USER: "",
-        PATH: `${dir}:${process.env.PATH}`,
+        SUDO_LOG: sudoLog,
+        PATH: `${dir}:/usr/bin:/bin`,
         ...extra,
       },
     });
-    return { code: proc.exitCode, out: proc.stdout.toString() };
+    return { code: proc.exitCode, out: proc.stdout.toString(), sudoLog };
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 }
 
-describe("install.sh: the /usr/local/bin-first target contract", () => {
+describe("install.sh: the no-root target contract", () => {
+  test("INSTALL_DIR is assigned exactly twice (root + non-root branches)", () => {
+    const assignments = sh.match(/^\s*INSTALL_DIR=/gm) ?? [];
+    expect(assignments).toHaveLength(2);
+    expect(sh).toContain('INSTALL_DIR="/usr/local/bin"');
+    expect(sh).toContain('INSTALL_DIR="$HOME/.local/bin"');
+  });
+
   test("no INSTALL_DIR assignment after the step-1 mkdir (the stale-override bug class)", () => {
-    const mkdirIdx = sh.indexOf(MKDIR_LINE);
+    const mkdirIdx = sh.indexOf('mkdir -p "$INSTALL_DIR"');
     expect(mkdirIdx).toBeGreaterThan(0);
-    // Every assignment lives inside step 1…
-    const assignments = [...sh.matchAll(/^\s*INSTALL_DIR=/gm)];
-    expect(assignments.length).toBeGreaterThanOrEqual(4);
-    for (const m of assignments) {
-      expect(m.index!).toBeLessThan(mkdirIdx);
-    }
-    // …and nothing re-assigns the target after the mkdir.
     expect(/^\s*INSTALL_DIR=/m.test(sh.slice(mkdirIdx))).toBe(false);
   });
 
-  test("all four selection branches exist (override, root, stamped, fallback)", () => {
-    expect(sh).toContain('INSTALL_DIR="${PBOSS_INSTALL_DIR}"');
-    expect(sh).toContain('INSTALL_DIR="/usr/local/bin"');
-    expect(sh).toContain('INSTALL_DIR="$STAMPED_DIR"');
-    expect(sh).toContain('INSTALL_DIR="$HOME/.local/bin"');
-    // The stamp a previous run re-reads in step 1 is written in step 4b.
-    expect(sh).toContain('"channel":"universal","by":"install.sh","installDir":"%s"');
-    expect(sh).toContain('"installDir" *: *"');
-  });
-
-  test("sudo is only ever the four sanctioned forms (probe, prompt, elev, run_as_user)", () => {
-    // Comments and echo MESSAGE lines may mention sudo in prose; only code
-    // lines can invoke it.
-    const lines = sh
+  test("the sudo machinery is GONE — the installer never probes, prompts, or elevates", () => {
+    for (const gone of [
+      "probe_sudo",
+      "SUDO_PREFIX",
+      "CAN_SUDO",
+      "target_writable",
+      "STAMPED_DIR",
+      "PBOSS_INSTALL_DIR",
+      "PBOSS_NO_SUDO",
+      "elev ",
+      "sudo -n true",
+      "sudo -v",
+    ]) {
+      expect(sh).not.toContain(gone);
+    }
+    // The one remaining sudo in CODE is the legacy root pipe dropping back
+    // to the invoking user for the per-user service (root-only, step 6).
+    const codeLines = sh
       .split("\n")
       .filter((l) => /\bsudo\b/.test(l))
       .filter((l) => !/^\s*#/.test(l))
       .filter((l) => !/\becho\b/.test(l));
-    expect(lines.length).toBeGreaterThan(0);
-    const allowed = [
-      /command -v sudo /, // existence probe
-      /sudo -n true /, // passwordless probe
-      /sudo -v /, // one interactive prompt
-      /sudo "\$@"/, // elev()
-      /sudo -u "\$INVOKE_USER" env/, // legacy root pipe → per-user service
-      /SUDO_PREFIX="sudo"/, // the prefix ASSIGNMENT (not an invocation)
-    ];
-    for (const line of lines) {
-      expect(allowed.some((re) => re.test(line))).toBe(true);
-    }
+    expect(codeLines).toHaveLength(1);
+    expect(codeLines[0]).toContain('sudo -u "$INVOKE_USER" env');
   });
 
-  test("every privileged install operation goes through elev()", () => {
-    expect(sh).toContain(MKDIR_LINE);
-    expect(sh).toContain('elev rm -f "$INSTALL_DIR/pboss"');
-    expect(sh).toContain('elev cp "$TMP_DIR/pboss" "$INSTALL_DIR/pboss"');
-    expect(sh).toContain('elev chmod 755 "$INSTALL_DIR/pboss"');
-    // The binary copy is the ONLY elevated step — the daemon, state and
-    // boot service stay per-user (run_as_user drops root back to the user).
-    expect(sh).toContain('sudo -u "$INVOKE_USER" env PATH="$PATH" HOME="$INVOKE_HOME" "$@"');
+  test("the channel stamp records the channel, not the install dir", () => {
+    expect(sh).toContain('"channel":"universal","by":"install.sh","stampedAt":%s');
+    expect(sh).not.toContain("installDir");
   });
 
-  test("the legacy per-user copy is cleaned up when pboss moves system-wide", () => {
-    expect(sh).toContain('LEGACY_LOCAL="$INVOKE_HOME/.local/bin/pboss"');
-    expect(sh).toContain("Removed the old per-user copy");
-    // …but never when the fallback itself is the target.
-    expect(sh).toContain('[ "$INSTALL_DIR" != "$INVOKE_HOME/.local/bin" ]');
-  });
-
-  test("PBOSS_NO_SUDO and PBOSS_INSTALL_DIR overrides are honored", () => {
-    expect(sh).toContain('[ "${PBOSS_NO_SUDO:-}" = "1" ] && return 1');
-    expect(sh).toContain('if [ -n "${PBOSS_INSTALL_DIR:-}" ]; then');
-  });
-
-  test("the PATH self-heal exists for the ~/.local/bin fallback", () => {
-    expect(sh).toContain("PATH self-healed in");
-    expect(sh).toContain('"$INVOKE_HOME/.bashrc"');
-    expect(sh).toContain('"$INVOKE_HOME/.profile"');
-    expect(sh).toContain('"$INVOKE_HOME/.zshrc"');
+  test("the PATH self-heal appends to (or creates) the user's rc files", () => {
+    expect(sh).toContain('rc_primary="$INVOKE_HOME/.bashrc"');
+    expect(sh).toContain('rc_login="$INVOKE_HOME/.profile"');
+    expect(sh).toContain('rc_primary="$INVOKE_HOME/.zshrc"');
+    expect(sh).toContain('rc_login="$INVOKE_HOME/.zprofile"');
+    expect(sh).toContain("Added ${INSTALL_DIR} to PATH in");
+    expect(sh).toContain("open a NEW terminal");
   });
 
   test("bash syntax is valid", () => {
@@ -173,260 +155,66 @@ describe("install.sh: the /usr/local/bin-first target contract", () => {
 });
 
 describe("install.sh: target resolution (functional, machine-independent)", () => {
-  // The script consults the REAL filesystem when deciding whether
-  // /usr/local/bin is usable directly (no sudo round-trip) — the test
-  // computes the same answer so it is deterministic on every machine.
-  const fsWritable = (p: string) => {
-    try {
-      accessSync(p, constants.W_OK);
-      return true;
-    } catch {
-      return false;
-    }
-  };
-  const systemBinWritable = existsSync("/usr/local/bin")
-    ? fsWritable("/usr/local/bin")
-    : fsWritable("/usr/local");
-
-  test("non-root without sudo → system path when directly writable, else ~/.local/bin", () => {
+  test("non-root → ~/.local/bin, dir created, sudo NEVER invoked", () => {
     const home = mkdtempSync(join(tmpdir(), "pboss-installer-local-"));
     try {
-      const block = step1(MKDIR_LINE);
-      const { code, out } = runStep1(block, home, { id: ID_STUB, sudo: SUDO_FAIL }, {}, true);
-      expect(code).toBe(0);
-      // A fresh ~/.local/bin (not yet existing, writable parent) must NOT
-      // trigger the not-writable warning or any sudo prompt.
-      expect(out).not.toContain("Cannot write");
-      expect(out).not.toContain("sudo may ask");
-      if (systemBinWritable) {
-        expect(out).toContain("writable without sudo");
-        expect(out).toContain("RESOLVED=/usr/local/bin|");
-      } else {
-        expect(out).toContain("no root required");
-        expect(out).toContain("no sudo available");
-        expect(out.endsWith(`RESOLVED=${home}/.local/bin|PREFIX=`)).toBe(true);
-        expect(existsSync(join(home, ".local", "bin"))).toBe(true);
-      }
-    } finally {
-      rmSync(home, { recursive: true, force: true });
-    }
-  });
-
-  test("non-root with passwordless sudo → /usr/local/bin, elevated only if needed", () => {
-    const home = mkdtempSync(join(tmpdir(), "pboss-installer-sudo-"));
-    try {
-      const block = step1(MKDIR_LINE);
-      const { code, out } = runStep1(block, home, { id: ID_STUB, sudo: SUDO_PASS });
-      expect(code).toBe(0);
-      expect(out).toContain("system-wide to /usr/local/bin");
-      expect(out).toContain("on PATH for every user");
-      expect(out).toContain("RESOLVED=/usr/local/bin|");
-      expect(out.endsWith(`|PREFIX=${systemBinWritable ? "" : "sudo"}`)).toBe(true);
-    } finally {
-      rmSync(home, { recursive: true, force: true });
-    }
-  });
-
-  test("root (legacy sudo pipe) → /usr/local/bin, no elevation prefix", () => {
-    const home = mkdtempSync(join(tmpdir(), "pboss-installer-root-"));
-    try {
-      const block = step1(MKDIR_LINE);
-      const { code, out } = runStep1(
-        block,
+      const { code, out, sudoLog } = runSlice(
+        step1() + '\nprintf "RESOLVED=%s" "$INSTALL_DIR"',
         home,
-        { id: ID_STUB },
-        { FAKE_UID: "0", FAKE_USER: "root" },
-      );
-      expect(code).toBe(0);
-      expect(out).toContain("Running as root — installing system-wide");
-      expect(out.endsWith("RESOLVED=/usr/local/bin|PREFIX=")).toBe(true);
-    } finally {
-      rmSync(home, { recursive: true, force: true });
-    }
-  });
-
-  test("a stamped previous install is refreshed in place — sudo is never even probed", () => {
-    const home = mkdtempSync(join(tmpdir(), "pboss-installer-stamped-"));
-    const sudoLog = join(home, "sudo.log");
-    try {
-      const target = join(home, "custom-prefix");
-      mkdirSync(target, { recursive: true });
-      mkdirSync(join(home, ".pboss"), { recursive: true });
-      writeFileSync(
-        join(home, ".pboss", "channel.json"),
-        JSON.stringify({ channel: "universal", by: "install.sh", installDir: target }),
-      );
-      const block = step1(MKDIR_LINE);
-      const { code, out } = runStep1(
-        block,
-        home,
-        { id: ID_STUB, sudo: SUDO_RECORD },
-        { SUDO_LOG: sudoLog },
-        true,
-      );
-      expect(code).toBe(0);
-      expect(out).toContain(`Refreshing the existing install at ${target}`);
-      expect(out).toContain("upgrades never move pboss");
-      expect(out.endsWith(`RESOLVED=${target}|PREFIX=`)).toBe(true);
-      // The whole point: an in-place upgrade must not prompt for sudo.
-      expect(existsSync(sudoLog)).toBe(false);
-    } finally {
-      rmSync(home, { recursive: true, force: true });
-    }
-  });
-
-  test("PBOSS_INSTALL_DIR wins over every heuristic", () => {
-    const home = mkdtempSync(join(tmpdir(), "pboss-installer-override-"));
-    const sudoLog = join(home, "sudo.log");
-    try {
-      const target = join(home, "opt-pboss");
-      const block = step1(MKDIR_LINE);
-      const { code, out } = runStep1(
-        block,
-        home,
-        { id: ID_STUB, sudo: SUDO_RECORD },
-        { PBOSS_INSTALL_DIR: target, SUDO_LOG: sudoLog },
-        true,
-      );
-      expect(code).toBe(0);
-      expect(out).toContain("PBOSS_INSTALL_DIR");
-      expect(out.endsWith(`RESOLVED=${target}|PREFIX=`)).toBe(true);
-      expect(existsSync(target)).toBe(true);
-      // A writable custom target needs no sudo at all.
-      expect(existsSync(sudoLog)).toBe(false);
-    } finally {
-      rmSync(home, { recursive: true, force: true });
-    }
-  });
-
-  test("PBOSS_NO_SUDO=1 forces the per-user fallback even with sudo available", () => {
-    const home = mkdtempSync(join(tmpdir(), "pboss-installer-nosudo-"));
-    try {
-      const block = step1(MKDIR_LINE);
-      const { code, out } = runStep1(
-        block,
-        home,
-        { id: ID_STUB, sudo: SUDO_PASS },
-        { PBOSS_NO_SUDO: "1" },
-        true,
       );
       expect(code).toBe(0);
       expect(out).toContain("no root required");
-      // PBOSS_NO_SUDO bypasses the system path entirely — even when it is
-      // directly writable (the sandbox case) the install is per-user.
-      expect(out).not.toContain("/usr/local/bin");
-      expect(out.endsWith(`RESOLVED=${home}/.local/bin|PREFIX=`)).toBe(true);
+      expect(out).toContain("Installing as testuser");
+      expect(out).toContain(`RESOLVED=${home}/.local/bin`);
       expect(existsSync(join(home, ".local", "bin"))).toBe(true);
+      // The owner's contract: a plain-user install must never touch sudo.
+      expect(existsSync(sudoLog)).toBe(false);
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
   });
 
-  test("unwritable target + password-requiring sudo → the prompt is announced, then elevated", () => {
-    const home = mkdtempSync(join(tmpdir(), "pboss-installer-prompt-"));
-    const sudoLog = join(home, "sudo.log");
+  test("root (legacy sudo pipe) → /usr/local/bin", () => {
+    const home = mkdtempSync(join(tmpdir(), "pboss-installer-root-"));
     try {
-      // An unwritable custom target (chmod 555) forces the sudo path; the
-      // stub answers `sudo -n true` with failure but `sudo -v` with success
-      // — the password-requiring machine shape.
-      const locked = join(home, "locked-bin");
-      mkdirSync(locked, { recursive: true });
-      chmodSync(locked, 0o555);
-      const dir = stubDir({
-        id: ID_STUB,
-        sudo: `case "$*" in
-  "-n true") exit 1 ;;
-  *) echo "$@" >> "\${SUDO_LOG:-/dev/null}" ; exit 0 ;;
-esac`,
-      });
-      try {
-        const block = step1(MKDIR_LINE);
-        const proc = Bun.spawnSync(
-          [
-            "bash",
-            "-c",
-            block +
-              '\nprintf "RESOLVED=%s|PREFIX=%s" "$INSTALL_DIR" "$SUDO_PREFIX"',
-          ],
-          {
-            env: {
-              ...process.env,
-              HOME: home,
-              SUDO_USER: "",
-              PATH: `${dir}:${process.env.PATH}`,
-              PBOSS_INSTALL_DIR: locked,
-              SUDO_LOG: sudoLog,
-            },
-          },
-        );
-        expect(proc.exitCode).toBe(0);
-        const out = proc.stdout.toString();
-        // The announcement fires BEFORE the prompt (bare prompts read as
-        // attacks), and the elevation actually happened.
-        expect(out).toContain("sudo may ask for your password");
-        expect(out).toContain("it elevates only the pboss binary copy");
-        expect(out).not.toContain("Cannot write");
-        expect(out.endsWith(`RESOLVED=${locked}|PREFIX=sudo`)).toBe(true);
-        expect(readFileSync(sudoLog, "utf8")).toBe("-v\n");
-      } finally {
-        rmSync(dir, { recursive: true, force: true });
-      }
-    } finally {
-      rmSync(home, { recursive: true, force: true });
-    }
-  });
-
-  test("stamped system target + broken sudo degrades to ~/.local/bin with the honest warning", () => {
-    const home = mkdtempSync(join(tmpdir(), "pboss-installer-degrade-"));
-    try {
-      const locked = join(home, "locked-bin");
-      mkdirSync(locked, { recursive: true });
-      chmodSync(locked, 0o555);
-      mkdirSync(join(home, ".pboss"), { recursive: true });
-      writeFileSync(
-        join(home, ".pboss", "channel.json"),
-        JSON.stringify({ channel: "universal", by: "install.sh", installDir: locked }),
-      );
-      const block = step1(MKDIR_LINE);
-      const { code, out } = runStep1(block, home, { id: ID_STUB, sudo: SUDO_FAIL }, {}, true);
+      // No mkdir is executed here: never write toward the real /usr/local/bin.
+      const block = step1().replace('mkdir -p "$INSTALL_DIR"', "") +
+        '\nprintf "RESOLVED=%s" "$INSTALL_DIR"';
+      const { code, out } = runSlice(block, home, { FAKE_UID: "0", FAKE_USER: "root" });
       expect(code).toBe(0);
-      expect(out).toContain("Cannot write");
-      expect(out).toContain("two pboss binaries");
-      expect(out.endsWith(`RESOLVED=${home}/.local/bin|PREFIX=`)).toBe(true);
-      expect(existsSync(join(home, ".local", "bin"))).toBe(true);
+      expect(out).toContain("Running as root — installing system-wide");
+      expect(out).toContain("sudo is NOT needed");
+      expect(out).toContain("RESOLVED=/usr/local/bin");
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
   });
 });
 
-describe("install.sh: PATH self-heal (the ~/.local/bin fallback)", () => {
-  function step5(): string {
-    const start = sh.indexOf('if [[ ":$PATH:" != *":$INSTALL_DIR:"* ]]; then');
-    const end = sh.indexOf("# 6. Boot persistence");
-    expect(start).toBeGreaterThan(0);
-    expect(end).toBeGreaterThan(start);
-    return sh.slice(start, end);
+describe("install.sh: PATH self-heal (add ~/.local/bin to the rc — no root)", () => {
+  function runStep5(home: string, shell = "/bin/bash", path = "/usr/bin:/bin") {
+    const proc = Bun.spawnSync(["bash", "-c", step5()], {
+      env: {
+        ...process.env,
+        HOME: home,
+        SHELL: shell,
+        PATH: path,
+        INSTALL_DIR: `${home}/.local/bin`,
+        INVOKE_HOME: home,
+      },
+    });
+    expect(proc.exitCode).toBe(0);
+    return proc.stdout.toString();
   }
 
-  test("appends the export to existing bash rc files and says so", () => {
+  test("the owner's field report: ~/.bashrc without the dir gets the export appended", () => {
     const home = mkdtempSync(join(tmpdir(), "pboss-path-heal-"));
     try {
       writeFileSync(join(home, ".bashrc"), "# existing bashrc\n");
       writeFileSync(join(home, ".profile"), "# existing profile\n");
-      const proc = Bun.spawnSync(["bash", "-c", step5()], {
-        env: {
-          ...process.env,
-          HOME: home,
-          SHELL: "/bin/bash",
-          PATH: "/usr/bin:/bin",
-          INSTALL_DIR: `${home}/.local/bin`,
-          INVOKE_HOME: home,
-        },
-      });
-      expect(proc.exitCode).toBe(0);
-      const out = proc.stdout.toString();
-      expect(out).toContain("PATH self-healed in .bashrc .profile");
+      const out = runStep5(home);
+      expect(out).toContain("Added");
+      expect(out).toContain(".bashrc");
       const expected = `export PATH="${home}/.local/bin:$PATH"`;
       expect(readFileSync(join(home, ".bashrc"), "utf8")).toContain(expected);
       expect(readFileSync(join(home, ".profile"), "utf8")).toContain(expected);
@@ -438,50 +226,93 @@ describe("install.sh: PATH self-heal (the ~/.local/bin fallback)", () => {
     }
   });
 
-  test("idempotent: a second run appends nothing, and zsh heals its own rc", () => {
+  test("a MISSING ~/.bashrc is created (the ask is 'add it', not 'note it') — a missing ~/.profile is not", () => {
     const home = mkdtempSync(join(tmpdir(), "pboss-path-heal2-"));
     try {
-      writeFileSync(join(home, ".zshrc"), "# existing zshrc\n");
-      const env = {
-        ...process.env,
-        HOME: home,
-        SHELL: "/bin/zsh",
-        PATH: "/usr/bin:/bin",
-        INSTALL_DIR: `${home}/.local/bin`,
-        INVOKE_HOME: home,
-      };
-      const first = Bun.spawnSync(["bash", "-c", step5()], { env });
-      expect(first.exitCode).toBe(0);
-      expect(first.stdout.toString()).toContain("PATH self-healed in .zshrc");
-      const afterFirst = readFileSync(join(home, ".zshrc"), "utf8");
-      const second = Bun.spawnSync(["bash", "-c", step5()], { env });
-      expect(second.exitCode).toBe(0);
-      const afterSecond = readFileSync(join(home, ".zshrc"), "utf8");
-      expect(afterSecond).toBe(afterFirst); // nothing appended twice
+      const out = runStep5(home);
+      expect(out).toContain("Added");
+      expect(existsSync(join(home, ".bashrc"))).toBe(true);
+      expect(readFileSync(join(home, ".bashrc"), "utf8")).toContain(
+        `export PATH="${home}/.local/bin:$PATH"`,
+      );
+      expect(existsSync(join(home, ".profile"))).toBe(false);
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
   });
 
-  test("a profile that already references the dir is left alone", () => {
+  test("idempotent: a second run appends nothing", () => {
     const home = mkdtempSync(join(tmpdir(), "pboss-path-heal3-"));
     try {
-      writeFileSync(join(home, ".bashrc"), 'export PATH="$HOME/.local/bin:$PATH"\n');
-      const proc = Bun.spawnSync(["bash", "-c", step5()], {
-        env: {
-          ...process.env,
-          HOME: home,
-          SHELL: "/bin/bash",
-          PATH: "/usr/bin:/bin",
-          INSTALL_DIR: `${home}/.local/bin`,
-          INVOKE_HOME: home,
-        },
-      });
-      expect(proc.exitCode).toBe(0);
-      expect(proc.stdout.toString()).toContain("Note:"); // honest note, no heal
-      expect(readFileSync(join(home, ".bashrc"), "utf8")).toBe(
-        'export PATH="$HOME/.local/bin:$PATH"\n',
+      writeFileSync(join(home, ".bashrc"), "# existing bashrc\n");
+      runStep5(home);
+      const afterFirst = readFileSync(join(home, ".bashrc"), "utf8");
+      runStep5(home);
+      expect(readFileSync(join(home, ".bashrc"), "utf8")).toBe(afterFirst);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test("an rc that already references the dir — $HOME or ~/ spelling — is left alone", () => {
+    for (const spelling of ['export PATH="$HOME/.local/bin:$PATH"', "export PATH=~/.local/bin:$PATH"]) {
+      const home = mkdtempSync(join(tmpdir(), "pboss-path-heal4-"));
+      try {
+        writeFileSync(join(home, ".bashrc"), `${spelling}\n`);
+        const out = runStep5(home);
+        expect(out).toContain("Note:");
+        expect(out).toContain("already in your shell profile");
+        expect(readFileSync(join(home, ".bashrc"), "utf8")).toBe(`${spelling}\n`);
+      } finally {
+        rmSync(home, { recursive: true, force: true });
+      }
+    }
+  });
+
+  test("zsh users heal ~/.zshrc (creating it), never .bashrc", () => {
+    const home = mkdtempSync(join(tmpdir(), "pboss-path-heal5-"));
+    try {
+      const out = runStep5(home, "/bin/zsh");
+      expect(out).toContain(".zshrc");
+      expect(existsSync(join(home, ".zshrc"))).toBe(true);
+      expect(readFileSync(join(home, ".zshrc"), "utf8")).toContain(
+        `export PATH="${home}/.local/bin:$PATH"`,
       );
+      expect(existsSync(join(home, ".bashrc"))).toBe(false);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test("the dir already on the current PATH → nothing is touched", () => {
+    const home = mkdtempSync(join(tmpdir(), "pboss-path-heal6-"));
+    try {
+      const out = runStep5(home, "/bin/bash", `/usr/bin:/bin:${home}/.local/bin`);
+      expect(out).not.toContain("Added");
+      expect(existsSync(join(home, ".bashrc"))).toBe(false);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("install.sh: step 1 + step 5 in sequence (the curl | bash shape)", () => {
+  test("non-root install: binary dir created AND the rc healed in one run", () => {
+    const home = mkdtempSync(join(tmpdir(), "pboss-installer-e2e-"));
+    try {
+      writeFileSync(join(home, ".bashrc"), "# stock ubuntu bashrc\n");
+      const { code, out, sudoLog } = runSlice(
+        step1() + "\n" + step5(),
+        home,
+      );
+      expect(code).toBe(0);
+      expect(out).toContain("no root required");
+      expect(out).toContain("Added");
+      expect(existsSync(join(home, ".local", "bin"))).toBe(true);
+      expect(readFileSync(join(home, ".bashrc"), "utf8")).toContain(
+        `export PATH="${home}/.local/bin:$PATH"`,
+      );
+      expect(existsSync(sudoLog)).toBe(false);
     } finally {
       rmSync(home, { recursive: true, force: true });
     }

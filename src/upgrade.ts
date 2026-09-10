@@ -272,7 +272,7 @@ export function buildUpgradePlan(
           "curl -fsSL https://procboss.com/install.sh | bash",
         ],
         manual: false,
-        note: "No root required — it refreshes the same install directory in place (sudo may prompt once if pboss lives in /usr/local/bin).",
+        note: "No root required — the installer is idempotent and refreshes in place.",
       };
     }
     case "source":

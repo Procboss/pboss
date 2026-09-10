@@ -138,14 +138,14 @@ ProcBoss (pboss) is a production-grade, runtime-agnostic process manager built o
 
 ### One-Line Universal Install
 
-Install and compile the native standalone `pboss` executable directly on your device — **no root required**. The binary goes where every shell can find it immediately: `/usr/local/bin` when sudo can elevate the copy (on PATH for every user — only the binary is elevated; the daemon, state, and boot service stay per-user), otherwise `~/.local/bin` with an automatic PATH fix in your shell profile. Reinstalls and upgrades always refresh the same directory:
+Install and compile the native standalone `pboss` executable directly on your device — **no root required**. The installer puts the binary in `~/.local/bin` and, when that directory is not on your `PATH`, adds it to your shell profile (`~/.bashrc` / `~/.zshrc`) automatically — no manual edits:
 
 **Linux / macOS:**
 ```bash
 curl -fsSL https://procboss.com/install.sh | bash
 ```
 
-(Without sudo the install is fully per-user; with it, the binary is system-wide — either way nothing runs as root afterwards. `PBOSS_INSTALL_DIR=/custom/path` overrides the target, `PBOSS_NO_SUDO=1` forces the per-user install.)
+(Running the installer as root still works and installs system-wide to `/usr/local/bin` — but sudo is never required.)
 
 **Windows (PowerShell):**
 ```powershell
