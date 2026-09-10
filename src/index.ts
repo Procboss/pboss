@@ -63,6 +63,7 @@ import {
   compareVersions,
   fetchLatestVersion,
   runUpgradePlan,
+  verifyInstalledVersion,
   writeChannelStamp,
   type InstallChannel,
   type ChannelContext,
@@ -1622,12 +1623,13 @@ ${colorize("Notes:", "dim")}
     }
 
     const channel = detectChannel(ctx);
-    const plan = buildUpgradePlan(channel, process.platform);
 
-    console.log(colorize("⚡ pboss upgrade", "bold"));
-    console.log(`  Installed via:  ${plan.label}`);
-    console.log(`  Current:        v${VERSION}`);
-
+    // The registry's latest is known BEFORE the plan is built, because the
+    // universal channel pins it into the installer command
+    // (PBOSS_VERSION=…) so `curl | bash` compiles exactly the release this
+    // upgrade announces. An unpinned installer compiles git main, which can
+    // sit behind the registry — the freshly "upgraded" binary then still
+    // reports the old version (owner report, 2026-09-10).
     const latest = await fetchLatestVersion();
     if (!latest) {
       console.error(
@@ -1638,6 +1640,12 @@ ${colorize("Notes:", "dim")}
       );
       process.exit(1);
     }
+    const plan = buildUpgradePlan(channel, process.platform, latest);
+
+    console.log(colorize("⚡ pboss upgrade", "bold"));
+    console.log(`  Installed via:  ${plan.label}`);
+    console.log(`  Current:        v${VERSION}`);
+
     const cmp = compareVersions(VERSION, latest);
 
     if (cmp >= 0) {
@@ -1691,6 +1699,46 @@ ${colorize("Notes:", "dim")}
       console.log(colorize(`  ${plan.note}`, "dim"));
     }
 
+    // The receipt, not the promise: spawn the pboss the user's PATH
+    // resolves right now and read its version. "Upgrade requested" used to
+    // end with "Verify with: pboss --version (expect vX)" — a version
+    // drift between git main and the registry made that expectation a lie.
+    // Now the command verifies itself and warns honestly.
+    const installed = await verifyInstalledVersion();
+    if (installed) {
+      if (compareVersions(installed.version, latest) >= 0) {
+        console.log(
+          colorize(
+            `  ✓ Verified: pboss at ${installed.path} now reports v${installed.version}.`,
+            "green"
+          )
+        );
+      } else {
+        console.log(
+          colorize(
+            `  ⚠ Not upgraded: pboss at ${installed.path} still reports v${installed.version} (expected v${latest}).`,
+            "yellow"
+          )
+        );
+        console.log(
+          colorize(
+            "    The channel command finished, but the pboss your PATH resolves did not change.",
+            "yellow"
+          )
+        );
+        console.log(
+          colorize(
+            "    Open a NEW terminal (shells cache command paths) and check for a second install: which -a pboss",
+            "yellow"
+          )
+        );
+      }
+    } else {
+      console.log(
+        colorize("  Could not verify the installed version — run: pboss --version", "dim")
+      );
+    }
+
     // A running daemon keeps the OLD code until restarted. Restart it NOW
     // (the upgrade is half-done otherwise) and check the cloud link came
     // back — the machine credential in ~/.pboss is the permanent cache, so
@@ -1732,7 +1780,6 @@ ${colorize("Notes:", "dim")}
         colorize("  ☁  cloud link state unknown — check with: pboss cloud status", "dim")
       );
     }
-    console.log(colorize(`  Verify with: pboss --version  (expect v${latest})`, "dim"));
   }
 
   async cmdEnv(args: string[]) {

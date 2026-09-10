@@ -122,27 +122,9 @@ pboss list
 └────┴──────────┴──────────┴──────┴───────┴──────────┴──────────┴──────────┘
 ```
 
-### Link the machine to ProcBoss Cloud (optional)
-
-Servers have no browser — so the login is a device code, approved from your laptop or phone:
-
-```bash
-pboss cloud connect
-
-# ⚡ ProcBoss Cloud — connect this server
-#
-#   Open:  https://procboss.com/connect
-#   Code:  3RJD-TZJD-K2M4
-#
-# Waiting for authorization…
-# ✓ Server authorized and connected
-```
-
-Open the URL anywhere, enter the code, approve the card (it shows this machine's hostname, OS, and agent version), done. The daemon keeps an **outbound-only** connection open and streams live state every 10s. You get the fleet view, alerts, and remote process control. `pboss login` manages your *user* identity separately. Every local feature works without an account.
-
 ### Updating
 
-`pboss upgrade` self-updates through the channel that installed it (installer, npm, brew, snap) — one machine, one CLI:
+`pboss upgrade` self-updates through the channel that installed it (installer, npm, brew, snap) — one machine, one CLI. The installer downloads the exact version the command announces (pinned against the npm registry), and the command then verifies `pboss --version` on your PATH actually reports it:
 
 ```bash
 pboss upgrade --check    # see current → latest, the detected channel, and the exact command

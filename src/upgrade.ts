@@ -205,10 +205,21 @@ const UNIVERSAL_URLS = {
 /**
  * The channel-fidelity table: each channel upgrades THROUGH ITSELF. Pure —
  * safe to unit test without touching the machine.
+ *
+ * `targetVersion` (the registry's latest, known by the time a plan is built)
+ * is honored by the universal channel only: the installer command pins
+ * PBOSS_VERSION so `curl | bash` compiles EXACTLY the release the upgrade
+ * announced (npm-registry tarball) instead of whatever git main happens to
+ * carry — the two can drift, and an unpinned upgrade that recompiles an
+ * older-looking main is how "upgraded but `pboss -v` still shows the old
+ * version" happens. npm/bun channels pin `pboss@latest` inherently;
+ * brew/snap defer to their package manager; Windows keeps the unpinned
+ * installer (install.ps1 has no tarball path yet).
  */
 export function buildUpgradePlan(
   channel: InstallChannel,
   platform: NodeJS.Platform = process.platform,
+  targetVersion?: string,
 ): UpgradePlan {
   switch (channel) {
     case "npm":
@@ -263,16 +274,19 @@ export function buildUpgradePlan(
           note: "No Administrator needed — it installs per-user by default.",
         };
       }
+      const pin = isSafeVersion(targetVersion) ? `PBOSS_VERSION=${targetVersion} ` : "";
       return {
         channel,
         label: "universal installer",
         command: [
           "bash",
           "-c",
-          "curl -fsSL https://procboss.com/install.sh | bash",
+          `curl -fsSL https://procboss.com/install.sh | ${pin}bash`,
         ],
         manual: false,
-        note: "No root required — the installer is idempotent and refreshes in place.",
+        note:
+          "No root required — the installer is idempotent and refreshes in place." +
+            (pin ? " It downloads the exact version shown above from the npm registry." : ""),
       };
     }
     case "source":
@@ -311,6 +325,19 @@ export function compareVersions(a: string, b: string): number {
 /** The canonical version source for every channel (they all build from it). */
 export const PBOSOL_REGISTRY_URL = "https://registry.npmjs.org/pboss/latest";
 
+/** npm registry tarball for an exact version (what PBOSS_VERSION installs). */
+export const PBOSOL_TARBALL_URL = "https://registry.npmjs.org/pboss/-/pboss-<version>.tgz";
+
+/**
+ * The versions the universal installer is allowed to be pinned to. The pin
+ * travels through a `bash -c "curl … | PBOSS_VERSION=<v> bash"` command
+ * string, so anything outside plain semver MUST be rejected — never
+ * interpolate an unvalidated registry value into a shell command.
+ */
+export function isSafeVersion(v: string | undefined | null): v is string {
+  return typeof v === "string" && /^\d+\.\d+\.\d+(-[A-Za-z0-9.-]+)?$/.test(v);
+}
+
 /**
  * Latest published version. `fetcher` is injectable for tests. The npm
  * registry is the source of truth for version numbers across channels.
@@ -341,6 +368,69 @@ export async function runUpgradePlan(
 ): Promise<boolean> {
   const code = await spawnFn(plan.command);
   return code === 0;
+}
+
+/* ── post-upgrade verification ─────────────────────────────────────────── */
+
+/** What `pboss --version` actually reports from PATH after an upgrade. */
+export type InstalledVersion = {
+  /** The resolved executable the user's shell will run. */
+  path: string;
+  /** The version it printed (no "v" prefix). */
+  version: string;
+};
+
+/** Parse `pboss v1.2.5` style output. Tolerant: last v-prefixed token. */
+export function parseVersionOutput(text: string): string | null {
+  const m = text.match(/(?:^|\s)v?(\d+\.\d+(?:\.\d+)?(?:-[A-Za-z0-9.-]+)?)(?:\s|$)/);
+  return m?.[1] ?? null;
+}
+
+/**
+ * The upgrade's receipt: spawn the pboss the user's PATH resolves NOW (the
+ * new binary, if the channel command did its job) and read its version.
+ * This is what `pboss -v` will print in the user's next shell — checking it
+ * here turns "upgrade requested" into "upgrade VERIFIED" (or an honest
+ * warning about a second, older pboss earlier on PATH).
+ *
+ * `which`/`spawnFn` injectable for tests. Null = could not verify (binary
+ * not on PATH or refused to answer), never a crash.
+ */
+export async function verifyInstalledVersion(
+  opts: {
+    which?: (cmd: string) => string | null;
+    spawnFn?: (cmd: string[]) => Promise<{ code: number; stdout: string }> | { code: number; stdout: string };
+  } = {},
+): Promise<InstalledVersion | null> {
+  const which = opts.which ?? ((cmd: string) => Bun.which(cmd) ?? null);
+  const spawnFn =
+    opts.spawnFn ??
+    (async (cmd: string[]) => {
+      const proc = Bun.spawn(cmd, { stdout: "pipe", stderr: "pipe" });
+      // `pboss --version` is a pure print, but never trust a spawned CLI
+      // forever: kill it and report "unverifiable" after 10s.
+      const timer = setTimeout(() => proc.kill(), 10_000);
+      try {
+        const [code, stdout] = await Promise.all([
+          proc.exited,
+          new Response(proc.stdout).text(),
+        ]);
+        return { code, stdout };
+      } finally {
+        clearTimeout(timer);
+      }
+    });
+
+  try {
+    const path = which("pboss");
+    if (!path) return null;
+    const { code, stdout } = await spawnFn([path, "--version"]);
+    if (code !== 0) return null;
+    const version = parseVersionOutput(stdout);
+    return version ? { path, version } : null;
+  } catch {
+    return null;
+  }
 }
 
 async function defaultSpawn(cmd: string[]): Promise<number> {

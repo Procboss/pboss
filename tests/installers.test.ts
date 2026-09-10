@@ -35,6 +35,15 @@ function step1(): string {
   return sh.slice(start, end);
 }
 
+/** Extract step 3 (source fetch) from the real script. */
+function step3(): string {
+  const start = sh.indexOf("TMP_DIR=$(mktemp -d");
+  const end = sh.indexOf('echo -e "${CYAN}Compiling standalone');
+  expect(start).toBeGreaterThan(0);
+  expect(end).toBeGreaterThan(start);
+  return sh.slice(start, end);
+}
+
 /** Extract step 5 (PATH self-heal) from the real script. */
 function step5(): string {
   const start = sh.indexOf('if [[ ":$PATH:" != *":$INSTALL_DIR:"* ]]; then');
@@ -378,5 +387,61 @@ describe("installers detect an existing cloud link (the permanent cache)", () =>
     expect(checkIdx).toBeGreaterThan(0);
     expect(checkIdx).toBeLessThan(bannerIdx);
     expect(ps1).toContain("Existing cloud link detected");
+  });
+});
+
+/**
+ * Version-exact installs (owner report, 2026-09-10: "after pboss upgrade was
+ * success, pboss -v still showed the old version"). Root cause: the registry
+ * (1.2.4) was ahead of git main (1.2.3), and the universal installer
+ * compiled git main — a "successful" upgrade that shipped the same version.
+ * The contract now: `pboss upgrade` pins PBOSS_VERSION on the bash side of
+ * the pipe, and install.sh fetches EXACTLY that version's npm tarball.
+ */
+describe("install.sh: version-exact installs (PBOSS_VERSION)", () => {
+  test("the pinned branch downloads the npm registry tarball for that version", () => {
+    expect(sh).toContain(
+      'curl -fsSL "https://registry.npmjs.org/pboss/-/pboss-${PBOSS_VERSION}.tgz"',
+    );
+    expect(sh).toContain("npm registry tarball");
+  });
+
+  test("the unpinned default still clones git main (fresh installs get the dev edge)", () => {
+    expect(sh).toContain("git clone --depth 1 https://github.com/procboss/pboss.git");
+    expect(sh).toContain("Fetching latest pboss source");
+  });
+
+  test("the tarball branch fails LOUDLY when the registry download fails", () => {
+    expect(sh).toContain("Failed to download pboss v${PBOSS_VERSION}");
+    expect(sh).toContain("exit 1");
+  });
+
+  test("the success banner reports the version the binary itself prints", () => {
+    // INSTALLED_V is read once in step 4b (channel stamp) and reused by the
+    // banner — one source of truth, no drift between stamp and message.
+    expect(sh).toContain('INSTALLED_V=$("$INSTALL_DIR/pboss" --version');
+    expect(sh).toContain('echo "✓ ProcBoss (pboss) v${INSTALLED_V} successfully installed');
+    // The generic fallback line stays for the (unlikely) unreadable case.
+    expect(sh).toContain('echo "✓ ProcBoss (pboss) successfully installed');
+  });
+
+  test("step 3 slices cleanly: pinned → tarball, unset → git clone", () => {
+    const block = step3();
+    expect(block).toContain('if [ -n "$PBOSS_VERSION" ]; then');
+    expect(block.indexOf("registry.npmjs.org")).toBeGreaterThan(
+      block.indexOf('if [ -n "$PBOSS_VERSION" ]; then'),
+    );
+    expect(block.indexOf("git clone")).toBeGreaterThan(block.indexOf("else"));
+  });
+
+  test("a pinned install is still a no-root install (no new sudo appears)", () => {
+    // The whole-file sudo-line count from the no-root contract must hold
+    // (one legacy root-pipe line in step 6 only).
+    const codeLines = sh
+      .split("\n")
+      .filter((l) => /\bsudo\b/.test(l))
+      .filter((l) => !/^\s*#/.test(l))
+      .filter((l) => !/\becho\b/.test(l));
+    expect(codeLines).toHaveLength(1);
   });
 });

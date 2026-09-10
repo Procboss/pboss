@@ -108,17 +108,35 @@ echo -e "${GREEN}✓ Build toolchain ready: Bun v$("$BUN_PATH" --version)${RESET
 #     override here once sent non-root installs to /usr/local/bin and died
 #     on "cp: Permission denied". The test suite pins "no INSTALL_DIR
 #     assignment after the step-1 mkdir".)
+#
+#    Version-exact installs: `pboss upgrade` exports PBOSS_VERSION set to the
+#    release it announced, and THIS script then fetches that exact version's
+#    npm-registry tarball instead of cloning git main. The two can drift
+#    (registry ahead of, or behind, main) — an unpinned upgrade that
+#    recompiled an older-looking main is exactly how "pboss upgrade was a
+#    success but pboss -v still showed the old version" happened. A fresh
+#    `curl | bash` leaves PBOSS_VERSION unset and gets git main (dev edge).
 TMP_DIR=$(mktemp -d -t pboss-install-XXXXXX)
 cleanup() {
   rm -rf "$TMP_DIR"
 }
 trap cleanup EXIT
 
-echo -e "${CYAN}Fetching latest pboss source...${RESET}"
-git clone --depth 1 https://github.com/procboss/pboss.git "$TMP_DIR" >/dev/null 2>&1 || {
-  # Fallback to archive download if git is unavailable
-  curl -fsSL https://github.com/procboss/pboss/archive/refs/heads/main.tar.gz | tar -xz -C "$TMP_DIR" --strip-components=1
-}
+if [ -n "$PBOSS_VERSION" ]; then
+  echo -e "${CYAN}Fetching pboss v${PBOSS_VERSION} (npm registry tarball)...${RESET}"
+  if ! curl -fsSL "https://registry.npmjs.org/pboss/-/pboss-${PBOSS_VERSION}.tgz" \
+    | tar -xz -C "$TMP_DIR" --strip-components=1; then
+    echo -e "${RED}✗ Failed to download pboss v${PBOSS_VERSION} from the npm registry.${RESET}"
+    echo -e "  Re-run without the pin: curl -fsSL https://procboss.com/install.sh | bash"
+    exit 1
+  fi
+else
+  echo -e "${CYAN}Fetching latest pboss source...${RESET}"
+  git clone --depth 1 https://github.com/procboss/pboss.git "$TMP_DIR" >/dev/null 2>&1 || {
+    # Fallback to archive download if git is unavailable
+    curl -fsSL https://github.com/procboss/pboss/archive/refs/heads/main.tar.gz | tar -xz -C "$TMP_DIR" --strip-components=1
+  }
+fi
 
 cd "$TMP_DIR"
 
@@ -142,11 +160,14 @@ cp "$TMP_DIR/pboss" "$INSTALL_DIR/pboss"
 chmod 755 "$INSTALL_DIR/pboss"
 
 # 4b. Record the install channel — `pboss upgrade` re-runs THIS installer
-#     (never npm/brew/snap) so a machine keeps exactly one pboss.
+#     (never npm/brew/snap) so a machine keeps exactly one pboss. The stamp
+#     also carries the version the binary itself reports (the same value the
+#     success banner prints — read once, used twice).
 STAMP_DIR="$INVOKE_HOME/.pboss"
 mkdir -p "$STAMP_DIR"
+INSTALLED_V=$("$INSTALL_DIR/pboss" --version 2>/dev/null | awk '{print $NF}' | tr -d 'v')
 printf '{"channel":"universal","by":"install.sh","stampedAt":%s,"version":"%s"}\n' \
-  "$(date +%s)" "$("$INSTALL_DIR/pboss" --version 2>/dev/null | awk '{print $NF}' | tr -d 'v')" \
+  "$(date +%s)" "${INSTALLED_V:-unknown}" \
   > "$STAMP_DIR/channel.json"
 if [ -n "$INVOKE_USER" ]; then
   chown "${INVOKE_USER}:" "$STAMP_DIR" "$STAMP_DIR/channel.json" 2>/dev/null \
@@ -246,6 +267,10 @@ if [ -f "$INVOKE_HOME/.pboss/cloud.json" ]; then
 fi
 
 echo -e "${GREEN}${BOLD}"
-echo "✓ ProcBoss (pboss) successfully installed to ${INSTALL_DIR}/pboss!"
+if [ -n "$INSTALLED_V" ]; then
+  echo "✓ ProcBoss (pboss) v${INSTALLED_V} successfully installed to ${INSTALL_DIR}/pboss!"
+else
+  echo "✓ ProcBoss (pboss) successfully installed to ${INSTALL_DIR}/pboss!"
+fi
 echo -e "${RESET}"
-echo -e "Run ${CYAN}pboss --version${RESET} to verify, then ${CYAN}pboss --help${RESET} to get started."
+echo -e "Run ${CYAN}pboss --version${RESET} to re-check, then ${CYAN}pboss --help${RESET} to get started."

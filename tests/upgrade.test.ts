@@ -11,8 +11,12 @@ import {
   compareVersions,
   fetchLatestVersion,
   runUpgradePlan,
+  isSafeVersion,
+  parseVersionOutput,
+  verifyInstalledVersion,
   type ChannelContext,
 } from "../src/upgrade";
+import { VERSION } from "../src/constants";
 
 /**
  * `pboss upgrade` exists to keep ONE pboss per machine: the channel that
@@ -241,6 +245,134 @@ describe("buildUpgradePlan: each channel upgrades through itself", () => {
   });
 });
 
+describe("buildUpgradePlan: version-exact universal installs (the stale -v bug)", () => {
+  test("universal with a target version pins PBOSS_VERSION on the bash side of the pipe", () => {
+    const plan = buildUpgradePlan("universal", "linux", "1.2.5");
+    expect(plan.command[2]).toContain("| PBOSS_VERSION=1.2.5 bash");
+    // The pin sits AFTER the pipe: prefixing curl with the assignment would
+    // send it to curl, not bash (the classic pipe foot-gun install.sh's own
+    // Bun-install step documents).
+    expect(plan.command[2]).not.toMatch(/^PBOSS_VERSION=/);
+    expect(plan.note).toContain("exact version");
+  });
+
+  test("without a target version the command stays unpinned (fresh installs)", () => {
+    const plan = buildUpgradePlan("universal", "linux");
+    expect(plan.command).toEqual([
+      "bash",
+      "-c",
+      "curl -fsSL https://procboss.com/install.sh | bash",
+    ]);
+    expect(plan.note).not.toContain("exact version");
+  });
+
+  test("an unsafe version string is NEVER interpolated into the shell command", () => {
+    for (const evil of [
+      "1.2.5; rm -rf ~",
+      "1.2.5 $(reboot)",
+      "1.2.5`id`",
+      '1.2.5" && echo pwned',
+      "1.2.5\nexport EVIL=1",
+      "",
+    ]) {
+      const plan = buildUpgradePlan("universal", "linux", evil);
+      expect(plan.command.join(" ")).toBe(
+        "bash -c curl -fsSL https://procboss.com/install.sh | bash",
+      );
+    }
+  });
+
+  test("package-manager channels ignore the target (they pin @latest inherently)", () => {
+    expect(buildUpgradePlan("npm", "linux", "1.2.5").command).toEqual([
+      "npm",
+      "install",
+      "-g",
+      "pboss@latest",
+    ]);
+    expect(buildUpgradePlan("universal", "win32", "1.2.5").command.at(-1)).toContain(
+      "install.ps1",
+    );
+  });
+
+  test("isSafeVersion accepts plain semver + prerelease, rejects everything else", () => {
+    for (const ok of ["1.2.5", "0.0.1", "2.0.0-rc.1", "1.2.5-beta.3"]) {
+      expect(isSafeVersion(ok)).toBe(true);
+    }
+    for (const bad of [
+      undefined,
+      null,
+      "",
+      "v1.2.5",
+      "1.2",
+      "1.2.5; rm",
+      "1.2.5 extra",
+      "../../etc/passwd",
+    ]) {
+      expect(isSafeVersion(bad as unknown as string)).toBe(false);
+    }
+  });
+});
+
+describe("parseVersionOutput (what `pboss --version` prints)", () => {
+  test("reads the canonical output: 'pboss v1.2.5'", () => {
+    expect(parseVersionOutput("pboss v1.2.5\n")).toBe("1.2.5");
+  });
+
+  test("tolerates noise and prerelease suffixes, nulls on junk", () => {
+    expect(parseVersionOutput("ProcBoss v2.1.0-beta.4")).toBe("2.1.0-beta.4");
+    expect(parseVersionOutput("1.3.0")).toBe("1.3.0");
+    expect(parseVersionOutput("no version here")).toBeNull();
+    expect(parseVersionOutput("")).toBeNull();
+  });
+});
+
+describe("verifyInstalledVersion (the upgrade's receipt)", () => {
+  test("resolves pboss from PATH, spawns --version, reports both", async () => {
+    const ran: string[][] = [];
+    const result = await verifyInstalledVersion({
+      which: (cmd) => (cmd === "pboss" ? "/home/alice/.local/bin/pboss" : null),
+      spawnFn: async (cmd) => {
+        ran.push(cmd);
+        return { code: 0, stdout: "pboss v1.2.5\n" };
+      },
+    });
+    expect(result).toEqual({ path: "/home/alice/.local/bin/pboss", version: "1.2.5" });
+    expect(ran).toEqual([["/home/alice/.local/bin/pboss", "--version"]]);
+  });
+
+  test("null when pboss is not on PATH, exits non-zero, or prints junk", async () => {
+    expect(
+      await verifyInstalledVersion({
+        which: () => null,
+        spawnFn: async () => ({ code: 0, stdout: "pboss v1.2.5" }),
+      }),
+    ).toBeNull();
+    expect(
+      await verifyInstalledVersion({
+        which: () => "/usr/local/bin/pboss",
+        spawnFn: async () => ({ code: 1, stdout: "boom" }),
+      }),
+    ).toBeNull();
+    expect(
+      await verifyInstalledVersion({
+        which: () => "/usr/local/bin/pboss",
+        spawnFn: async () => ({ code: 0, stdout: "junk" }),
+      }),
+    ).toBeNull();
+  });
+
+  test("never throws — a spawning failure is just unverifiable", async () => {
+    expect(
+      await verifyInstalledVersion({
+        which: () => "/usr/local/bin/pboss",
+        spawnFn: async () => {
+          throw new Error("ENOENT");
+        },
+      }),
+    ).toBeNull();
+  });
+});
+
 describe("compareVersions", () => {
   test("orders semver correctly, tolerant of the v prefix", () => {
     expect(compareVersions("1.2.0", "1.2.0")).toBe(0);
@@ -314,6 +446,25 @@ describe("CLI surface", () => {
     // Latest version comes from the real npm registry; both up-to-date and
     // behind are acceptable --check outcomes, but a channel line must exist.
     expect(out).toMatch(/Installed via:\s+source checkout/);
+    // The old unverifiable promise is GONE — verification happens in the
+    // real upgrade run, not as text.
+    expect(out).not.toContain("Verify with: pboss --version");
+  });
+
+  test("`pboss -v` reports the package version (the number the upgrade must move)", async () => {
+    const proc = Bun.spawn(["bun", "run", "src/index.ts", "-v"], {
+      cwd: import.meta.dir + "/..",
+      stdout: "pipe",
+      stderr: "pipe",
+      env: { ...process.env, PBOSS_HOME: join(home, ".pboss") },
+    });
+    const out = await new Response(proc.stdout).text();
+    await proc.exited;
+    // The bump that fixed the owner's stale-version report: the repo must
+    // carry a version STRICTLY newer than the registry's 1.2.4, or a
+    // git-main-compiled binary still "fails" to look upgraded.
+    expect(out).toContain(`pboss v${VERSION}`);
+    expect(compareVersions(VERSION, "1.2.4")).toBeGreaterThan(0);
   });
 
   test("`pboss upgrade --channel bogus` rejects unknown channels with exit 1", async () => {
