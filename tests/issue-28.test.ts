@@ -17,7 +17,7 @@
  * hermetic PBOSS_HOME, exactly like the user's terminal.
  */
 import { describe, test, expect } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { loadEcosystemConfig } from "../src/api";
@@ -345,5 +345,91 @@ describe("Issue #28 — noDaemon from the config file", () => {
       }
     },
     90000
+  );
+});
+
+describe("Ecosystem script paths — config-file-relative resolution", () => {
+  // The procboss.com deployment story: an ecosystem file committed at the
+  // repo root (`pboss start ecosystem.config.json`) with a RELATIVE script
+  // path. `app.cwd` defaults to the config file's directory, and the script
+  // must resolve the same way — otherwise `pboss start
+  // /srv/app/ecosystem.config.json` from anywhere else spawns the wrong path
+  // and the process dies in a MODULE_NOT_FOUND restart loop.
+
+  test("loadEcosystemConfig resolves a relative script against the config's directory", async () => {
+    const home = await freshHome("relscript");
+    try {
+      const sub = join(home, "app");
+      mkdirSync(sub, { recursive: true });
+      writeFileSync(join(sub, "web.ts"), "setInterval(() => {}, 1000);\n");
+      writeFileSync(
+        join(sub, "ecosystem.config.json"),
+        `{ "apps": [{ "name": "web", "script": "./web.ts" }] }\n`
+      );
+      const config = await loadEcosystemConfig(join(sub, "ecosystem.config.json"));
+      const app = config.apps[0]!;
+      expect(app.cwd).toBe(sub);
+      // The resolved script is the one NEXT TO THE CONFIG — not next to the
+      // process's cwd (which would be home/web.ts, a nonexistent file).
+      expect(app.script).toBe(join(sub, "web.ts"));
+      expect(existsSync(app.script!)).toBe(true);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test("loadEcosystemConfig leaves absolute script paths untouched", async () => {
+    const home = await freshHome("absscript");
+    try {
+      const abs = "/srv/elsewhere/web.ts"; // need not exist — no existence check
+      writeFileSync(
+        join(home, "ecosystem.config.json"),
+        `{ "apps": [{ "name": "web", "script": ${JSON.stringify(abs)} }] }\n`
+      );
+      const config = await loadEcosystemConfig(join(home, "ecosystem.config.json"));
+      expect(config.apps[0]!.script).toBe(abs);
+      // cwd still defaults to the config's own directory.
+      expect(config.apps[0]!.cwd).toBe(home);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test(
+    "start --config <subdir>/ecosystem.config.js works from a different cwd (regression)",
+    async () => {
+      const home = await freshHome("subdir");
+      const sub = join(home, "app");
+      mkdirSync(sub, { recursive: true });
+      // The app script lives INSIDE the subdir and is referenced RELATIVELY.
+      const app = join(sub, "web.ts");
+      writeFileSync(app, "setInterval(() => {}, 1000);\n");
+      writeFileSync(
+        join(sub, "ecosystem.config.js"),
+        `module.exports = { apps: [{ name: "web", script: "./web.ts" }] };\n`
+      );
+      try {
+        // cwd is `home` — NOT the config's directory. Before the fix,
+        // "./web.ts" resolved against the CLI cwd to home/web.ts (a
+        // nonexistent file) and the start errored into a restart loop.
+        const res = await runCli(["start", "--config", join("app", "ecosystem.config.js")], home);
+        expect(res.code).toBe(0);
+        expect(res.out).toContain("web");
+        expect(existsSync(join(home, "daemon.sock"))).toBe(true);
+        // The persisted dump pins where the daemon ACTUALLY points the
+        // script — it must be the file next to the config, and the app must
+        // be online rather than crash-looping on a bad path.
+        const dumpPath = join(home, "dump.json");
+        const dump = JSON.parse(readFileSync(dumpPath, "utf-8")) as any[];
+        const entry = dump.find((e) => (e.config?.name ?? e.name) === "web");
+        expect((entry?.config?.script ?? entry?.script)).toBe(app);
+        const resList = await runCli(["list"], home);
+        expect(resList.out).toContain("web");
+        expect(resList.out).not.toContain("errored");
+      } finally {
+        await cleanup(home);
+      }
+    },
+    120000
   );
 });

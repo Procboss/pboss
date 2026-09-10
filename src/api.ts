@@ -17,7 +17,7 @@
 
 import { EventEmitter } from "events";
 import { existsSync, readFileSync, unlinkSync } from "fs";
-import path, { join, resolve, extname } from "path";
+import path, { join, resolve, extname, isAbsolute } from "path";
 import {
   DAEMON_SOCKET,
   DAEMON_PID_FILE,
@@ -126,8 +126,16 @@ export async function loadEcosystemConfig(filePath: string): Promise<EcosystemCo
   }
 
   config.apps = config.apps.map((app) => {
-    if ((app.cwd || "").trim() === "") {
-      app.cwd = cwd;
+    const dir = app.cwd && app.cwd.trim() !== "" ? app.cwd : cwd;
+    app.cwd = dir;
+    // Relative script paths resolve against the app's (just-defaulted) cwd —
+    // i.e. the ecosystem file's directory — so `pboss start
+    // /srv/app/ecosystem.config.json` works from ANY working directory.
+    // Resolving against the CLI's process.cwd() instead would silently point
+    // at the wrong file (spawn fails with a confusing MODULE_NOT_FOUND loop).
+    // Absolute paths are untouched (resolve() is idempotent for them).
+    if (app.script && !isAbsolute(app.script)) {
+      app.script = resolve(dir, app.script);
     }
     return app;
   });
@@ -391,9 +399,17 @@ export class PBoss extends EventEmitter<PBossEvents> {
    * ```
    */
   async startEcosystem(config: EcosystemConfig): Promise<ProcessState[]> {
-    // Resolve scripts to absolute paths
+    // Resolve scripts to absolute paths — against the app's cwd when set
+    // (loadEcosystemConfig defaults that to the config file's directory),
+    // falling back to the CLI's cwd for hand-built programmatic configs.
+    // This mirrors how the container actually spawns: cwd comes from the
+    // config, so the script must be resolved the same way or `pboss start
+    // /srv/app/ecosystem.config.json` from another directory would point at
+    // a nonexistent file. Absolute paths pass through unchanged.
     for (const app of config.apps) {
-      if (app.script) app.script = resolve(app.script);
+      if (app.script && !isAbsolute(app.script)) {
+        app.script = resolve(app.cwd || process.cwd(), app.script);
+      }
     }
     const res = await this.sendOrThrow({ type: "ecosystem", data: config });
     this.emit("process:start", res.data);
