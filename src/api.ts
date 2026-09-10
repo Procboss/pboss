@@ -16,7 +16,7 @@
  */
 
 import { EventEmitter } from "events";
-import { existsSync, readFileSync, unlinkSync } from "fs";
+import { existsSync, readFileSync, statSync, unlinkSync } from "fs";
 import path, { join, resolve, extname, isAbsolute } from "path";
 import {
   DAEMON_SOCKET,
@@ -152,6 +152,44 @@ export async function loadEcosystemConfig(filePath: string): Promise<EcosystemCo
   }
 
   return config;
+}
+
+// Issue #29: config files that a target-less `pboss start` auto-detects in
+// the working directory, in priority order — the first one that exists wins.
+// The four prefixes keep PM2-style names (and the pre-rename bm2) working,
+// each as .json / .js / .ts; within a prefix .json beats .js, which beats .ts.
+export const CONFIG_FILE_CANDIDATES: readonly string[] = [
+  "ecosystem.config.json",
+  "ecosystem.config.js",
+  "ecosystem.config.ts",
+  "pboss.config.json",
+  "pboss.config.js",
+  "pboss.config.ts",
+  "bm2.config.json",
+  "bm2.config.js",
+  "bm2.config.ts",
+  "pm2.config.json",
+  "pm2.config.js",
+  "pm2.config.ts",
+];
+
+/**
+ * Issue #29: find the config file a target-less `pboss start` should load.
+ * Scans `dir` (default: the process working directory) in
+ * CONFIG_FILE_CANDIDATES order and returns the ABSOLUTE path of the first
+ * candidate that exists as a regular file, or undefined when none do.
+ */
+export async function findDefaultConfigFile(dir?: string): Promise<string | undefined> {
+  const base = dir ? resolve(dir) : process.cwd();
+  for (const name of CONFIG_FILE_CANDIDATES) {
+    const candidate = join(base, name);
+    try {
+      if (statSync(candidate).isFile()) return candidate;
+    } catch {
+      // Candidate absent (or not statable) — try the next one.
+    }
+  }
+  return undefined;
 }
 
 /**

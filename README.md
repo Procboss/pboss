@@ -83,6 +83,12 @@ Start a process:
 pboss start app.ts
 ```
 
+With no target, `pboss start` auto-detects a config file in the current directory — `ecosystem.config.{json,js,ts}` > `pboss.config.*` > `bm2.config.*` > `pm2.config.*`, first match wins:
+
+```bash
+pboss start
+```
+
 Start with a name, 4 instances, and a base port:
 
 ```bash

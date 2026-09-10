@@ -25,7 +25,7 @@ import {
   METRICS_PORT,
 } from "./constants";
 import { ensureDirs, formatBytes, formatUptime, colorize, padRight, dumpEntryCount } from "./utils";
-import { PBoss, loadEcosystemConfig, waitForDaemon } from "./api";
+import { PBoss, loadEcosystemConfig, findDefaultConfigFile, waitForDaemon } from "./api";
 import { DeployManager } from "./deploy";
 import {
   StartupManager,
@@ -311,14 +311,37 @@ class PBossCLI {
     }
     args = restArgs;
 
-    if (args.length === 0 && !configPath) {
-      console.error(colorize("Usage: pboss start <script|config> [options]", "red"));
-      process.exit(1);
+    // Issue #29: `pboss start` with no target (no --config and no positional)
+    // auto-detects a config file in the current working directory before
+    // giving up — ecosystem.config.* > pboss.config.* > bm2.config.* >
+    // pm2.config.*, each as .json/.js/.ts, first match wins. Detection NEVER
+    // fires when the user named something: an explicit config, script, or
+    // name/namespace resume target (issue #27) keeps its exact old behavior.
+    if (!configPath) {
+      const hasTarget = args.some((a) => !a.startsWith("-"));
+      if (!hasTarget) {
+        const detected = await findDefaultConfigFile();
+        if (detected) {
+          configPath = detected;
+          const shown = path.relative(process.cwd(), detected) || detected;
+          console.error(
+            colorize(`[pboss] no target given — using ${shown} (auto-detected)`, "dim")
+          );
+        }
+      }
     }
 
     const firstPositional = configPath ? undefined : args.find((a) => !a.startsWith("-"));
     if (!configPath && !firstPositional) {
-      console.error(colorize("Usage: pboss start <script|config> [options]", "red"));
+      // Issue #29: nothing resolvable — no config detected in the cwd and no
+      // target named. The old generic usage line hid the actual cause; this
+      // message names it and says what to do about it.
+      console.error(
+        colorize(
+          "No PBoss configuration file or application was found.\n\nPlease provide a config file, executable script, or application to start.",
+          "red"
+        )
+      );
       process.exit(1);
     }
 
@@ -1882,8 +1905,10 @@ ${colorize("Notes:", "dim")}
     ${colorize("Usage:", "bold")} pboss <command> [options]
     
     ${colorize("Process Management:", "cyan")}
-    start <script|config|ns> [opts]  Start a process, an ecosystem config,
-                                  or resume a stopped name/namespace
+    start [<target>] [opts]         Start a process, an ecosystem config, or
+                                  resume a stopped name/namespace — bare
+                                  'pboss start' auto-detects a config file
+                                  in the cwd (ecosystem > pboss > bm2 > pm2)
     stop [id|name|namespace|all]  Stop process(es) — a namespace stops
                                   its whole group
     restart [id|name|namespace|all]  Restart process(es) or a namespace
