@@ -29,8 +29,6 @@ ProcBoss is free and open-source. If it saves you time, star it on [GitHub](http
 - **Health checks, cron restarts, file watching** — self-healing processes.
 - **Standalone cron jobs** — friendly schedules (`everyday@9:11`, `on-date@24-10-2026-23:10`), no managed process required, persists across reboots.
 - **Persistence (default on)** — process list saved after every change; the per-user boot service (systemd / launchd / Task Scheduler) is installed automatically — apps survive restarts and reboots.
-- **Remote deployment** — SSH deploys with release directories, symlink rotation, pre/post hooks.
-- **ProcBoss Cloud (optional)** — `pboss cloud connect` prints a code, you approve it at [procboss.com/connect](https://procboss.com/connect) from any device. Outbound-only connection: fleet view, alerts, remote control. Everything local works without it.
 - **Tiny footprint** — one daemon, <50ms start, ~12MB RAM.
 
 ---
