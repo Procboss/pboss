@@ -27,6 +27,7 @@ import { getSystemInfo, colorize } from "./utils";
 import { ignore } from "./error-handling";
 import type { ProcessManager } from "./process-manager";
 import type { ProcessState, StartOptions, LogItem } from "./types";
+import { runDeployJob, cancelDeployJob, deployJobRunning, gitInfoForProcess } from "./deploy-job";
 
 /**
  * Inbound-silence watchdog. The cloud pings the agent (app-level `ping`
@@ -310,7 +311,11 @@ export interface CloudCommand {
     | "process.logs"
     | "process.deploy"
     | "server.info"
-    | "server.deploy";
+    | "server.deploy"
+    /* auto-deploy pipeline (long-running; see deploy-job.ts) */
+    | "process.gitinfo"
+    | "deploy.run"
+    | "deploy.cancel";
   payload: Record<string, unknown>;
 }
 
@@ -336,7 +341,43 @@ export type CloudAgentFrame =
   | { type: "state"; report: CloudStateReport }
   | { type: "command-result"; result: CloudCommandResult }
   | { type: "log"; process: string; lines: { t: number; level?: string; msg: string }[] }
+  | { type: "deploy.progress"; progress: DeployProgressPayload }
   | { type: "pong"; now: number };
+
+/* ── auto-deploy wire shapes (mirror of the cloud's protocol.ts) ──────── */
+
+/** The deploy.run payload — one deployment job, end to end. */
+export interface DeployRunPayload {
+  deploymentId: string;
+  /** Tokenized clone URL (x-access-token form) — fetch auth ONLY. */
+  repoUrl: string;
+  /** Credential-free URL — what .git/config's origin is kept at. */
+  cleanRepoUrl: string;
+  branch: string;
+  /** EXACT identity — the agent refuses ambiguous branch states. */
+  commitSha: string;
+  installCmd: string | null;
+  buildCmd: string | null;
+  startCmd: string;
+  workdir: string | null;
+  env: Record<string, string>;
+  runtime: "bun" | "node";
+  mode: "new" | "update" | "rollback";
+  processName: string;
+  buildTimeoutSec: number;
+}
+
+/** deploy.progress frames — step matches the cloud's pipeline states,
+ * "done" is terminal (success flag + agent-reported facts). */
+export interface DeployProgressPayload {
+  deploymentId: string;
+  step: "cloning" | "installing" | "building" | "deploying" | "starting" | "done";
+  logs?: string[];
+  error?: string;
+  success?: boolean;
+  commit?: string;
+  durationMs?: number;
+}
 
 /** The cloud closes the socket with this code when the credential is revoked. */
 export const WS_CLOSE_REVOKED = 4001;
@@ -1226,6 +1267,50 @@ export class CloudAgent {
           processes: this.pm.list().length,
           cloud: { serverId: this.cfg!.serverId, url: this.cfg!.cloudUrl },
         };
+      }
+
+      /* ── auto-deploy pipeline (long-running; see deploy-job.ts) ── */
+
+      case "process.gitinfo": {
+        if (!target) throw new Error("process.gitinfo requires a target");
+        return gitInfoForProcess(this.pm, target);
+      }
+
+      case "deploy.run": {
+        // FAST-ACK pattern: the command result returns the moment the job
+        // is accepted; the pipeline itself streams deploy.progress frames
+        // and ends with a terminal done frame (the cloud's 20s command
+        // timeout could never carry a full build).
+        const p = cmd.payload as unknown as DeployRunPayload;
+        if (!p?.deploymentId || !p.commitSha || !p.processName || !p.repoUrl) {
+          throw new Error("deploy.run requires deploymentId, repoUrl, commitSha, processName");
+        }
+        if (deployJobRunning(p.deploymentId)) {
+          return { accepted: true, alreadyRunning: true };
+        }
+        void runDeployJob(
+          { sendFrame: (frame) => this.sendFrame(frame), pm: this.pm },
+          p,
+        ).catch((err: unknown) => {
+          // runDeployJob reports its own failures through progress frames;
+          // this catch is for errors BEFORE the first frame (e.g. mkdir)
+          this.sendFrame({
+            type: "deploy.progress",
+            progress: {
+              deploymentId: p.deploymentId,
+              step: "done",
+              success: false,
+              error: err instanceof Error ? err.message : String(err),
+            },
+          });
+        });
+        return { accepted: true };
+      }
+
+      case "deploy.cancel": {
+        const id = typeof cmd.payload?.deploymentId === "string" ? cmd.payload.deploymentId : "";
+        if (!id) throw new Error("deploy.cancel requires deploymentId");
+        return { cancelled: cancelDeployJob(id) };
       }
 
       default:
