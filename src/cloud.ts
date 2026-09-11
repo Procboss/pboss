@@ -305,6 +305,7 @@ export interface CloudCommand {
     | "process.start"
     | "process.stop"
     | "process.restart"
+    | "process.kill"
     | "process.delete"
     | "process.logs"
     | "process.deploy"
@@ -1152,6 +1153,13 @@ export class CloudAgent {
       case "process.stop":
         if (!target) throw new Error("process.stop requires a target");
         return (await this.pm.stop(target)).map(mapProcessState);
+
+      case "process.kill":
+        // force-stop (SIGKILL path): unlike process.stop there is no
+        // graceful SIGTERM window — for a wedged process. The process
+        // row survives (unlike process.delete).
+        if (!target) throw new Error("process.kill requires a target");
+        return (await this.pm.kill(target)).map(mapProcessState);
 
       case "process.restart":
         if (!target) throw new Error("process.restart requires a target");
