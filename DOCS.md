@@ -971,6 +971,18 @@ ProcBoss can load environment variables from `.env` files:
 pboss start server.ts --env-file .env.production
 ```
 
+#### .env re-read on every (re)spawn
+
+Independently of explicit loading, pboss automatically re-reads the `.env`
+file in each application's directory (`cwd`) every time it spawns the
+process — start, `pboss restart`, crash-recovery, and post-reboot
+resurrect. Values from that file take precedence over the environment
+snapshot captured when the process was first started, so editing `.env`
+followed by `pboss restart <name>` is all it takes to apply new values.
+Applications without an `.env` in their cwd are unaffected, and pboss's own
+injected variables (`PBOSS_*`, `BM2_*`) are always layered on top so they
+cannot be overridden from `.env`.
+
 ---
 
 ### Deployment
