@@ -15,7 +15,7 @@
  */
 import type { Subprocess } from "bun";
 import type { ProcessDescription } from "./types";
-import { getCpuCount } from "./utils";
+import { getCpuCount, readEnvFileOverrides } from "./utils";
 import { findBun, bunSearchDescription } from "./install-mode";
 import path from "path"
  
@@ -106,7 +106,13 @@ export class ClusterManager {
    ): Subprocess {
      const cmd = this.buildWorkerCommand(config);
      const env = this.createWorkerEnv(
-       { ...process.env as Record<string, string>, ...config.env },
+       {
+         ...(process.env as Record<string, string>),
+         ...config.env,
+         // Same rule as fork mode: the app dir's .env is re-read at every
+         // (re)spawn and takes precedence over the start-time snapshot.
+         ...readEnvFileOverrides(config.cwd),
+       },
        workerId,
        totalWorkers,
        config.port

@@ -208,6 +208,20 @@ describe(
           const listed = await runCli(["list"], home);
           expect(listed.out).toMatch(/web[\s\S]*stopped/i);
 
+          // 8b. …and force-kills it — process.kill (SIGKILL path; the row
+          // survives and the process restarts from the dump afterwards)
+          const resume = await runCli(["start", script], home);
+          expect(resume.code).toBe(0);
+          const killResult = await mini.dispatchCommand(cred.serverId, "process.kill", { target: "web" });
+          expect(killResult.success).toBe(true);
+          const afterKill = await runCli(["list"], home);
+          expect(afterKill.out).toMatch(/web[\s\S]*stopped/i);
+          // the row survived the kill — the process can come back
+          const resurrect = await runCli(["start", script], home);
+          expect(resurrect.code).toBe(0);
+          const back = await runCli(["list"], home);
+          expect(back.out).toMatch(/web[\s\S]*online/i);
+
           // 9. reconnect is an honest no-revocation restart
           const rec = await runCli(["cloud", "reconnect"], home);
           expect(rec.code).toBe(0);

@@ -665,3 +665,61 @@ describe("Duplicate Process Prevention & Existing Process Resumption (Issue #26)
     await pm.deleteAll();
   });
 });
+
+describe("ProcessManager.kill — force-kill a process (cloud process.kill path)", () => {
+  test("should kill a running process and keep the row (resurrectable)", async () => {
+    const { ProcessManager } = await import("../src/process-manager");
+    const pm = new ProcessManager();
+    const scriptPath = join(TEST_DIR, "killable-app.ts");
+    await writeFile(scriptPath, "setInterval(() => {}, 1000);");
+
+    const started = await pm.start({ name: "killable-app", script: scriptPath });
+    expect(started[0]!.status).toBe("online");
+    expect(started[0]!.pid).toBeGreaterThan(0);
+
+    // kill (force) — row must survive, status must leave "online"
+    const killed = await pm.kill("killable-app");
+    expect(killed).toHaveLength(1);
+    expect(killed[0]!.name).toBe("killable-app");
+    expect(killed[0]!.status).not.toBe("online");
+
+    // the row survived — the process can be started again from the dump
+    expect(pm.list()).toHaveLength(1);
+    const again = await pm.start({ name: "killable-app", script: scriptPath });
+    expect(again[0]!.status).toBe("online");
+
+    await pm.deleteAll();
+  });
+
+  test("kill on an unknown name should throw an honest error (no silent no-op)", async () => {
+    const { ProcessManager } = await import("../src/process-manager");
+    const pm = new ProcessManager();
+    let threw = "";
+    try {
+      await pm.kill("no-such-process");
+    } catch (err: any) {
+      threw = String(err?.message ?? err);
+    }
+    expect(threw).toContain("no-such-process");
+    expect(pm.list()).toHaveLength(0);
+  });
+
+  test("kill on an already-stopped process should be a no-op that still persists", async () => {
+    const { ProcessManager } = await import("../src/process-manager");
+    const pm = new ProcessManager();
+    const scriptPath = join(TEST_DIR, "stopped-kill-app.ts");
+    await writeFile(scriptPath, "setInterval(() => {}, 1000);");
+
+    await pm.start({ name: "stopped-kill-app", script: scriptPath });
+    await pm.stop("stopped-kill-app");
+    expect(pm.describe("stopped-kill-app")[0]!.status).toBe("stopped");
+
+    // container.stop() guards non-online states — kill on stopped returns
+    // the row without erroring
+    const killed = await pm.kill("stopped-kill-app");
+    expect(killed).toHaveLength(1);
+    expect(pm.list()).toHaveLength(1);
+
+    await pm.deleteAll();
+  });
+});

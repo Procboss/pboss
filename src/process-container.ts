@@ -25,7 +25,7 @@ import { LogManager } from "./log-manager";
 import { ClusterManager } from "./cluster-manager";
 import { HealthChecker } from "./health-checker";
 import { CronManager } from "./cron-manager";
-import { treeKill } from "./utils";
+import { treeKill, readEnvFileOverrides } from "./utils";
 import { ignore, warn } from "./error-handling";
 import { join } from "path";
 import {
@@ -170,6 +170,11 @@ export class ProcessContainer {
     const env: Record<string, string> = {
       ...(process.env as Record<string, string>),
       ...this.config.env,
+      // The app dir's .env is re-read on EVERY (re)spawn and wins over the
+      // start-time snapshot — edit .env + `pboss restart` now actually
+      // applies (see readEnvFileOverrides for the incident this fixes).
+      // PBOSS_*/BM2_* below stay on top so .env cannot hijack pboss's own vars.
+      ...readEnvFileOverrides(this.config.cwd),
       PBOSS_ID: String(this.id),
       PBOSS_NAME: this.name,
       PBOSS_EXEC_MODE: "fork",

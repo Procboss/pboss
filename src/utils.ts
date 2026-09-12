@@ -108,6 +108,69 @@ export function generateId(): string {
   return crypto.randomUUID().replace(/-/g, "").substring(0, 12);
 }
 
+/**
+ * Parse the dotenv subset of .env syntax (comments, blank lines, optional
+ * `export ` prefix, KEY=VALUE, single/double-quoted values). Lines that do
+ * not parse are ignored — a malformed .env must never break a spawn, it
+ * just contributes nothing for that line.
+ */
+export function parseEnvFile(text: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const rawLine of text.split(/\r?\n/)) {
+    let line = rawLine.trim();
+    if (!line || line.startsWith("#")) continue;
+    if (line.startsWith("export ")) line = line.slice("export ".length).trim();
+    const eq = line.indexOf("=");
+    if (eq <= 0) continue;
+    const key = line.slice(0, eq).trim();
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) continue;
+    let value = line.slice(eq + 1).trim();
+    // Strip one matching pair of surrounding quotes (single quotes are
+    // literal in dotenv; double quotes keep their content verbatim here —
+    // escape interpolation is out of scope for this subset).
+    if (
+      (value.startsWith('"') && value.endsWith('"') && value.length >= 2) ||
+      (value.startsWith("'") && value.endsWith("'") && value.length >= 2)
+    ) {
+      value = value.slice(1, -1);
+    }
+    out[key] = value;
+  }
+  return out;
+}
+
+/**
+ * Re-read an application directory's `.env` at (re)spawn time.
+ *
+ * WHY THIS EXISTS: the env an app runs with was captured ONCE — when the
+ * ecosystem config was evaluated at `pboss start` (its `import
+ * "dotenv/config"` reads .env at config-load time) — then frozen into the
+ * container config and the ~/.pboss/dump.json snapshot. `pboss restart` and
+ * post-reboot `resurrect` re-spawned from that snapshot, so EVERY later .env
+ * edit was invisible until the process was deleted and started fresh. The
+ * production ProcBoss box hit exactly this: the process kept a placeholder
+ * `DATABASE_URL` (`…@HOST/DBNAME`) from its first boot and 502'd every
+ * request with "Can't reach database server at `HOST:5432`" while the real
+ * Neon URL sat unread in .env.
+ *
+ * Semantics (the contract ProcBoss's .env template already documents):
+ * editing `<app cwd>/.env` + `pboss restart` now actually applies — .env
+ * values take precedence over the start-time snapshot. Apps without an
+ * .env in their cwd see zero change. pboss's own injected vars (the
+ * PBOSS_* and BM2_* families) are layered on top by the callers and cannot
+ * be hijacked. An
+ * unreadable/missing file contributes nothing and never blocks a spawn.
+ */
+export function readEnvFileOverrides(cwd?: string): Record<string, string> {
+  const dir = cwd && cwd.trim() !== "" ? cwd : process.cwd();
+  try {
+    return parseEnvFile(readFileSync(join(dir, ".env"), "utf8"));
+  } catch {
+    return {};
+  }
+}
+
+
 const ANSI_COLORS: Record<string, string> = {
   red: "\x1b[31m", green: "\x1b[32m", yellow: "\x1b[33m",
   blue: "\x1b[34m", magenta: "\x1b[35m", cyan: "\x1b[36m",

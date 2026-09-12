@@ -185,6 +185,25 @@ import type { ReadableStreamController } from "bun";
     return states;
   }
 
+  /**
+   * Force-kill — the SIGKILL path. `stop()` asks nicely (SIGTERM + a
+   * graceful wait); kill() skips the wait and escalates to SIGKILL, for
+   * processes that ignore signals or wedge. The process row survives
+   * (unlike `del`): a killed process can be `start()`ed again from its
+   * persisted config. Cloud commands map process.stop → stop and
+   * process.kill → here.
+   */
+  async kill(target: string | number): Promise<ProcessState[]> {
+    const containers = this.resolveTargetOrThrow(target, "kill");
+    const states: ProcessState[] = [];
+    for (const c of containers) {
+      await c.stop(true); // force: no graceful SIGTERM window
+      states.push(c.getState());
+    }
+    await this.persist();
+    return states;
+  }
+
   async restart(target: string | number): Promise<ProcessState[]> {
     const containers = this.resolveTargetOrThrow(target, "restart");
     const states: ProcessState[] = [];
