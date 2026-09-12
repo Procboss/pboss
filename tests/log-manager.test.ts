@@ -1,5 +1,10 @@
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { mkdir, rm, writeFile, readFile, exists, readdir } from "fs/promises";
+import { mkdir, rm, writeFile, readFile, readdir } from "fs/promises";
+// NB: no `exists` here — fs/promises.exists is a BUN-ONLY extension. When
+// tsc resolves fs/promises against stock @types/node (CI's install can
+// re-resolve it transitively), the import stops typechecking. existsSync
+// is typed by both @types/node and bun-types and behaves identically here.
+import { existsSync } from "node:fs";
 import { join } from "path";
 import { tmpdir } from "os";
 
@@ -19,7 +24,7 @@ describe("Log File Management", () => {
     const logFile = join(LOG_DIR, "app-out.log");
     await writeFile(logFile, "");
 
-    const fileExists = await exists(logFile);
+    const fileExists = existsSync(logFile);
     expect(fileExists).toBe(true);
   });
 
@@ -27,7 +32,7 @@ describe("Log File Management", () => {
     const logFile = join(LOG_DIR, "app-error.log");
     await writeFile(logFile, "");
 
-    const fileExists = await exists(logFile);
+    const fileExists = existsSync(logFile);
     expect(fileExists).toBe(true);
   });
 

@@ -31,8 +31,13 @@ jobs:
         run: bun --version
 
       # Install dependencies
+      # --frozen-lockfile: install EXACTLY the committed bun.lock. The old
+      # `--force` re-resolved from the registry on every run, letting
+      # floating transitives (e.g. @types/node via @types/pidusage's "*")
+      # drift to whatever was "latest" that day — the moving target behind
+      # the "fs/promises has no exported member 'exists'" CI failure.
       - name: Install dependencies
-        run: bun install --force
+        run: bun install --frozen-lockfile
 
       # Type check (TS)
       - name: Type check
