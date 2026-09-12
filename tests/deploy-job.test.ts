@@ -38,7 +38,7 @@ async function git(cwd: string, ...args: string[]): Promise<string> {
   return out.trim();
 }
 
-type Frame = { type: string; progress?: { step: string; success?: boolean; error?: string; logs?: string[] } };
+type Frame = { type: string; progress?: { step: string; success?: boolean; error?: string; logs?: string[]; commit?: string; durationMs?: number } };
 
 /** The fake process manager — records starts, can be poisoned. */
 function makeFakePm() {
@@ -60,7 +60,10 @@ function makeFakePm() {
 }
 
 async function importJob() {
-  // PBOSS_HOME must be pinned BEFORE constants loads (deploys root)
+  // Pin PBOSS_HOME before the job RUNS: the deploys root resolves per job
+  // (runDeployJob reads the env at job start), so this holds even when
+  // bun's single-process runner cached src/constants with a different
+  // home (full-suite runs — the api.test.ts import binds ~/.pboss first).
   process.env.PBOSS_HOME = HOME;
   return import("../src/deploy-job");
 }
@@ -135,16 +138,16 @@ describe("deploy-job — real clone/archive/build/swap pipeline", () => {
     const releases = join(deploys, "releases");
     const releaseNames = readdirSync(releases);
     expect(releaseNames.length).toBe(1);
-    expect(existsSync(join(releases, releaseNames[0], "dist", "marker.txt"))).toBe(true);
-    expect(readFileSync(join(releases, releaseNames[0], "dist", "marker.txt")).toString()).toBe("built-v1");
+    expect(existsSync(join(releases, releaseNames[0]!, "dist", "marker.txt"))).toBe(true);
+    expect(readFileSync(join(releases, releaseNames[0]!, "dist", "marker.txt")).toString()).toBe("built-v1");
 
     const current = resolve(deploys, readlinkSync(join(deploys, "current")));
     expect(current.startsWith(releases)).toBe(true);
 
     expect(fake.starts.length).toBe(1);
-    expect(fake.starts[0].name).toBe("testapp");
-    expect(fake.starts[0].script).toBe("node index.js");
-    expect(fake.starts[0].cwd).toBe(join(deploys, "current"));
+    expect(fake.starts[0]!.name).toBe("testapp");
+    expect(fake.starts[0]!.script).toBe("node index.js");
+    expect(fake.starts[0]!.cwd).toBe(join(deploys, "current"));
   });
 
   test("second commit → second release, symlink flips forward", async () => {

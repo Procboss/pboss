@@ -67,8 +67,20 @@ export function cancelDeployJob(deploymentId: string): boolean {
 
 /* ── the job ─────────────────────────────────────────────────────────── */
 
-const DEPLOYS_ROOT = join(PBOSS_HOME, "deploys");
 const RELEASES_KEPT = 10;
+
+/**
+ * The deploys root resolves PER JOB, not at import time. PBOSS_HOME is an
+ * environment contract, but bun's test runner (and any embedder) can import
+ * this module long before the env is pinned — an import-time DEPLOYS_ROOT
+ * then aimed test deploys at the REAL ~/.pboss: wrong root, failing
+ * assertions, and home-dir pollution. Resolving at job start honors the
+ * env whenever it was set, and falls back to the import-time PBOSS_HOME
+ * (same homedir default) when it never was — daemon behavior is unchanged.
+ */
+function deploysRoot(): string {
+  return join(process.env.PBOSS_HOME || PBOSS_HOME, "deploys");
+}
 
 type JobCtx = {
   sendFrame: (frame: CloudAgentFrame) => boolean;
@@ -83,6 +95,7 @@ export async function runDeployJob(
   const job: RunningJob = { cancelled: false, children: new Set() };
   running.set(payload.deploymentId, job);
 
+  const DEPLOYS_ROOT = deploysRoot();
   const slug = payload.processName.replace(/[^a-zA-Z0-9._-]/g, "_");
   const root = join(DEPLOYS_ROOT, slug);
   const sourceDir = join(root, "source");
@@ -237,7 +250,7 @@ function exec(
   job: RunningJob,
   payload: DeployRunPayload,
   opts: { cwd: string; env?: Record<string, string> },
-  command: string[],
+  command: [string, ...string[]],
   onLines?: (lines: string[]) => void,
 ): Promise<{ code: number; output: string[] }> {
   return new Promise((resolveExec, rejectExec) => {
@@ -298,7 +311,7 @@ function exec(
 
 function extractToken(repoUrl: string): string {
   const m = /^https:\/\/x-access-token:([^@]+)@/.exec(repoUrl);
-  return m ? m[1] : "";
+  return m?.[1] ?? "";
 }
 
 /** The atomic swap + process (re)start — shared by deploy and the
