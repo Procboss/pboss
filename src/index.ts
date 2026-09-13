@@ -243,6 +243,23 @@ class PBossCLI {
         case "--namespace":
           opts.namespace = args[++i];
           break;
+        case "--on-ns-member-exit": {
+          // Issue #31: namespace member-exit policy — "ignore" (default)
+          // or "exit". Validated again daemon-side at the single start()
+          // choke point; the CLI check gives the faster, clearer error.
+          const policy = args[++i];
+          if (policy !== "ignore" && policy !== "exit") {
+            console.error(
+              colorize(
+                `Error: --on-ns-member-exit must be "ignore" or "exit" (got "${policy ?? ""}")`,
+                "red"
+              )
+            );
+            process.exit(1);
+          }
+          opts.onNsMemberExit = policy;
+          break;
+        }
         case "--source-map-support":
           opts.sourceMapSupport = true;
           break;
@@ -2069,6 +2086,10 @@ ${colorize("Notes:", "dim")}
     --log, -o <file>              Custom stdout log path
     --error, -e <file>            Custom stderr log path
     --namespace <ns>              Namespace grouping
+    --on-ns-member-exit <policy>  Namespace sibling exit policy:
+                                  ignore (default) or exit — with exit,
+                                  a member leaving the namespace for good
+                                  stops the other members too
     --wait-ready                  Wait for ready signal
     --health-check-url <url>      HTTP health check endpoint
     -- <args...>                  Pass arguments to script
@@ -2085,8 +2106,9 @@ ${colorize("Notes:", "dim")}
     pboss restart api
     pboss restart stellarforge        (whole namespace)
     pboss stop stellarforge
-    pboss start stellarforge          (resume stopped namespace)
+    pboss start stellarforge          (resume stopped namespace — atomic)
     pboss delete stellarforge --force
+    pboss start web.ts --namespace shop --on-ns-member-exit exit
     pboss scale api 8
     pboss logs api --lines 100
     pboss monit

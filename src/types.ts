@@ -25,6 +25,23 @@ export type ProcessStatus =
 
 export type ExecMode = "fork" | "cluster";
 
+/**
+ * Namespace member-exit policy (issue #31): what a namespaced process
+ * should do when ANOTHER member of its namespace exits for good
+ * (terminal stop / gave-up errored — not a pboss-initiated stop, not a
+ * crash that auto-restart is already handling).
+ *
+ * - `ignore` (default): do nothing — the default standalone-like behavior.
+ * - `exit`: stop this process too, so the namespace either runs complete
+ *   or not at all.
+ *
+ * Only applies to processes WITH a namespace; standalone processes are
+ * never affected by another process's exit.
+ */
+export type NsMemberExitPolicy = "ignore" | "exit";
+
+export const NS_MEMBER_EXIT_POLICIES: readonly NsMemberExitPolicy[] = ["ignore", "exit"];
+
 export interface ProcessDescription {
   id: number;
   name: string;
@@ -80,6 +97,8 @@ export interface ProcessDescription {
   nodeArgs?: string[];
   // Namespace
   namespace?: string;
+  /** Issue #31: reaction to a namespace sibling's terminal exit. */
+  onNsMemberExit?: NsMemberExitPolicy;
   // Version tracking
   version?: string;
   versioningConfig?: VersioningConfig;
@@ -159,6 +178,8 @@ export interface StartOptions {
   waitReady?: boolean;
   listenTimeout?: number;
   namespace?: string;
+  /** Issue #31: `"ignore"` (default) or `"exit"` — see NsMemberExitPolicy. */
+  onNsMemberExit?: NsMemberExitPolicy;
   nodeArgs?: string[];
   sourceMapSupport?: boolean;
   /**

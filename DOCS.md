@@ -397,6 +397,7 @@ pboss start server.ts --name api --wait-ready --listen-timeout 10000
 | `--ignore-watch <dirs>` | Directories to ignore | `node_modules,.git` |
 | `--port <n>` | Base port (auto-incremented in cluster mode) | — |
 | `--namespace <ns>` | Process namespace for grouping | — |
+| `--on-ns-member-exit <policy>` | Reaction to a namespace sibling's terminal exit: `ignore` (default) or `exit` | `ignore` |
 | `--wait-ready` | Wait for process ready signal | `false` |
 | `--listen-timeout <ms>` | Timeout waiting for ready signal | `3000` |
 | `--source-map-support` | Enable source map support | `false` |
@@ -504,6 +505,60 @@ Resolution rules:
 - Otherwise the target operates on every process in the **namespace**.
 - Unknown targets are clear errors: `Process or namespace "x" not found — nothing to <verb>`. `pboss list` shows registered names and namespaces.
 - Group operations report what they touched — `✓ Stopped 4 processes in namespace "stellarforge"` — and the auto-saved dump follows immediately, so group state survives reboots.
+
+**Atomic startup (issue #31).** A namespace is one lifecycle group, so starting
+it is atomic:
+
+- If any member fails to start, the members **that start invocation brought
+  up** are rolled back (stopped, best-effort, in reverse order). The original
+  failure stays the primary error; rollback results are reported separately:
+
+  ```
+  namespace "shop" startup failed: Script not found: ./scheduler.ts
+  Rollback: ✓ worker stopped, ✓ api stopped
+  ```
+
+- Members that were **already running** are never rolled back — only what the
+  operation started.
+- A namespace failure **never** touches other namespaces or standalone
+  (namespace-less) processes.
+- `pboss start ecosystem.config.*` applies the same boundaries: standalone
+  apps start independently (a failure is reported but never blocks or rolls
+  back the others), while each namespace starts atomically as one unit.
+- Namespace `restart` is stop-all + atomic start with the same rollback
+  contract; namespace `stop`/`reload`/`delete` are best-effort across members
+  (one stubborn member does not leave the rest of the group running).
+- Namespace-scoped operations on the same namespace are serialized, so two
+  terminals cannot interleave a `restart` and a `stop` on the same group.
+
+**Member-exit policy: `onNsMemberExit` (issue #31).** A namespaced process can
+decide what to do when *another* member of its namespace exits for good (a
+terminal stop, or an errored crash after the restart budget is exhausted — not
+a pboss-initiated stop, not a crash that auto-restart is already handling):
+
+- `ignore` (default) — do nothing. Each member keeps running on its own.
+- `exit` — stop this process too, so the namespace either runs complete or
+  not at all.
+
+```bash
+pboss start web.ts --name web --namespace shop --on-ns-member-exit exit
+```
+
+```js
+// ecosystem.config.js
+module.exports = {
+  apps: [
+    { name: "shop-api", script: "./api.ts", namespace: "shop", onNsMemberExit: "exit" },
+    { name: "shop-worker", script: "./worker.ts", namespace: "shop", onNsMemberExit: "exit" },
+  ],
+};
+```
+
+The policy is per-app and only applies to processes **with** a namespace —
+standalone processes are never affected by another process's exit. pboss-
+initiated stops (user stop, rollback, the policy itself) never trigger the
+policy again, so it cannot cascade. The setting persists in the process dump
+and survives daemon restarts.
 
 ---
 
@@ -1624,6 +1679,7 @@ The complete set of options available for each entry in the apps array:
 | `interpreterArgs` | `string[]` | — | Arguments for the interpreter |
 | `nodeArgs` | `string[]` | — | Additional runtime arguments |
 | `namespace` | `string` | — | Namespace for grouping processes |
+| `onNsMemberExit` | `"ignore"` \| `"exit"` | `ignore` | Reaction to a namespace sibling's terminal exit (namespaced processes only; see [Namespaces](#namespaces--group-level-lifecycle)) |
 | `sourceMapSupport` | `boolean` | `false` | Enable source map support |
 | `waitReady` | `boolean` | `false` | Wait for process to emit ready signal |
 | `listenTimeout` | `number` | `3000` | Timeout when waiting for ready signal |

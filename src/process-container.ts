@@ -58,6 +58,22 @@ export class ProcessContainer {
   public eventLoopLatency: number = 0;
   public axmMonitor: Record<string, any> = {};
 
+  /**
+   * Issue #31: set while a pboss-driven stop/restart/reload/delete/
+   * rollback is in flight for THIS container. A deliberate, operator-
+   * initiated stop must NOT fire the namespace member-exit policy —
+   * otherwise `pboss stop <ns>`/rollback would cascade into siblings.
+   */
+  public stopInitiated: boolean = false;
+
+  /**
+   * Issue #31: invoked by the container when it exits for GOOD — terminal
+   * stop (no restart pending) or errored after exhausting the restart
+   * budget — and the exit was NOT pboss-initiated. Wired by the
+   * ProcessManager to evaluate the namespace `onNsMemberExit` policy.
+   */
+  public onFinalExit: ((container: ProcessContainer) => void) | null = null;
+
   private logManager: LogManager;
   private clusterManager: ClusterManager;
   private healthChecker: HealthChecker;
@@ -389,7 +405,13 @@ export class ProcessContainer {
     }
   
     const uptime = Date.now() - this.startedAt;
-  
+
+    // A pboss-initiated stop (user stop/restart, rollback, policy stop) is
+    // NOT a member "exit" in the issue-#31 sense — the operator (or the
+    // policy itself) already decided what happens to this namespace.
+    const deliberateStop = this.stopInitiated;
+    this.stopInitiated = false;
+
     if (wasOnline && this.config.autorestart) {
       if (uptime < this.config.minUptime) {
         this.unstableRestarts++;
@@ -397,13 +419,18 @@ export class ProcessContainer {
         if (this.unstableRestarts >= this.config.maxRestarts) {
           console.log(`[pboss] ${this.name} reached max consecutive unstable restarts (${this.config.maxRestarts}), not restarting`);
           this.status = "errored";
+          // Terminal: the supervisor gave up — this member has left the
+          // running set for good, so siblings may react (onNsMemberExit).
+          if (!deliberateStop) this.notifyFinalExit();
           return;
         }
       } else {
         // Process survived minUptime: reset the consecutive unstable restart budget
         this.unstableRestarts = 0;
       }
-  
+
+      // A restart is already scheduled — the exit is transient, not a
+      // member exit. Siblings do not react yet.
       this.status = "waiting-restart";
       const delay = this.config.restartDelay || 0;
   
@@ -416,6 +443,21 @@ export class ProcessContainer {
       }, delay);
     } else if (!this.config.autorestart) {
       this.status = "stopped";
+      // Terminal and self-initiated (a deliberate stop would have had
+      // stopInitiated set) — the member exited for good.
+      if (!deliberateStop) this.notifyFinalExit();
+    }
+  }
+
+  /** Issue #31: terminal, non-deliberate exit — let the manager evaluate
+   * the namespace member-exit policy. Guarded so a listener error can
+   * never take down the supervisor's exit path. */
+  private notifyFinalExit() {
+    if (!this.onFinalExit) return;
+    try {
+      this.onFinalExit(this);
+    } catch (err) {
+      ignore(`onFinalExit notification for ${this.name}`, err);
     }
   }
   
@@ -439,6 +481,9 @@ export class ProcessContainer {
 
     this.isRestarting = false;
     this.status = "stopping";
+    // Issue #31: this stop is pboss-initiated — the process's exit must
+    // not fire the namespace member-exit policy (cleared in handleExit).
+    this.stopInitiated = true;
     this.config.autorestart = false;
 
     if (this.restartTimer) {

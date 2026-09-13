@@ -52,6 +52,19 @@ import type { ReadableStreamController } from "bun";
    public cronManager: CronManager;
    public monitor: Monitor;
    public gracefulReload: GracefulReload;
+
+  /**
+   * Issue #31: per-namespace operation locks. Every namespace-scoped
+   * lifecycle operation (atomic start, group stop/restart/reload/delete,
+   * namespace resume) appends to its namespace's promise chain, so two
+   * terminals running `pboss restart namespace shop` and `pboss stop
+   * namespace shop` serialize instead of interleaving. Different
+   * namespaces have independent chains — they never block each other.
+   * Standalone processes and `all` stay lock-free (the issue only
+   * requires same-namespace coordination; also avoids multi-lock
+   * ordering hazards).
+   */
+  private nsLocks = new Map<string, Promise<unknown>>();
  
    constructor() {
      this.logManager = new LogManager();
@@ -61,12 +74,356 @@ import type { ReadableStreamController } from "bun";
      this.monitor = new Monitor();
      this.gracefulReload = new GracefulReload();
    }
+
+  // ── Issue #31: namespace lifecycle helpers ───────────────────────────
+
+  /**
+   * Run `fn` serialized against every other namespace-scoped operation on
+   * the same namespace (see nsLocks). Single-lock-per-operation usage —
+   * chains cannot deadlock.
+   */
+  private async withNamespaceLock<T>(ns: string, fn: () => Promise<T>): Promise<T> {
+    const prev = this.nsLocks.get(ns) ?? Promise.resolve();
+    let release!: () => void;
+    const gate = new Promise<void>((resolveGate) => (release = resolveGate));
+    this.nsLocks.set(ns, gate);
+    // A failed predecessor never wedges the chain — recorded, not thrown.
+    await prev.catch((err: unknown) => ignore(`namespace "${ns}" lock chain`, err));
+    try {
+      return await fn();
+    } finally {
+      release();
+      if (this.nsLocks.get(ns) === gate) this.nsLocks.delete(ns);
+    }
+  }
+
+  /** Statuses meaning "the supervisor considers this running" — such
+   * processes are NOT rollback-eligible and are skipped by resume. */
+  private isRunningStatus(status: string): boolean {
+    return status === "online" || status === "launching" || status === "waiting-restart";
+  }
+
+  /**
+   * The containers of one namespace — matched by namespace ONLY. Used for
+   * group-scoped operations; name/cluster targets keep their per-name
+   * semantics (issue #27 precedence: a process name wins).
+   */
+  private resolveNamespaceGroup(ns: string): ProcessContainer[] {
+    return Array.from(this.processes.values()).filter(
+      (p) => p.config.namespace === ns
+    );
+  }
+
+  /**
+   * Issue #31: snapshot of live statuses keyed by container id — the
+   * "already running" boundary for rollback. Only processes that BECOME
+   * running during this invocation are rollback-eligible; ones already
+   * running (or scheduled to restart) must never be touched.
+   */
+  private snapshotStatuses(): Map<number, string> {
+    const snap = new Map<number, string>();
+    for (const [id, c] of this.processes) snap.set(id, c.status);
+    return snap;
+  }
+
+  /** Containers from `ids` running now but NOT running in `before`
+   * (absent = created by this invocation). */
+  private collectInvocationStarted(
+    ids: number[],
+    before: Map<number, string>
+  ): ProcessContainer[] {
+    const started: ProcessContainer[] = [];
+    for (const id of ids) {
+      const c = this.processes.get(id);
+      if (!c) continue;
+      const wasRunning = before.has(id) && this.isRunningStatus(before.get(id)!);
+      if (!wasRunning && this.isRunningStatus(c.status)) started.push(c);
+    }
+    return started;
+  }
+
+  /**
+   * Issue #31 rollback: stop `started` (best-effort, newest first — a
+   * startup order is undone in reverse). Returns per-process ✓/✗ lines;
+   * rollback failures are reported, never thrown: the ORIGINAL startup
+   * failure stays the primary error.
+   */
+  private async rollbackInvocation(started: ProcessContainer[]): Promise<string[]> {
+    const lines: string[] = [];
+    for (const c of [...started].reverse()) {
+      try {
+        await c.stop();
+        lines.push(`✓ ${c.name} stopped`);
+      } catch (err) {
+        lines.push(
+          `✗ ${c.name} failed to stop: ${err instanceof Error ? err.message : String(err)}`
+        );
+      }
+    }
+    if (started.length > 0) await this.persist();
+    return lines;
+  }
+
+  /**
+   * Issue #31: start every app of ONE namespace as an atomic unit.
+   *
+   * - Members already running are untouched and NEVER rolled back.
+   * - If any member fails to start, only the members THIS invocation
+   *   started are stopped (best-effort, reverse order); the thrown error
+   *   carries the original failure as the primary message plus a separate
+   *   per-member rollback report.
+   *
+   * Must run under withNamespaceLock(ns).
+   */
+  private async startNamespaceGroupAtomic(
+    ns: string,
+    apps: StartOptions[]
+  ): Promise<ProcessState[]> {
+    const states: ProcessState[] = [];
+    const startedByInvocation: ProcessContainer[] = [];
+
+    try {
+      for (const app of apps) {
+        const before = this.snapshotStatuses();
+        const result = await this.start(app);
+        states.push(...result);
+        startedByInvocation.push(
+          ...this.collectInvocationStarted(
+            result.map((s) => s.id),
+            before
+          )
+        );
+      }
+      return states;
+    } catch (primaryErr) {
+      const rollbackLines = await this.rollbackInvocation(startedByInvocation);
+      const report =
+        rollbackLines.length > 0 ? `\nRollback: ${rollbackLines.join(", ")}` : "";
+      throw new Error(
+        `namespace "${ns}" startup failed: ${
+          primaryErr instanceof Error ? primaryErr.message : String(primaryErr)
+        }${report}`
+      );
+    }
+  }
+
+  /**
+   * Issue #31: resume a namespace atomically — the `pboss start
+   * <namespace>` path. Same rollback contract as
+   * startNamespaceGroupAtomic, for containers that already exist.
+   *
+   * Must run under withNamespaceLock(ns).
+   */
+  private async resumeNamespaceAtomic(
+    ns: string,
+    containers: ProcessContainer[]
+  ): Promise<ProcessState[]> {
+    return this.atomicStartContainers(ns, containers, (c) => {
+      // Same resume semantics as start()'s existing-process branch: a
+      // fresh attempt clears the unstable-restart debt and restores
+      // supervision (a user stop set autorestart=false as the stop
+      // MECHANISM — resuming means supervising again).
+      c.unstableRestarts = 0;
+      c.config.autorestart = true;
+      return c.start();
+    });
+  }
+
+  /**
+   * Issue #31 (onNsMemberExit policy): a namespaced member exited for good
+   * on its own — terminal, NOT a pboss-initiated stop. Running siblings
+   * whose policy is `exit` stop, so the namespace runs complete or not at
+   * all. `ignore` (default) siblings and standalone processes are
+   * untouched. These policy stops are pboss-initiated, so they cannot
+   * cascade further.
+   */
+  private handleNsMemberExit(container: ProcessContainer): void {
+    const ns = container.config.namespace;
+    if (!ns) return; // standalone: the policy never applies
+
+    for (const sibling of Array.from(this.processes.values())) {
+      if (sibling === container || sibling.config.namespace !== ns) continue;
+      if (sibling.config.onNsMemberExit !== "exit") continue;
+      if (!this.isRunningStatus(sibling.status)) continue;
+      console.log(
+        `[pboss] namespace "${ns}" member ${container.name} exited — stopping ${sibling.name} (onNsMemberExit: exit)`
+      );
+      sibling
+        .stop()
+        .then(() => this.persist())
+        .catch((err) =>
+          ignore(`policy stop of ${sibling.name} (onNsMemberExit: exit)`, err)
+        );
+    }
+  }
+
+  /** Wire the issue-#31 exit policy hook onto a freshly built container. */
+  private attach(container: ProcessContainer): ProcessContainer {
+    container.onFinalExit = (c) => this.handleNsMemberExit(c);
+    return container;
+  }
+
+  /**
+   * True-ish when `target` resolves to a namespace GROUP: namespace
+   * members exist AND the target is not also a process name (issue #27
+   * precedence — a process name keeps per-name semantics). This is the
+   * trigger for issue-#31 atomic/serialized group semantics.
+   */
+  private resolveGroupTarget(
+    target: string | number
+  ): { ns: string; containers: ProcessContainer[] } | null {
+    if (typeof target !== "string" || target === "all" || /^\d+$/.test(target)) {
+      return null;
+    }
+    const containers = this.resolveNamespaceGroup(target);
+    if (containers.length === 0) return null;
+    const nameMatch = Array.from(this.processes.values()).some(
+      (p) => p.name === target || p.name.startsWith(`${target}-`)
+    );
+    if (nameMatch) return null;
+    return { ns: target, containers };
+  }
+
+  /**
+   * Issue #31: stop (or force-kill, or delete) every member of a
+   * namespace — best-effort: a member that refuses to stop does not
+   * prevent the others, and the surviving error(s) are aggregated into
+   * one honest report at the end.
+   */
+  private async stopNamespaceGroup(
+    ns: string,
+    containers: ProcessContainer[],
+    force: boolean,
+    verb: string,
+    opts: { remove?: boolean } = {}
+  ): Promise<ProcessState[]> {
+    const states: ProcessState[] = [];
+    const errors: string[] = [];
+    for (const c of containers) {
+      try {
+        await c.stop(force);
+      } catch (err) {
+        errors.push(
+          `${c.name}: ${err instanceof Error ? err.message : String(err)}`
+        );
+      }
+      states.push(c.getState());
+      if (opts.remove) this.processes.delete(c.id);
+    }
+    await this.persist();
+    if (errors.length > 0) {
+      throw new Error(
+        `namespace "${ns}" ${verb} failed for ${errors.length} member${errors.length > 1 ? "s" : ""} (others were ${verb === "delete" ? "removed" : "stopped"}): ${errors.join("; ")}`
+      );
+    }
+    return states;
+  }
+
+  /**
+   * Issue #31: restart a namespace as stop-all + atomic start. The stop
+   * phase is best-effort and PRESERVES each member's autorestart intent
+   * (stop() sets it false as the stop mechanism); the start phase is the
+   * shared atomic bring-up with invocation-scoped rollback. A member
+   * that failed to stop simply stays running — it is "already running"
+   * for the start phase and is never rolled back.
+   */
+  private async restartNamespaceGroup(
+    ns: string,
+    containers: ProcessContainer[]
+  ): Promise<ProcessState[]> {
+    const stopErrors: string[] = [];
+    const autorestartIntent = new Map<number, boolean>();
+
+    for (const c of containers) {
+      autorestartIntent.set(c.id, c.config.autorestart);
+      try {
+        await c.stop();
+      } catch (err) {
+        stopErrors.push(
+          `${c.name}: ${err instanceof Error ? err.message : String(err)}`
+        );
+      }
+    }
+
+    try {
+      const states = await this.atomicStartContainers(ns, containers, (c) => {
+        c.unstableRestarts = 0;
+        // The user's pre-restart supervision intent, not the stop
+        // mechanism's false.
+        c.config.autorestart = autorestartIntent.get(c.id) ?? true;
+        return c.start();
+      });
+      if (stopErrors.length > 0) {
+        throw new Error(
+          `namespace "${ns}" restarted, but ${stopErrors.length} member${stopErrors.length > 1 ? "s" : ""} failed to stop cleanly: ${stopErrors.join("; ")}`
+        );
+      }
+      return states;
+    } catch (startErr) {
+      const startMsg = startErr instanceof Error ? startErr.message : String(startErr);
+      if (stopErrors.length > 0) {
+        throw new Error(`${startMsg}\nStop-phase issues: ${stopErrors.join("; ")}`);
+      }
+      throw startErr;
+    }
+  }
+
+  /**
+   * Issue #31 core: bring `containers` up through `startOne`, atomically.
+   * Only members THIS call started are tracked; any failure rolls those
+   * back (best-effort) and throws with the original failure primary and
+   * the rollback report appended.
+   */
+  private async atomicStartContainers(
+    ns: string,
+    containers: ProcessContainer[],
+    startOne: (c: ProcessContainer) => Promise<void>
+  ): Promise<ProcessState[]> {
+    const states: ProcessState[] = [];
+    const startedByInvocation: ProcessContainer[] = [];
+
+    try {
+      for (const c of containers) {
+        if (!this.isRunningStatus(c.status)) {
+          await startOne(c);
+          if (this.isRunningStatus(c.status)) startedByInvocation.push(c);
+        }
+        states.push(c.getState());
+      }
+      await this.persist();
+      return states;
+    } catch (primaryErr) {
+      const rollbackLines = await this.rollbackInvocation(startedByInvocation);
+      const report =
+        rollbackLines.length > 0 ? `\nRollback: ${rollbackLines.join(", ")}` : "";
+      throw new Error(
+        `namespace "${ns}" startup failed: ${
+          primaryErr instanceof Error ? primaryErr.message : String(primaryErr)
+        }${report}`
+      );
+    }
+  }
+
+  // ── end namespace lifecycle helpers ──────────────────────────────────
  
   async start(options: StartOptions): Promise<ProcessState[]> {
 
     const resolvedInstances = this.clusterManager.resolveInstances(options.instances);
     const isCluster = options.execMode === "cluster" || resolvedInstances > 1;
     const states: ProcessState[] = [];
+
+    // Issue #31: validate the member-exit policy once, at the single
+    // choke point every start path funnels through (CLI flag, ecosystem
+    // app, programmatic API, cloud deploy).
+    if (
+      options.onNsMemberExit !== undefined &&
+      options.onNsMemberExit !== "ignore" &&
+      options.onNsMemberExit !== "exit"
+    ) {
+      throw new Error(
+        `Invalid onNsMemberExit "${options.onNsMemberExit}" — use "ignore" or "exit"`
+      );
+    }
 
     options.script = path.isAbsolute(options.script)
       ? options.script
@@ -107,14 +464,14 @@ import type { ReadableStreamController } from "bun";
           const id = this.nextId++;
           const name = `${baseName}-${i}`;
           const config = this.buildConfig(id, name, options, resolvedInstances, i);
-          const container = new ProcessContainer(
+          const container = this.attach(new ProcessContainer(
             id,
             config,
             this.logManager,
             this.clusterManager,
             this.healthChecker,
             this.cronManager
-          );
+          ));
           this.processes.set(id, container);
           await container.start();
           states.push(container.getState());
@@ -135,14 +492,14 @@ import type { ReadableStreamController } from "bun";
 
         const config = this.buildConfig(id, name, options, resolvedInstances, i);
         
-        const container = new ProcessContainer(
+        const container = this.attach(new ProcessContainer(
           id,
           config,
           this.logManager,
           this.clusterManager,
           this.healthChecker, 
           this.cronManager
-        );
+        ));
 
         this.processes.set(id, container);
         await container.start();
@@ -157,13 +514,13 @@ import type { ReadableStreamController } from "bun";
           `app-${id}`;
   
       const config = this.buildConfig(id, name, options, 1, 0);
-      const container = new ProcessContainer(
+      const container = this.attach(new ProcessContainer(
         id, config,
         this.logManager,
         this.clusterManager,
         this.healthChecker,
         this.cronManager
-      );
+      ));
   
       this.processes.set(id, container);
       await container.start();
@@ -175,6 +532,15 @@ import type { ReadableStreamController } from "bun";
   }
 
   async stop(target: string | number): Promise<ProcessState[]> {
+    // Issue #31: a namespace group stop is serialized against other
+    // operations on the same namespace and best-effort across members —
+    // one stubborn member never leaves the rest of the group running.
+    const group = this.resolveGroupTarget(target);
+    if (group) {
+      return this.withNamespaceLock(group.ns, () =>
+        this.stopNamespaceGroup(group.ns, group.containers, false, "stop")
+      );
+    }
     const containers = this.resolveTargetOrThrow(target, "stop");
     const states: ProcessState[] = [];
     for (const c of containers) {
@@ -194,6 +560,12 @@ import type { ReadableStreamController } from "bun";
    * process.kill → here.
    */
   async kill(target: string | number): Promise<ProcessState[]> {
+    const group = this.resolveGroupTarget(target);
+    if (group) {
+      return this.withNamespaceLock(group.ns, () =>
+        this.stopNamespaceGroup(group.ns, group.containers, true, "kill")
+      );
+    }
     const containers = this.resolveTargetOrThrow(target, "kill");
     const states: ProcessState[] = [];
     for (const c of containers) {
@@ -205,6 +577,15 @@ import type { ReadableStreamController } from "bun";
   }
 
   async restart(target: string | number): Promise<ProcessState[]> {
+    // Issue #31: a namespace restart is stop-all + ATOMIC start — if any
+    // member fails to come back, the members this restart brought up are
+    // rolled back; members that never stopped (a failed stop) stay.
+    const group = this.resolveGroupTarget(target);
+    if (group) {
+      return this.withNamespaceLock(group.ns, () =>
+        this.restartNamespaceGroup(group.ns, group.containers)
+      );
+    }
     const containers = this.resolveTargetOrThrow(target, "restart");
     const states: ProcessState[] = [];
     for (const c of containers) {
@@ -216,6 +597,31 @@ import type { ReadableStreamController } from "bun";
   }
 
   async reload(target: string | number): Promise<ProcessState[]> {
+    // Issue #31: namespace reload is serialized + best-effort per member
+    // (graceful reload is zero-downtime by design — atomicity does not
+    // apply, but one member failing must not skip the rest of the group).
+    const group = this.resolveGroupTarget(target);
+    if (group) {
+      return this.withNamespaceLock(group.ns, async () => {
+        const errors: string[] = [];
+        for (const c of group.containers) {
+          try {
+            await this.gracefulReload.reload([c]);
+          } catch (err) {
+            errors.push(
+              `${c.name}: ${err instanceof Error ? err.message : String(err)}`
+            );
+          }
+        }
+        await this.persist();
+        if (errors.length > 0) {
+          throw new Error(
+            `namespace "${group.ns}" reload failed (other members reloaded): ${errors.join("; ")}`
+          );
+        }
+        return group.containers.map((c) => c.getState());
+      });
+    }
     const containers = this.resolveTargetOrThrow(target, "reload");
     // Use graceful reload for zero downtime
     await this.gracefulReload.reload(containers);
@@ -224,6 +630,16 @@ import type { ReadableStreamController } from "bun";
   }
 
   async del(target: string | number): Promise<ProcessState[]> {
+    // Issue #31: namespace delete is serialized + best-effort — every
+    // member is removed even if one refuses to stop.
+    const group = this.resolveGroupTarget(target);
+    if (group) {
+      return this.withNamespaceLock(group.ns, () =>
+        this.stopNamespaceGroup(group.ns, group.containers, true, "delete", {
+          remove: true,
+        })
+      );
+    }
     const containers = this.resolveTargetOrThrow(target, "delete");
     const states: ProcessState[] = [];
     for (const c of containers) {
@@ -306,6 +722,7 @@ import type { ReadableStreamController } from "bun";
        waitReady: options.waitReady,
        listenTimeout: options.listenTimeout,
        namespace: options.namespace,
+       onNsMemberExit: options.onNsMemberExit,
        nodeArgs: options.nodeArgs,
        sourceMapSupport: options.sourceMapSupport,
        treekill: true,
@@ -536,14 +953,14 @@ import type { ReadableStreamController } from "bun";
           id,
         };
 
-        const container = new ProcessContainer(
+        const container = this.attach(new ProcessContainer(
           id,
           config,
           this.logManager,
           this.clusterManager,
           this.healthChecker,
           this.cronManager
-        );
+        ));
 
         container.restartCount = item.restartCount ?? 0;
         container.unstableRestarts = item.unstableRestarts ?? 0;
@@ -568,17 +985,67 @@ import type { ReadableStreamController } from "bun";
     }
   }
  
-   async startEcosystem(config: EcosystemConfig): Promise<ProcessState[]> {
-     const states: ProcessState[] = [];
-     for (const app of config.apps) {
-       const result = await this.start(app);
-       states.push(...result);
-     }
-     // this.start() persisted per app; one final write keeps the dump in
-     // lockstep with the full ecosystem (e.g. apps whose start was a no-op).
-     await this.persist();
-     return states;
-   }
+   /**
+   * Issue #31: start an ecosystem with namespace-aware lifecycle
+   * boundaries.
+   *
+   * - Apps WITHOUT a namespace are standalone and independent: each is
+   *   started on its own, a failure is recorded and the sweep CONTINUES —
+   * a failing app never rolls back or blocks other standalone apps.
+   * - Apps WITH the same namespace form ONE lifecycle group: the group is
+   *   started atomically (in first-declaration position), and a member
+   * failure rolls back only the members this invocation started.
+   * - A namespace failure never affects other namespaces or standalone
+   *   apps; any failure makes the overall operation report + throw at the
+   *   end, after everything startable has been started.
+   */
+  async startEcosystem(config: EcosystemConfig): Promise<ProcessState[]> {
+    const states: ProcessState[] = [];
+    const failures: string[] = [];
+    const startedGroups = new Set<string>();
+
+    for (const app of config.apps) {
+      if (app.namespace) {
+        // The whole namespace is ONE unit — started at its
+        // first-declaration position, every member included.
+        if (startedGroups.has(app.namespace)) continue;
+        startedGroups.add(app.namespace);
+        const ns = app.namespace;
+        const groupApps = config.apps.filter((a) => a.namespace === ns);
+        try {
+          states.push(
+            ...(await this.withNamespaceLock(ns, () =>
+              this.startNamespaceGroupAtomic(ns, groupApps)
+            ))
+          );
+        } catch (err) {
+          failures.push(err instanceof Error ? err.message : String(err));
+        }
+      } else {
+        try {
+          states.push(...(await this.start(app)));
+        } catch (err) {
+          failures.push(
+            `${app.name ?? app.script}: ${
+              err instanceof Error ? err.message : String(err)
+            }`
+          );
+        }
+      }
+    }
+
+    // this.start() persisted per app; one final write keeps the dump in
+    // lockstep with the full ecosystem (e.g. apps whose start was a no-op).
+    await this.persist();
+
+    if (failures.length > 0) {
+      throw new Error(
+        `ecosystem start failed — ${failures.length} failure${failures.length > 1 ? "s" : ""} (standalone failures were left running; namespace groups were rolled back where needed):\n` +
+          failures.map((f) => `  ✗ ${f}`).join("\n")
+      );
+    }
+    return states;
+  }
  
    async sendSignal(target: string | number, signal: string): Promise<void> {
      for (const c of this.resolveTarget(target)) {
@@ -612,6 +1079,13 @@ import type { ReadableStreamController } from "bun";
     * The issue-#27 lifecycle entry point: start (resume) processes that
     * ALREADY exist in the list — by id, name, cluster prefix, or namespace.
     *
+    * Issue #31 refines the NAMESPACE case: resuming a namespace is ATOMIC —
+    * if any member fails to start, only the members this invocation
+    * started are rolled back; already-running members are never touched.
+    * Name/id targets keep their exact old per-process semantics, and `all`
+    * applies the same boundary rules as an ecosystem start (standalone
+    * processes independent, each namespace atomic).
+    *
     * Every matched process that is not already running is started; online
     * ones are left untouched (no restart bump, same pid). New processes are
     * never created here — creating stays `start(options)` with a script.
@@ -619,6 +1093,71 @@ import type { ReadableStreamController } from "bun";
     * next reboot as running (the Task-37 default-persistence contract).
     */
    async startTarget(target: string | number): Promise<ProcessState[]> {
+     // Issue #31: namespace-group target → atomic resume under the
+     // namespace lock.
+     const group = this.resolveGroupTarget(target);
+     if (group) {
+       return this.withNamespaceLock(group.ns, () =>
+         this.resumeNamespaceAtomic(group.ns, group.containers)
+       );
+     }
+
+     if (target === "all") {
+       // Same boundary rules as an ecosystem start: standalone processes
+       // are independent (best-effort, continue on failure); every
+       // namespace resumes atomically as one unit.
+       const fleet = Array.from(this.processes.values());
+       const standalones = fleet.filter((c) => !c.config.namespace);
+       const groups = new Map<string, ProcessContainer[]>();
+       for (const c of fleet) {
+         const ns = c.config.namespace;
+         if (!ns) continue;
+         const list = groups.get(ns);
+         if (list) list.push(c);
+         else groups.set(ns, [c]);
+       }
+
+       const states: ProcessState[] = [];
+       const failures: string[] = [];
+
+       for (const c of standalones) {
+         if (!this.isRunningStatus(c.status)) {
+           c.unstableRestarts = 0;
+           c.config.autorestart = true;
+           try {
+             await c.start();
+           } catch (err) {
+             failures.push(
+               `${c.name}: ${err instanceof Error ? err.message : String(err)}`
+             );
+           }
+         }
+         states.push(c.getState());
+       }
+
+       for (const [ns, members] of groups) {
+         try {
+           states.push(
+             ...(await this.withNamespaceLock(ns, () =>
+               this.resumeNamespaceAtomic(ns, members)
+             ))
+           );
+         } catch (err) {
+           failures.push(err instanceof Error ? err.message : String(err));
+         }
+       }
+
+       await this.persist();
+       if (failures.length > 0) {
+         throw new Error(
+           `start all failed — ${failures.length} failure${failures.length > 1 ? "s" : ""}:\n` +
+             failures.map((f) => `  ✗ ${f}`).join("\n")
+         );
+       }
+       return states;
+     }
+
+     // Name / id — the original per-process semantics, unchanged.
      const containers = this.resolveTargetOrThrow(target, "start");
      const states: ProcessState[] = [];
      for (const c of containers) {
@@ -628,8 +1167,10 @@ import type { ReadableStreamController } from "bun";
          c.status !== "waiting-restart"
        ) {
          // Same resume semantics as the existing-process branch of
-         // start(): a fresh attempt clears the unstable-restart debt.
+         // start(): a fresh attempt clears the unstable-restart debt and
+         // restores supervision.
          c.unstableRestarts = 0;
+         c.config.autorestart = true;
          await c.start();
        }
        states.push(c.getState());

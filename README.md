@@ -21,7 +21,7 @@ ProcBoss is free and open-source. If it saves you time, star it on [GitHub](http
 
 - **Universal runtimes** — auto-detected: Node.js, Bun, Go, Python, Rust, Ruby, PHP, Java JARs, shell scripts, compiled binaries.
 - **Cluster mode** — N instances, per-worker env, automatic ports, zero-downtime rolling reloads.
-- **Namespaces** — group processes (`--namespace my-app`) and operate on the group: `pboss restart my-app`, `pboss delete my-app` (confirmed; `--force` skips).
+- **Namespaces** — group processes (`--namespace my-app`) and operate on the group: `pboss restart my-app`, `pboss delete my-app` (confirmed; `--force` skips). Atomic startup with rollback ([#31](https://github.com/Procboss/pboss/issues/31)): a failed member rolls back only what that start brought up; members already running are never touched; namespace-less processes stay fully independent.
 - **Foreground mode** — `--no-daemon` blocks as PID 1, for Docker and Kubernetes.
 - **Web dashboard** — live WebSocket updates, CPU/memory charts, process controls, log viewer. Zero dependencies.
 - **Prometheus metrics** — dedicated `/metrics` endpoint on :9616.
@@ -100,7 +100,22 @@ pboss start web.ts --name web --namespace my-app
 pboss start worker.ts --name worker --namespace my-app
 pboss restart my-app     # the whole group at once
 pboss stop my-app
-pboss start my-app       # resume every stopped member
+pboss start my-app       # resume every stopped member — atomically
+```
+
+A namespace is one lifecycle group (issue #31): if any member fails during a
+namespace start, only the members that start brought up are rolled back —
+processes that were already running keep running, and namespace-less
+processes are never affected by a namespace failure. The same boundaries
+apply to `pboss start ecosystem.config.ts` and to namespace
+`restart`.
+
+Namespaced processes can also react to a sibling's exit with a policy
+(`onNsMemberExit: "ignore"` (default) or `"exit"`) — with `exit`, a member
+leaving the namespace for good stops the other members too:
+
+```bash
+pboss start web.ts --name web --namespace my-app --on-ns-member-exit exit
 ```
 
 List all processes:
