@@ -32,6 +32,7 @@ ProcBoss is free and open-source. If it saves you time, star it on [GitHub](http
   - [Cluster Mode](#cluster-mode)
   - [Log Management](#log-management)
   - [Monitoring and Metrics](#monitoring-and-metrics)
+  - [Resource Threshold Alerts](#resource-threshold-alerts)
   - [Dashboard](#dashboard)
   - [Ecosystem Files](#ecosystem-files)
   - [Environment Management](#environment-management)
@@ -991,6 +992,100 @@ pboss_system_load_average{period="15m"} 1.67
 
 ---
 
+### Resource Threshold Alerts
+
+The daemon watches the metrics it already collects and fires alert events when real conditions develop — not on every blip. Every detector is a small hysteresis state machine (`normal → watching → triggered → clearing → normal`): a condition must hold for its sustained duration before the alert fires, must stay under the clear level for the same duration before the recovery event fires, and re-emits a low-frequency "still elevated" heartbeat (every 10 min) while it persists. A one-tick spike fires nothing.
+
+#### What is detected
+
+| Condition | Default trigger | Clear | Sustained | Notes |
+|---|---|---|---|---|
+| CPU spike (per process) | ≥ 95% | < 80% | 30s | runaway loop / stuck request |
+| CPU sustained (per process) | ≥ 70% | < 55% | 5 min | capacity-constrained, not just busy |
+| Memory spike (per process) | ≥ 40% growth in 60s AND ≥ 20MB | rate < 10%/60s | — (rate-based) | likely leak; the MB floor keeps tiny processes quiet |
+| Memory high (per process) | ≥ 85% of `maxMemoryRestart` | < 70% | 60s | early warning BEFORE the auto-restart fires; off by default without a limit (opt in with `alertMemHighMB`) |
+| Restart loop | ≥ 5 restarts in rolling 5 min | self-clearing (ages out) | — | same rule of thumb pm2-style tools use |
+| Event-loop latency | ≥ 100ms | < 50ms | 30s | user-visible latency in most services |
+| Handle/FD growth | ≥ 3× the 10-min-ago value AND ≥ 200 | < 1.5× baseline | 5 min | leak detection without ulimit knowledge; the baseline freezes while a leak is tracked so a persistent leak never becomes its own baseline |
+| System CPU | load/cores ≥ 0.85 | < 0.65 | 5 min | the whole box, not one process |
+| System memory | free < 10% | > 20% | 2 min | OOM-killer risk for everything on the box |
+
+Alert events ride the same at-least-once pipeline as crashes: ids, outbox, cloud ack, dedup, TTL and cap are all inherited. With no cloud link the detector still runs — `pboss alerts test` works either way.
+
+#### pboss alerts show
+
+Effective thresholds — built-in defaults, merged with `~/.pboss/alert-thresholds.json` overrides and per-process ecosystem fields:
+
+```
+pboss alerts show           # everything: system + defaults + per-process
+```
+
+#### pboss alerts set
+
+Override thresholds for one process, the whole server, or the defaults — applied live (no restart) and persisted to `~/.pboss/alert-thresholds.json`:
+
+```
+pboss alerts set my-api --cpu-spike 90 --mem-high-pct 80
+pboss alerts set --system --cpu 80 --mem-free-pct 15
+```
+
+Common flags: `--cpu-spike/--cpu-spike-clear`, `--cpu-sustained`, `--mem-spike` (growth %), `--mem-high-pct` (% of limit), `--mem-high-mb` (absolute ceiling when no `maxMemoryRestart`), `--eventloop`, `--restarts`, and the system set (`--cpu`, `--cpu-clear`, `--mem-free-pct`, `--mem-free-clear`). Full fidelity (sustained durations, windows) lives in the JSON file.
+
+#### pboss alerts reset
+
+```
+pboss alerts reset my-api   # drop one process's overrides
+pboss alerts reset --system # server-wide thresholds back to defaults
+pboss alerts reset all      # everything back to defaults
+```
+
+#### pboss alerts test
+
+Fires ONE synthetic alert through the real delivery chain (outbox → cloud ack → your Telegram/Discord/integrations) without waiting for a real spike — the fastest way to verify an integration works:
+
+```
+pboss alerts test api cpu      # kinds: cpu, mem, restart, eventloop,
+pboss alerts test api handles  #        handles, system-cpu, system-mem
+```
+
+With the cloud link down the event queues honestly ("Test alert queued") and delivers on the next reconnect.
+
+#### Per-process configuration
+
+Ecosystem/config fields (persisted with the process, survive restarts):
+
+```js
+module.exports = {
+  apps: [{
+    name: "api",
+    script: "server.ts",
+    alertCpuSpikePercent: 90,       // this app is allowed less headroom
+    alertCpuSustainedPercent: 60,
+    alertMemSpikeGrowthPercent: 25,
+    alertMemHighPercent: 80,        // relative to maxMemoryRestart
+    alertMemHighMB: 512,            // absolute ceiling when no limit is set
+    alertDisabled: true,            // opt this app out of ALL threshold alerts
+  }],
+};
+```
+
+The file (`~/.pboss/alert-thresholds.json`) holds the same shape for global overrides:
+
+```json
+{
+  "system": {
+    "cpuPercent": { "trigger": 85, "clear": 65, "sustainedSec": 300 },
+    "memFreePercent": { "trigger": 10, "clear": 20, "sustainedSec": 120 }
+  },
+  "defaults": { "cpuSpikePercent": { "trigger": 95, "clear": 80, "sustainedSec": 30 } },
+  "overrides": { "my-api": { "cpuSpikePercent": { "trigger": 90 } } }
+}
+```
+
+The cloud can read/write the same shape remotely (`config.alerts.get` / `config.alerts.set` commands) — changes hot-reload the detector and persist across daemon restarts.
+
+---
+
 ### Dashboard
 
 #### pboss dashboard
@@ -1652,9 +1747,12 @@ Once linked, the daemon's cloud agent:
 
 - keeps ONE **WebSocket** open to the cloud (`wss://…/ws/agent`, outbound-only) — commands, state, results, and live log frames all flow over it. Reconnects use jittered exponential backoff that resets only after the cloud's `hello` frame CONFIRMS the link — some reverse proxies answer the upgrade themselves and never establish the authenticated upstream (a "mirage" open), which used to look like connected-then-flapping every few seconds. An inbound-silence watchdog re-dials dead (half-open) sockets;
 - carries the credential on two transports — the `Authorization` header plus the `?agent=` query param — because header-stripping proxies would otherwise 401 every dial. `pboss cloud status` shows why a link died (close code and reason — e.g. `replaced`: another daemon with the same credential) instead of a generic `websocket not open`;
-- sends a **full state report** every 10 seconds (and after every command): server metrics and the process list with per-process CPU/mem/restarts/uptime;
-- derives **events** from consecutive snapshots — crashes (exit code, signal, 30-line log tail), restarts, on/offline transitions — which the cloud turns into alerts. Events are queued until the cloud acks them (`event-ack`, dedup by event id), so a crash that happens during a network outage is still delivered after the reconnect;
-- executes **remote commands**: `process.list/start/stop/restart/delete/logs/deploy`, `server.info`, `server.deploy` — each answered with a result and followed by a fresh state report;
+- sends a **full state report** every 10 seconds (and after every command): server metrics and the process list with per-process CPU/mem/restarts/uptime — plus **health-check status** (`healthStatus`/`healthFails`) for processes with a `healthCheckUrl`;
+- derives **events** from consecutive snapshots — crashes (exit code, signal, best-effort reason like `likely OOM`/`uncaught exception`, 30-line log tail), restarts, on/offline transitions, health-check fail/recover transitions — which the cloud turns into alerts. Events are queued until the cloud acks them (`event-ack`, dedup by event id), so a crash that happens during a network outage is still delivered after the reconnect;
+- **detects resource conditions agent-side** (CPU spikes/sustained, memory leaks and near-limit highs, restart loops, event-loop blocking, handle growth, system-wide CPU/memory pressure — see [Resource Threshold Alerts](#resource-threshold-alerts)) and pushes `cpu.*`/`mem.*`/`eventloop.*`/`handles.*`/`system.*` events through the same pipeline, with `metricValue`/`thresholdValue`/`durationSec` facts attached. The dashboard can read and change thresholds live via `config.alerts.get` / `config.alerts.set`;
+- executes **remote commands**: `process.list/start/stop/restart/kill/delete/logs/deploy/scale/exec`, `server.info`, `server.deploy`, `namespace.start/stop/restart`, `cron.list/run/enable/disable`, `env.get/set`, `log.search` (time-ranged regex across rotated + gzipped logs), `config.alerts.get/set` — each answered with a result (echoing the cloud-stamped `issuedBy` for audit correlation) and followed by a fresh state report;
+- reports **standalone cron outcomes** — failed runs (`cron.failed`) and completed one-shots (`cron.completed`) — from the same scheduler that runs them;
+- **backfills metric history on reconnect** — one `metrics.backfill` frame covering the outage gap with the local Monitor's resampled history, so a brief disconnect leaves no hole in the graphs;
 - **tails logs live** when a dashboard opens them (`log.watch` / `log.unwatch`); new lines are pushed as they land on disk;
 - **deploys** by running `git pull --ff-only` in the process's working directory and restarting it — the dashboard's Deploy button reports the real commit, message, and duration. Non-git directories fail honestly;
 - answers `pboss cloud servers` with the fleet view (fetched daemon-side — the CLI never holds the secret).
@@ -1832,6 +1930,12 @@ The complete set of options available for each entry in the apps array:
 | `namespace` | `string` | — | Namespace for grouping processes |
 | `onNsMemberExit` | `"ignore"` \| `"exit"` | `ignore` | Reaction to a namespace sibling's terminal exit (namespaced processes only; see [Namespaces](#namespaces--group-level-lifecycle)) |
 | `dependsOn` | `string` \| `{ name, policy }` array | — | Dependencies that must be satisfied before start (issue #33; see [Dependencies](#dependencies--dependson-issue-33)). Names resolve to pboss processes first, then systemd units; `policy` is `"required"` (default) or `"optional"` |
+| `alertCpuSpikePercent` | `number` | `95` | CPU spike trigger (percent) for this process's threshold alerts |
+| `alertCpuSustainedPercent` | `number` | `70` | Sustained CPU trigger (percent) |
+| `alertMemSpikeGrowthPercent` | `number` | `40` | Memory growth rate that counts as a leak (percent per 60s window) |
+| `alertMemHighPercent` | `number` | `85` | Memory-high trigger, percent of `maxMemoryRestart` |
+| `alertMemHighMB` | `number` | — | Absolute memory ceiling (MB) when no `maxMemoryRestart` is set — opts this process into mem.high |
+| `alertDisabled` | `boolean` | `false` | Opt this process out of ALL resource threshold alerts |
 | `sourceMapSupport` | `boolean` | `false` | Enable source map support |
 | `waitReady` | `boolean` | `false` | Wait for process to emit ready signal |
 | `listenTimeout` | `number` | `3000` | Timeout when waiting for ready signal |
@@ -2540,6 +2644,34 @@ await pboss.cronRemove("backup");
 ```
 
 Standalone equivalents are exported too: `cronAdd()`, `cronJobs()`, `cronNext()`, `cronTrigger()`, `cronRemove()`. Jobs can also be declared in ecosystem files via the top-level `crons` array — see [Cron Jobs](#cron-jobs).
+
+#### `pboss.alertsShow(): Promise<AlertsSummary>`
+
+The effective resource-alert thresholds — system + defaults + per-process overrides merged (the same view `pboss alerts show` renders):
+
+```js
+const summary = await pboss.alertsShow();
+summary.system.cpuPercent.trigger;      // 85
+summary.defaults.cpuSpikePercent.trigger; // 95
+summary.effective; // [{ process: "api", disabled: false, thresholds: {...} }]
+```
+
+#### `pboss.alertsSet(target, patch): Promise<AlertsSummary>`
+
+Patch thresholds live (target: a process name, `"system"`, or `undefined` for the defaults) — hot-reloads the daemon's detector and persists to `~/.pboss/alert-thresholds.json`:
+
+```js
+await pboss.alertsSet("my-api", { cpuSpikePercent: { trigger: 90 } });
+await pboss.alertsSet("system", { cpuPercent: { trigger: 75, clear: 60 } });
+```
+
+#### `pboss.alertsReset(target): Promise<AlertsSummary>`
+
+Drop overrides — a process name, `"system"`, or `"all"`.
+
+#### `pboss.alertsTest(process, kind): Promise<{ queued, event }>`
+
+Fire one synthetic alert through the real delivery chain (kinds: `cpu`, `mem`, `restart`, `eventloop`, `handles`, `system-cpu`, `system-mem`) — the programmatic twin of `pboss alerts test`, for verifying integrations from scripts.
 
 ---
 

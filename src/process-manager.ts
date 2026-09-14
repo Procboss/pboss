@@ -28,6 +28,7 @@
  import { HealthChecker } from "./health-checker";
  import { CronManager } from "./cron-manager";
  import { Monitor } from "./monitor";
+ import { searchLogFiles, type LogSearchMatch } from "./log-manager";
  import { GracefulReload } from "./graceful-reload";
  import { parseMemory, DUMP_FILE } from "./utils";
  import { ignore } from "./error-handling";
@@ -1049,6 +1050,14 @@ import type { ReadableStreamController } from "bun";
        // Issue #33: normalized (already validated upstream) — this is what
        // the dump persists and what the engine reads back at boot.
        dependsOn: parseDependsOn(options.dependsOn),
+       // Resource threshold alert overrides (threshold-monitor.ts) —
+       // persisted with the config so restarts keep them.
+       alertCpuSpikePercent: options.alertCpuSpikePercent,
+       alertCpuSustainedPercent: options.alertCpuSustainedPercent,
+       alertMemSpikeGrowthPercent: options.alertMemSpikeGrowthPercent,
+       alertMemHighPercent: options.alertMemHighPercent,
+       alertMemHighMB: options.alertMemHighMB,
+       alertDisabled: options.alertDisabled,
        nodeArgs: options.nodeArgs,
        sourceMapSupport: options.sourceMapSupport,
        treekill: true,
@@ -1141,6 +1150,28 @@ import type { ReadableStreamController } from "bun";
    
    list(): ProcessState[] {
      return Array.from(this.processes.values()).map((p) => p.getState());
+   }
+
+   /**
+    * Time-ranged regex search across one process's logs — live files plus
+    * every rotation on disk (the log.search cloud command's engine-side
+    * twin; the search itself lives in log-manager.ts). Unknown process →
+    * an honest error, not an empty result.
+    */
+   async searchProcessLogs(
+     name: string,
+     query: string,
+     opts: { from?: number; to?: number; maxResults?: number } = {}
+   ): Promise<{ matches: LogSearchMatch[]; scannedFiles: string[]; truncated: boolean }> {
+     const container = Array.from(this.processes.values()).find((c) => c.name === name);
+     if (!container) {
+       throw new Error(`no process named "${name}"`);
+     }
+     return searchLogFiles(
+       [container.config.outFile, container.config.errorFile],
+       query,
+       opts
+     );
    }
    
    /**

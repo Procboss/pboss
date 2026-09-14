@@ -194,6 +194,20 @@ export interface ProcessDescription {
   onNsMemberExit?: NsMemberExitPolicy;
   /** Issue #33: normalized dependencies (persisted with the config). */
   dependsOn?: NormalizedDependency[];
+  // Resource threshold alerts (per-process overrides — see threshold-monitor.ts)
+  /** CPU spike trigger (percent). Defaults to 95. */
+  alertCpuSpikePercent?: number;
+  /** Sustained CPU trigger (percent). Defaults to 70. */
+  alertCpuSustainedPercent?: number;
+  /** Memory-spike growth trigger (percent per 60s window). Defaults to 40. */
+  alertMemSpikeGrowthPercent?: number;
+  /** Memory-high trigger, percent of maxMemoryRestart. Defaults to 85. */
+  alertMemHighPercent?: number;
+  /** Memory-high ceiling in MB for processes without maxMemoryRestart
+   *  (opt-in — off by default without a limit). */
+  alertMemHighMB?: number;
+  /** Opt this process out of ALL resource threshold alerts. */
+  alertDisabled?: boolean;
   // Version tracking
   version?: string;
   versioningConfig?: VersioningConfig;
@@ -277,6 +291,13 @@ export interface StartOptions {
   onNsMemberExit?: NsMemberExitPolicy;
   /** Issue #33: names or `{ name, policy }` objects the process requires. */
   dependsOn?: DependencySpec[];
+  /** Per-process resource-threshold overrides (threshold-monitor). */
+  alertCpuSpikePercent?: number;
+  alertCpuSustainedPercent?: number;
+  alertMemSpikeGrowthPercent?: number;
+  alertMemHighPercent?: number;
+  alertMemHighMB?: number;
+  alertDisabled?: boolean;
   nodeArgs?: string[];
   sourceMapSupport?: boolean;
   /**

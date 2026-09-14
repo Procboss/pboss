@@ -26,8 +26,20 @@ import { VERSION, CLOUD_FILE, CLOUD_DEFAULT_URL, CLOUD_REPORT_INTERVAL_MS } from
 import { getSystemInfo, colorize } from "./utils";
 import { ignore } from "./error-handling";
 import type { ProcessManager } from "./process-manager";
-import type { ProcessState, StartOptions, LogItem } from "./types";
+import type { ProcessState, StartOptions, LogItem, CronJob } from "./types";
 import { runDeployJob, cancelDeployJob, deployJobRunning, gitInfoForProcess } from "./deploy-job";
+import {
+  ThresholdMonitor,
+  DEFAULT_THRESHOLD_CONFIG,
+  loadThresholdConfig,
+  saveThresholdConfig,
+  patchThresholdConfig,
+  type ProcessExtra,
+  type ProcessAlertOptions,
+  type ThresholdConfig,
+} from "./threshold-monitor";
+import type { CronJobManager } from "./cron-jobs";
+import { EnvManager } from "./env-manager";
 
 /**
  * Inbound-silence watchdog. The cloud pings the agent (app-level `ping`
@@ -86,6 +98,25 @@ export interface CloudAgentOptions {
   /** How long a link must hold to count as stable (tests). Default 60s. */
   stableLinkMs?: number;
 }
+
+/**
+ * Collaborators the agent owns when the daemon builds it. Everything is
+ * optional so the agent stays constructible in isolation (tests, `pboss
+ * alerts` without a link, older embed paths).
+ */
+export interface CloudAgentDeps {
+  /** Standalone cron jobs — cron.* commands + cron.* events. */
+  cronJobManager?: CronJobManager;
+  /** Pre-built threshold monitor (tests inject; default loads the file). */
+  thresholdMonitor?: ThresholdMonitor;
+}
+
+/**
+ * Constructor params — deps + the timing knobs in ONE object (the key
+ * sets are disjoint; existing callers that pass only timing knobs keep
+ * working unchanged).
+ */
+export type CloudAgentParams = CloudAgentDeps & CloudAgentOptions;
 
 /* ── config file ──────────────────────────────────────────────────────── */
 
@@ -263,10 +294,26 @@ export interface CloudProcessReport {
   /** Exit facts (present after the process has exited once). */
   exitCode?: number | null;
   signal?: string | null;
+  /** Health-check status (absent when no healthCheckUrl is configured). */
+  healthStatus?: "healthy" | "unhealthy" | "unknown";
+  /** Consecutive health-check failures at the moment of the report. */
+  healthFails?: number;
 }
 
 export interface CloudEventReport {
-  kind: "crash" | "restart" | "online" | "stopped";
+  kind:
+    | "crash" | "restart" | "online" | "stopped"
+    /* resource threshold alerts (threshold-monitor.ts) */
+    | "cpu.spike" | "cpu.sustained" | "cpu.recovered"
+    | "mem.spike" | "mem.high" | "mem.recovered"
+    | "restart.loop"
+    | "eventloop.latency" | "eventloop.recovered"
+    | "handles.leak" | "handles.recovered"
+    | "system.cpu.high" | "system.mem.high" | "system.recovered"
+    /* health-check transitions */
+    | "health.failing" | "health.recovered"
+    /* standalone cron job outcomes */
+    | "cron.failed" | "cron.completed";
   process: string;
   at: number;
   detail?: string;
@@ -274,6 +321,14 @@ export interface CloudEventReport {
   exitCode?: number | null;
   signal?: string | null;
   logTail?: string[];
+  /** Best-effort crash classification ("likely OOM", …) — free of log-tail parsing. */
+  reason?: string;
+  /** The value that tripped (or cleared) a threshold alert. */
+  metricValue?: number;
+  /** The configured trigger/clear level for the metric. */
+  thresholdValue?: number;
+  /** How long the condition had been elevated (present on .recovered events). */
+  durationSec?: number;
   /**
    * Delivery id (agent-assigned, stable across re-sends): the cloud acks
    * ingested events by id (`event-ack` frame) and dedups on it, so an event
@@ -315,8 +370,32 @@ export interface CloudCommand {
     /* auto-deploy pipeline (long-running; see deploy-job.ts) */
     | "process.gitinfo"
     | "deploy.run"
-    | "deploy.cancel";
+    | "deploy.cancel"
+    /* resource threshold alerting (threshold-monitor.ts) */
+    | "config.alerts.get"
+    | "config.alerts.set"
+    /* standalone cron job visibility + control */
+    | "cron.list"
+    | "cron.run"
+    | "cron.enable"
+    | "cron.disable"
+    /* secrets / env registry management */
+    | "env.get"
+    | "env.set"
+    /* namespace-scoped lifecycle (groups, not single processes) */
+    | "namespace.start"
+    | "namespace.stop"
+    | "namespace.restart"
+    /* running instance-count changes without a full restart */
+    | "process.scale"
+    /* one-off exec in a process's working directory */
+    | "process.exec"
+    /* time-ranged regex search across live + rotated logs */
+    | "log.search";
   payload: Record<string, unknown>;
+  /** Audit passthrough: the cloud stamps who issued the command; the agent
+   *  echoes it back unmodified on the result (scoped-token audit trail). */
+  issuedBy?: string;
 }
 
 export interface CloudCommandResult {
@@ -324,6 +403,8 @@ export interface CloudCommandResult {
   success: boolean;
   data?: unknown;
   error?: string;
+  /** Echo of CloudCommand.issuedBy, unmodified (audit correlation). */
+  issuedBy?: string;
 }
 
 /** Frames the cloud sends down the socket. */
@@ -342,6 +423,14 @@ export type CloudAgentFrame =
   | { type: "command-result"; result: CloudCommandResult }
   | { type: "log"; process: string; lines: { t: number; level?: string; msg: string }[] }
   | { type: "deploy.progress"; progress: DeployProgressPayload }
+  | {
+      /** Metrics history backfill — sent ONCE per reconnect: a resampled
+       *  slice of the local Monitor history covering the outage gap, so a
+       *  brief disconnect leaves no hole in the cloud's graphs. */
+      type: "metrics.backfill";
+      since: number;
+      samples: Array<{ t: number; cpu: number; mem: number }>;
+    }
   | { type: "pong"; now: number };
 
 /* ── auto-deploy wire shapes (mirror of the cloud's protocol.ts) ──────── */
@@ -384,7 +473,16 @@ export const WS_CLOSE_REVOKED = 4001;
 
 /* ── pure mapping helpers (unit-tested) ───────────────────────────────── */
 
-export function mapProcessState(p: ProcessState): CloudProcessReport {
+/** Live health-check facts for one process (from the daemon's checker). */
+export interface HealthFacts {
+  status: "healthy" | "unhealthy" | "unknown";
+  consecutiveFails: number;
+}
+
+export function mapProcessState(
+  p: ProcessState,
+  health?: HealthFacts
+): CloudProcessReport {
   const status: CloudProcessStatus =
     p.status === "online" || p.status === "launching" || p.status === "waiting-restart"
       ? "online"
@@ -407,6 +505,8 @@ export function mapProcessState(p: ProcessState): CloudProcessReport {
     uptimeSec: Math.max(0, Math.round((Date.now() - (env?.pm_uptime ?? Date.now())) / 1000)),
     exitCode: env?.last_exit_code ?? undefined,
     signal: env?.last_exit_signal ?? undefined,
+    healthStatus: health?.status,
+    healthFails: health?.consecutiveFails,
   };
 }
 
@@ -422,6 +522,7 @@ export function systemSnapshot(): { cpu: number; memUsed: number; memTotal: numb
 export function buildStateReport(
   serverId: string,
   processes: ProcessState[],
+  health?: Map<number, HealthFacts>,
 ): CloudStateReport {
   const sys = systemSnapshot();
   return {
@@ -435,9 +536,27 @@ export function buildStateReport(
     cpu: sys.cpu,
     memUsed: sys.memUsed,
     memTotal: sys.memTotal,
-    processes: processes.map(mapProcessState),
+    processes: processes.map((p) => mapProcessState(p, health?.get(p.id))),
     events: [],
   };
+}
+
+/**
+ * Best-effort crash classification — the common causes, derived from exit
+ * facts alone so downstream alerting/triage doesn't have to parse a raw
+ * log tail. "likely OOM" stays a hypothesis: SIGKILL/137 are what the
+ * kernel (or a supervisor's hard kill) leaves behind either way.
+ */
+export function classifyCrash(
+  exitCode?: number | null,
+  signal?: string | null
+): string | undefined {
+  if (signal === "SIGKILL") return "likely OOM";
+  if (exitCode === 137 || exitCode === -137) return "likely OOM";
+  if (!signal && typeof exitCode === "number" && exitCode !== 0) {
+    return "uncaught exception";
+  }
+  return undefined;
 }
 
 /** Derive human-meaningful events from two consecutive snapshots. */
@@ -461,6 +580,7 @@ export function diffEvents(
         detail: "process errored",
         exitCode: p.exitCode ?? null,
         signal: p.signal ?? null,
+        reason: classifyCrash(p.exitCode, p.signal),
       });
     } else if (before.status === "online" && p.status === "stopped") {
       events.push({ kind: "stopped", process: p.name, at: now, detail: "process stopped" });
@@ -476,6 +596,31 @@ export function diffEvents(
         process: p.name,
         at: now,
         detail: `restart #${p.restarts}`,
+      });
+    }
+    // Health-check transitions — derived exactly like crash/online: the
+    // PREVIOUS vs CURRENT status per process. "unknown" never fires an
+    // event (nothing to say before the first check completes).
+    if (
+      before.healthStatus === "healthy" &&
+      p.healthStatus === "unhealthy"
+    ) {
+      events.push({
+        kind: "health.failing",
+        process: p.name,
+        at: now,
+        detail: `health check failing (${p.healthFails ?? "?"} consecutive failures)`,
+        metricValue: p.healthFails,
+      });
+    } else if (
+      before.healthStatus === "unhealthy" &&
+      p.healthStatus === "healthy"
+    ) {
+      events.push({
+        kind: "health.recovered",
+        process: p.name,
+        at: now,
+        detail: "health check recovered",
       });
     }
   }
@@ -610,24 +755,34 @@ export class CloudAgent {
    * sees the crash. At-least-once delivery + cloud-side id dedup.
    */
   private outbox: CloudEventReport[] = [];
+  /** Threshold alerting engine (pure — feeds the same outbox). */
+  private thresholds: ThresholdMonitor;
+  /** Standalone cron jobs (optional — cron.* commands/events). */
+  private cronJobManager: CronJobManager | null;
+  /** Env registry for env.get / env.set. */
+  private envManager = new EnvManager();
+  /** Per-link guard: the backfill frame goes out ONCE per reconnect. */
+  private backfillSent = false;
 
-  constructor(pm: ProcessManager, opts: CloudAgentOptions = {}) {
+  constructor(pm: ProcessManager, params: CloudAgentParams = {}) {
     this.pm = pm;
+    this.cronJobManager = params.cronJobManager ?? null;
+    this.thresholds = params.thresholdMonitor ?? new ThresholdMonitor();
     const envMs = Number.parseInt(process.env.PBOSS_CLOUD_WATCHDOG_MS ?? "", 10);
     this.watchdogMs =
-      opts.inboundWatchdogMs ??
+      params.inboundWatchdogMs ??
       (Number.isFinite(envMs) && envMs > 0 ? envMs : CLOUD_INBOUND_WATCHDOG_MS);
     const envReport = Number.parseInt(process.env.PBOSS_CLOUD_REPORT_MS ?? "", 10);
     this.reportIntervalMs =
-      opts.reportIntervalMs ??
+      params.reportIntervalMs ??
       (Number.isFinite(envReport) && envReport > 0 ? envReport : CLOUD_REPORT_INTERVAL_MS);
     const envHello = Number.parseInt(process.env.PBOSS_CLOUD_HELLO_TIMEOUT_MS ?? "", 10);
     this.helloTimeoutMs =
-      opts.helloTimeoutMs ??
+      params.helloTimeoutMs ??
       (Number.isFinite(envHello) && envHello > 0 ? envHello : CLOUD_HELLO_TIMEOUT_MS);
     const envStable = Number.parseInt(process.env.PBOSS_CLOUD_STABLE_LINK_MS ?? "", 10);
     this.stableLinkMs =
-      opts.stableLinkMs ??
+      params.stableLinkMs ??
       (Number.isFinite(envStable) && envStable > 0 ? envStable : CLOUD_STABLE_LINK_MS);
   }
 
@@ -1023,6 +1178,7 @@ export class CloudAgent {
     this.streamState = "connected";
     this.backoffMs = 1000; // only a CONFIRMED link resets the ladder
     this.lastError = null;
+    this.backfillSent = false;
     console.log(
       colorize("☁  cloud: connected — command channel live (cloud-confirmed)", "green")
     );
@@ -1030,6 +1186,51 @@ export class CloudAgent {
     void this.reportState().catch((err: unknown) =>
       ignore("cloud state report (post-connect)", err)
     );
+    // Reconnect backfill: one frame of resampled local metric history
+    // covering the outage gap (nothing at all on a first connect).
+    this.sendMetricsBackfill();
+  }
+
+  /**
+   * The reconnection gap filler: on a RE-connect (lastReportAt predates
+   * the link), send one metrics.backfill frame with the Monitor's local
+   * history resampled to the report cadence. Once per link, never on the
+   * steady-state path, skipped when the local history doesn't cover the
+   * gap (long outage — the cloud keeps its honest hole).
+   */
+  private sendMetricsBackfill(): void {
+    if (this.backfillSent || !this.lastReportAt) return;
+    this.backfillSent = true;
+    const since = this.lastReportAt;
+    if (Date.now() - since < this.reportIntervalMs) return; // no real gap
+    try {
+      const history = this.pm.getMetricsHistory(3600);
+      const slice = history.filter((s) => s.timestamp >= since);
+      if (slice.length === 0) return;
+      // resample: one point per report interval (bucket by newest-in-bucket);
+      // both memory numbers are BYTES on the snapshot — MB on the wire, and
+      // cpu is the same load/cores percent systemSnapshot() reports.
+      const buckets = new Map<number, { t: number; cpu: number; mem: number }>();
+      for (const s of slice) {
+        const bucket = Math.floor(s.timestamp / this.reportIntervalMs) * this.reportIntervalMs;
+        const totalMB = Math.round(s.system.totalMemory / (1024 * 1024));
+        const freeMB = Math.round(s.system.freeMemory / (1024 * 1024));
+        buckets.set(bucket, {
+          t: s.timestamp,
+          cpu: Math.max(
+            0,
+            Math.min(100, Math.round(((s.system.loadAvg[0] ?? 0) / (s.system.cpuCount || 1)) * 100))
+          ),
+          mem: Math.max(0, totalMB - freeMB),
+        });
+      }
+      const samples = [...buckets.values()].sort((a, b) => a.t - b.t).slice(-120);
+      if (samples.length > 0) {
+        this.sendFrame({ type: "metrics.backfill", since, samples });
+      }
+    } catch (err) {
+      ignore("send metrics backfill", err);
+    }
   }
 
   /** Best-effort frame send — drops silently when the socket is closed. */
@@ -1072,7 +1273,7 @@ export class CloudAgent {
   private async reportState(): Promise<void> {
     if (!this.running || !this.cfg) return;
     const states = this.pm.list();
-    const report = buildStateReport(this.cfg.serverId, states);
+    const report = buildStateReport(this.cfg.serverId, states, this.healthFacts(states));
     // Events are TRANSITIONS — computed at observation time (true
     // timestamps, fresh crash log tails), stamped with a delivery id, and
     // queued. Sending is best-effort; DELIVERY is acked: the cloud replies
@@ -1082,6 +1283,20 @@ export class CloudAgent {
     // after reconnect and still reaches the dashboard (the cloud dedups
     // by id, so at-least-once never becomes double-alerting).
     const events = diffEvents(this.lastSnapshot, report.processes);
+    // Resource threshold alerts ride the SAME pipeline: pure evaluation on
+    // data this report already computed — ids, outbox, ack/dedup/TTL/cap
+    // all inherited, zero new delivery-reliability code.
+    try {
+      const thresholdEvents = this.thresholds.evaluate(
+        report.processes,
+        systemSnapshot(),
+        this.thresholdExtras(states),
+      );
+      events.push(...thresholdEvents);
+    } catch (err) {
+      // alerting must never take reporting down
+      ignore("threshold evaluation", err);
+    }
     this.lastSnapshot = new Map(report.processes.map((p) => [p.name, p]));
     // crash events carry the log tail for the cloud's crash reports
     for (const ev of events) {
@@ -1138,6 +1353,147 @@ export class CloudAgent {
     }
   }
 
+  /* ── report inputs: health facts + threshold extras ──────────────────── */
+
+  /**
+   * Live health-check status per process, keyed by the container id the
+   * HealthChecker uses (ProcessState.id). Absent entries simply report no
+   * health status — a process without healthCheckUrl never had a checker.
+   */
+  private healthFacts(states: ProcessState[]): Map<number, HealthFacts> {
+    const map = new Map<number, HealthFacts>();
+    try {
+      for (const p of states) {
+        const status = this.pm.healthChecker.getStatus(p.id);
+        if (!status) continue;
+        map.set(p.id, {
+          status: status.status,
+          consecutiveFails: status.consecutiveFails,
+        });
+      }
+    } catch (err) {
+      ignore("collect health-check facts", err);
+    }
+    return map;
+  }
+
+  /**
+   * Per-process extras the threshold monitor needs: event-loop latency,
+   * open handles, the maxMemoryRestart ceiling (MB), and the ecosystem
+   * alert overrides — everything the report path already had in hand.
+   */
+  private thresholdExtras(states: ProcessState[]): Map<string, ProcessExtra> {
+    const map = new Map<string, ProcessExtra>();
+    for (const p of states) {
+      const env = p.pboss_env ?? p.bm2_env;
+      const alerts: ProcessAlertOptions | undefined = env
+        ? {
+            alertCpuSpikePercent: env.alertCpuSpikePercent,
+            alertCpuSustainedPercent: env.alertCpuSustainedPercent,
+            alertMemSpikeGrowthPercent: env.alertMemSpikeGrowthPercent,
+            alertMemHighPercent: env.alertMemHighPercent,
+            alertMemHighMB: env.alertMemHighMB,
+            alertDisabled: env.alertDisabled,
+          }
+        : undefined;
+      map.set(p.name, {
+        eventLoopLatency: p.monit?.eventLoopLatency,
+        handles: p.monit?.handles,
+        maxMemoryMB:
+          env?.maxMemoryRestart && env.maxMemoryRestart > 0
+            ? Math.round(env.maxMemoryRestart / (1024 * 1024))
+            : undefined,
+        alerts,
+      });
+    }
+    return map;
+  }
+
+  /* ── resource threshold alerts: config surface (CLI + cloud commands) ── */
+
+  /** `pboss alerts show` / config.alerts.get — effective thresholds. */
+  alertsShow(): unknown {
+    const states = this.pm.list();
+    const report = buildStateReport(this.cfg?.serverId ?? "local", states, this.healthFacts(states));
+    return this.thresholds.summary(report.processes, this.thresholdExtras(states));
+  }
+
+  /** `pboss alerts set` / config.alerts.set — live patch + persist. */
+  alertsSet(target: string | undefined, patch: Record<string, unknown>): unknown {
+    const next = patchThresholdConfig(this.thresholds.currentConfig, target, patch);
+    this.thresholds.updateConfig(next);
+    saveThresholdConfig(next);
+    return this.alertsShow();
+  }
+
+  /** `pboss alerts reset` — drop overrides (one process, or all, or system). */
+  alertsReset(target: string): unknown {
+    const next: ThresholdConfig = JSON.parse(JSON.stringify(this.thresholds.currentConfig));
+    if (target === "all") {
+      next.overrides = {};
+      next.system = DEFAULT_THRESHOLD_CONFIG.system; // built-in defaults
+    } else if (target === "system") {
+      next.system = DEFAULT_THRESHOLD_CONFIG.system;
+    } else if (next.overrides[target]) {
+      delete next.overrides[target];
+    }
+    this.thresholds.updateConfig(next);
+    saveThresholdConfig(next);
+    return this.alertsShow();
+  }
+
+  /**
+   * `pboss alerts test` — fire one synthetic alert through the REAL
+   * delivery chain (outbox → ack → cloud → integrations). Honest about
+   * delivery: queued when the link is down, sent live otherwise.
+   */
+  alertsTest(process: string, kind: string): { queued: boolean; event: CloudEventReport } {
+    const ev = this.thresholds.syntheticEvent(process, kind);
+    if (!ev) {
+      throw new Error(
+        `unknown alert kind "${kind}" — use cpu, mem, restart, eventloop, handles, system-cpu, system-mem`
+      );
+    }
+    ev.id = randomUUID();
+    this.outbox.push(ev);
+    const queued = !this.sendFrame({ type: "state", report: this.lastReport ?? this.buildEmptyReport() });
+    return { queued, event: ev };
+  }
+
+  private buildEmptyReport(): CloudStateReport {
+    return buildStateReport(this.cfg?.serverId ?? "local", this.pm.list(), this.healthFacts(this.pm.list()));
+  }
+
+  /* ── standalone cron outcomes → events ──────────────────────────────── */
+
+  /**
+   * A cron job finished (the daemon's CronJobManager callback): failed
+   * runs and completed one-shots become events in the same outbox. Works
+   * with no link too — the events wait in the queue like any other.
+   */
+  reportCronOutcome(job: CronJob, exitCode: number | null): void {
+    if (!this.running) return;
+    const failed = (exitCode !== null && exitCode !== 0) || Boolean(job.lastError);
+    const ev: CloudEventReport = failed
+      ? {
+          kind: "cron.failed",
+          process: job.name,
+          at: Date.now(),
+          detail: `cron job "${job.name}" (${job.schedule}) failed${exitCode !== null ? ` — exit ${exitCode}` : ""}${job.lastError ? `: ${job.lastError}` : ""}`,
+          exitCode,
+        }
+      : {
+          kind: "cron.completed",
+          process: job.name,
+          at: Date.now(),
+          detail: `one-shot cron job "${job.name}" (${job.schedule}) completed`,
+          exitCode: 0,
+        };
+    if (!failed && !job.oneShot) return; // recurring success is not an event
+    ev.id = randomUUID();
+    this.outbox.push(ev);
+  }
+
   /* ── live log tails (log.watch / log.unwatch) ───────────────────────── */
 
   private startLogTail(process: string): void {
@@ -1167,9 +1523,14 @@ export class CloudAgent {
     let result: CloudCommandResult;
     try {
       const data = await this.executeCommand(cmd);
-      result = { commandId: cmd.id, success: true, data };
+      result = { commandId: cmd.id, success: true, data, issuedBy: cmd.issuedBy };
     } catch (err: any) {
-      result = { commandId: cmd.id, success: false, error: err?.message ?? String(err) };
+      result = {
+        commandId: cmd.id,
+        success: false,
+        error: err?.message ?? String(err),
+        issuedBy: cmd.issuedBy,
+      };
     }
     this.sendFrame({ type: "command-result", result });
     // the dashboard expects fresh state right after a command
@@ -1180,7 +1541,7 @@ export class CloudAgent {
     const target = typeof cmd.payload?.target === "string" ? cmd.payload.target : "";
     switch (cmd.type) {
       case "process.list":
-        return this.pm.list().map(mapProcessState);
+        return this.pm.list().map((p) => mapProcessState(p));
 
       case "process.start": {
         if (!target) throw new Error("process.start requires a target");
@@ -1188,27 +1549,27 @@ export class CloudAgent {
         if (!state) throw new Error(`no process named "${target}"`);
         if (state.status === "online") throw new Error(`"${target}" is already online`);
         const opts = startOptionsFromState(state);
-        return (await this.pm.start(opts)).map(mapProcessState);
+        return (await this.pm.start(opts)).map((p) => mapProcessState(p));
       }
 
       case "process.stop":
         if (!target) throw new Error("process.stop requires a target");
-        return (await this.pm.stop(target)).map(mapProcessState);
+        return (await this.pm.stop(target)).map((p) => mapProcessState(p));
 
       case "process.kill":
         // force-stop (SIGKILL path): unlike process.stop there is no
         // graceful SIGTERM window — for a wedged process. The process
         // row survives (unlike process.delete).
         if (!target) throw new Error("process.kill requires a target");
-        return (await this.pm.kill(target)).map(mapProcessState);
+        return (await this.pm.kill(target)).map((p) => mapProcessState(p));
 
       case "process.restart":
         if (!target) throw new Error("process.restart requires a target");
-        return (await this.pm.restart(target)).map(mapProcessState);
+        return (await this.pm.restart(target)).map((p) => mapProcessState(p));
 
       case "process.delete":
         if (!target) throw new Error("process.delete requires a target");
-        return (await this.pm.del(target)).map(mapProcessState);
+        return (await this.pm.del(target)).map((p) => mapProcessState(p));
 
       case "process.logs": {
         const lines = Math.min(500, Math.max(10, Number(cmd.payload?.lines) || 200));
@@ -1313,6 +1674,164 @@ export class CloudAgent {
         return { cancelled: cancelDeployJob(id) };
       }
 
+      /* ── resource threshold alerting (threshold-monitor.ts) ── */
+
+      case "config.alerts.get":
+        return this.alertsShow();
+
+      case "config.alerts.set": {
+        const target =
+          typeof cmd.payload?.target === "string" && cmd.payload.target
+            ? cmd.payload.target
+            : undefined;
+        const patch =
+          cmd.payload?.patch && typeof cmd.payload.patch === "object"
+            ? (cmd.payload.patch as Record<string, unknown>)
+            : undefined;
+        if (!patch) throw new Error("config.alerts.set requires a patch object");
+        return this.alertsSet(target, patch);
+      }
+
+      /* ── standalone cron job visibility + control ── */
+
+      case "cron.list": {
+        if (!this.cronJobManager) throw new Error("cron jobs are not available (no cronJobManager)");
+        return { jobs: this.cronJobManager.list() };
+      }
+
+      case "cron.run": {
+        if (!this.cronJobManager) throw new Error("cron jobs are not available (no cronJobManager)");
+        const job = typeof cmd.payload?.target === "string" ? cmd.payload.target : "";
+        if (!job) throw new Error("cron.run requires a target (job name or id)");
+        return this.cronJobManager.trigger(job);
+      }
+
+      case "cron.enable":
+      case "cron.disable": {
+        if (!this.cronJobManager) throw new Error("cron jobs are not available (no cronJobManager)");
+        const job = typeof cmd.payload?.target === "string" ? cmd.payload.target : "";
+        if (!job) throw new Error(`${cmd.type} requires a target (job name or id)`);
+        return this.cronJobManager.setEnabled(job, cmd.type === "cron.enable");
+      }
+
+      /* ── secrets / env registry management ── */
+
+      case "env.get": {
+        // Keys only by default — never echo secret VALUES into command
+        // result logs unless explicitly asked (payload.values === true).
+        const name = typeof cmd.payload?.process === "string" ? cmd.payload.process : "";
+        const includeValues = cmd.payload?.values === true;
+        const envs = await this.envManager.getEnvs();
+        if (name) {
+          const vars = envs[name] ?? {};
+          return {
+            process: name,
+            vars: includeValues
+              ? vars
+              : Object.fromEntries(Object.keys(vars).map((k) => [k, "••••"])),
+          };
+        }
+        return {
+          processes: Object.entries(envs).map(([proc, vars]) => ({
+            process: proc,
+            keys: Object.keys(vars),
+            ...(includeValues ? { vars } : {}),
+          })),
+        };
+      }
+
+      case "env.set": {
+        const name =
+          typeof cmd.payload?.process === "string" && cmd.payload.process
+            ? cmd.payload.process
+            : "";
+        if (!name) throw new Error("env.set requires a process name");
+        const vars = cmd.payload?.vars;
+        if (!vars || typeof vars !== "object" || Array.isArray(vars)) {
+          throw new Error("env.set requires a vars object (key → value)");
+        }
+        for (const [key, value] of Object.entries(vars as Record<string, unknown>)) {
+          if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) {
+            throw new Error(`"${key}" is not a valid env key`);
+          }
+          await this.envManager.setEnv(name, key, String(value ?? ""));
+        }
+        const restart = cmd.payload?.restart === true;
+        if (restart) {
+          await this.pm.restart(name);
+        }
+        return {
+          process: name,
+          written: Object.keys(vars as Record<string, unknown>).length,
+          restarted: restart,
+        };
+      }
+
+      /* ── namespace-scoped lifecycle (groups, not single processes) ── */
+
+      case "namespace.start": {
+        const ns = typeof cmd.payload?.namespace === "string" ? cmd.payload.namespace : "";
+        if (!ns) throw new Error("namespace.start requires a namespace");
+        // startTarget resolves namespaces atomically (issue #31 semantics)
+        return (await this.pm.startTarget(ns)).map((p) => mapProcessState(p));
+      }
+
+      case "namespace.stop": {
+        const ns = typeof cmd.payload?.namespace === "string" ? cmd.payload.namespace : "";
+        if (!ns) throw new Error("namespace.stop requires a namespace");
+        return (await this.pm.stop(ns)).map((p) => mapProcessState(p));
+      }
+
+      case "namespace.restart": {
+        const ns = typeof cmd.payload?.namespace === "string" ? cmd.payload.namespace : "";
+        if (!ns) throw new Error("namespace.restart requires a namespace");
+        return (await this.pm.restart(ns)).map((p) => mapProcessState(p));
+      }
+
+      /* ── running instance-count change without a full restart ── */
+
+      case "process.scale": {
+        if (!target) throw new Error("process.scale requires a target");
+        const instances = Number(cmd.payload?.instances);
+        if (!Number.isInteger(instances) || instances < 1 || instances > 64) {
+          throw new Error("process.scale requires instances (1-64)");
+        }
+        return (await this.pm.scale(target, instances)).map((p) => mapProcessState(p));
+      }
+
+      /* ── one-off exec in the process's working directory ── */
+
+      case "process.exec": {
+        if (!target) throw new Error("process.exec requires a target process");
+        const command =
+          typeof cmd.payload?.command === "string" ? cmd.payload.command.trim() : "";
+        if (!command) throw new Error("process.exec requires a command");
+        const state = this.findState(target);
+        if (!state) throw new Error(`no process named "${target}"`);
+        const env = state.pboss_env ?? state.bm2_env;
+        const cwd = env?.cwd || (env?.script ? dirname(env.script) : "");
+        if (!cwd) throw new Error(`no working directory for "${target}"`);
+        return execOneOff(command, {
+          cwd,
+          env: { ...(process.env as Record<string, string>), ...(env?.env ?? {}) },
+          timeoutSec: clampInt(Number(cmd.payload?.timeoutSec ?? 30), 1, 300),
+        });
+      }
+
+      /* ── time-ranged regex search across live + rotated logs ── */
+
+      case "log.search": {
+        if (!target) throw new Error("log.search requires a target process");
+        const query =
+          typeof cmd.payload?.query === "string" ? cmd.payload.query : "";
+        if (!query) throw new Error("log.search requires a query");
+        return this.pm.searchProcessLogs(target, query, {
+          from: numOrUndef(cmd.payload?.from),
+          to: numOrUndef(cmd.payload?.to),
+          maxResults: clampInt(Number(cmd.payload?.maxResults ?? 200), 1, 1000),
+        });
+      }
+
       default:
         throw new Error(`unknown command type: ${(cmd as CloudCommand).type}`);
     }
@@ -1324,6 +1843,128 @@ export class CloudAgent {
       (p) => p.name === target || String(p.pm_id) === target || String(p.id) === target
     );
   }
+}
+
+/* ── one-off exec (process.exec) ───────────────────────────────────── */
+
+export interface OneOffExecResult {
+  stdout: string;
+  stderr: string;
+  exitCode: number | null;
+  timedOut: boolean;
+  durationMs: number;
+  truncated: boolean;
+}
+
+/** Per-stream output cap — a runaway command cannot balloon the frame. */
+const EXEC_OUTPUT_CAP = 256 * 1024;
+
+/**
+ * Run ONE shell command in a process's working directory and return its
+ * captured output — the deploy-job exec pattern (hard timeout, capped
+ * output, no interactive tricks) wrapped as a command primitive. The
+ * caller resolves the cwd/env from the target process's config.
+ */
+export async function execOneOff(
+  command: string,
+  opts: { cwd: string; env?: Record<string, string>; timeoutSec?: number }
+): Promise<OneOffExecResult> {
+  const timeoutMs = Math.max(1, Math.min(300, opts.timeoutSec ?? 30)) * 1000;
+  const t0 = Date.now();
+  const isWin = process.platform === "win32";
+  const argv = isWin ? ["cmd", "/d", "/s", "/c", command] : ["/bin/sh", "-c", command];
+  const proc = Bun.spawn(argv, {
+    cwd: opts.cwd,
+    env: opts.env ? { ...process.env, ...opts.env } : process.env,
+    stdout: "pipe",
+    stderr: "pipe",
+    stdin: "ignore",
+  });
+
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    try {
+      proc.kill("SIGKILL");
+    } catch {
+      // already dead — the close handler runs next
+    }
+  }, timeoutMs);
+
+  const readCapped = (
+    stream: ReadableStream<Uint8Array> | undefined
+  ): { text: Promise<string>; cancel: () => Promise<void> } => {
+    if (!stream) return { text: Promise.resolve(""), cancel: () => Promise.resolve() };
+    const reader = stream.getReader();
+    const text = (async () => {
+      const chunks: Uint8Array[] = [];
+      let total = 0;
+      try {
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done || !value) break;
+          if (total < EXEC_OUTPUT_CAP) {
+            chunks.push(value);
+            total += value.length;
+          }
+          // beyond the cap the bytes are drained, not stored — pipe
+          // backpressure cannot wedge the child
+        }
+      } catch {
+        // stream torn down by kill — whatever was read is the answer
+      }
+      return new TextDecoder().decode(concat(chunks));
+    })();
+    return {
+      text,
+      // reader.cancel() resolves a PENDING read as done — the only way out
+      // when a killed child's pipes never end (Bun keeps them open)
+      cancel: () => reader.cancel().then(() => undefined, () => undefined),
+    };
+  };
+
+  const out = readCapped(proc.stdout as ReadableStream<Uint8Array> | undefined);
+  const err = readCapped(proc.stderr as ReadableStream<Uint8Array> | undefined);
+  const exitCode = await proc.exited;
+  clearTimeout(timer);
+  // A KILLED child's pipes (or a grandchild that inherited them) never end —
+  // the pending reads would hang forever. Wait a short grace for natural
+  // close, then cancel both readers so the reads resolve with whatever was
+  // collected.
+  await Promise.race([Promise.all([out.text, err.text]), Bun.sleep(250)]);
+  await Promise.all([out.cancel(), err.cancel()]);
+  const [stdout, stderr] = await Promise.all([out.text, err.text]);
+
+  const cap = (s: string) => (s.length > EXEC_OUTPUT_CAP ? s.slice(0, EXEC_OUTPUT_CAP) : s);
+  return {
+    stdout: cap(stdout),
+    stderr: cap(stderr),
+    exitCode,
+    timedOut,
+    durationMs: Date.now() - t0,
+    truncated: stdout.length >= EXEC_OUTPUT_CAP || stderr.length >= EXEC_OUTPUT_CAP,
+  };
+}
+
+function concat(chunks: Uint8Array[]): Uint8Array {
+  const total = chunks.reduce((n, c) => n + c.length, 0);
+  const out = new Uint8Array(total);
+  let off = 0;
+  for (const c of chunks) {
+    out.set(c, off);
+    off += c.length;
+  }
+  return out;
+}
+
+function clampInt(v: number, min: number, max: number): number {
+  if (!Number.isFinite(v)) return min;
+  return Math.max(min, Math.min(max, Math.round(v)));
+}
+
+function numOrUndef(v: unknown): number | undefined {
+  const n = Number(v);
+  return Number.isFinite(n) && n > 0 ? n : undefined;
 }
 
 /**

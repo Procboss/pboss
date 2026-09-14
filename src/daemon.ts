@@ -144,7 +144,16 @@ export default class Daemon {
     // Cloud link: if this machine was already enrolled, resume the agent.
     // start() never throws (a refused transport degrades to a visible
     // stopped state) — a stale credential file must never brick the boot.
-    this.cloudAgent = new CloudAgent(this.pm);
+    // The agent owns the cron job manager (cron.* commands/events) and the
+    // threshold monitor (alert events + `pboss alerts`).
+    this.cloudAgent = new CloudAgent(this.pm, { cronJobManager: this.cronJobManager });
+    // Cron outcomes → cloud events: failed runs and completed one-shots
+    // ride the agent's event outbox (ack/dedup inherited). Safe with no
+    // cloud link — nothing is sent, nothing queues (reportCronOutcome
+    // checks the agent's running state).
+    this.cronJobManager.onJobResult = (job, exitCode) => {
+      this.cloudAgent?.reportCronOutcome(job, exitCode);
+    };
     const cloudCfg = loadCloudConfig();
     if (cloudCfg) {
       this.cloudAgent.start(cloudCfg);
@@ -429,6 +438,59 @@ export default class Daemon {
         case "cronTrigger": {
           const job = await this.cronJobManager!.trigger(msg.data.target);
           return { type: "cronTrigger", data: job, success: true, id: msg.id };
+        }
+        /* ── resource threshold alerts (`pboss alerts …`) ── */
+        case "alertsShow": {
+          // Effective thresholds: defaults + file overrides + per-process
+          // ecosystem fields, merged. Served from the LIVE monitor so a
+          // cloud-side config.alerts.set is reflected here immediately.
+          const data = this.cloudAgent!.alertsShow();
+          return { type: "alertsShow", data, success: true, id: msg.id };
+        }
+        case "alertsSet": {
+          // { target?: "system" | processName, patch: {...} } — hot-reloads
+          // the in-memory monitor AND persists to alert-thresholds.json.
+          const target =
+            typeof msg.data?.target === "string" && msg.data.target ? msg.data.target : undefined;
+          const patch =
+            msg.data?.patch && typeof msg.data.patch === "object"
+              ? (msg.data.patch as Record<string, unknown>)
+              : undefined;
+          if (!patch) {
+            return {
+              type: "error",
+              error: "alertsSet requires a patch object",
+              success: false,
+              id: msg.id,
+            };
+          }
+          const data = this.cloudAgent!.alertsSet(target, patch);
+          return { type: "alertsSet", data, success: true, id: msg.id };
+        }
+        case "alertsReset": {
+          const target =
+            typeof msg.data?.target === "string" && msg.data.target
+              ? msg.data.target
+              : "all";
+          const data = this.cloudAgent!.alertsReset(target);
+          return { type: "alertsReset", data, success: true, id: msg.id };
+        }
+        case "alertsTest": {
+          // Fires ONE synthetic event through the real delivery chain —
+          // verifies Telegram/Discord/webhook integrations without
+          // waiting for a real spike.
+          const process = typeof msg.data?.process === "string" ? msg.data.process : "";
+          const kind = typeof msg.data?.kind === "string" ? msg.data.kind : "";
+          if (!process || !kind) {
+            return {
+              type: "error",
+              error: "alertsTest requires a process and a kind (cpu, mem, restart, eventloop, handles, system-cpu, system-mem)",
+              success: false,
+              id: msg.id,
+            };
+          }
+          const data = this.cloudAgent!.alertsTest(process, kind);
+          return { type: "alertsTest", data, success: true, id: msg.id };
         }
         case "cloudConnect": {
           // Exchange a dashboard enrollment token for a permanent credential

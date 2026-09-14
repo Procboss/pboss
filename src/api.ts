@@ -942,6 +942,60 @@ export class PBoss extends EventEmitter<PBossEvents> {
     return res.data;
   }
 
+  // ── resource threshold alerts (`pboss alerts …`) ──────────────────────
+
+  /**
+   * Effective alert thresholds: system + defaults + per-process overrides
+   * (file + ecosystem fields), merged. `process` narrows to one app.
+   */
+  async alertsShow(): Promise<unknown> {
+    const res = await this.sendOrThrow({ type: "alertsShow" });
+    return res.data;
+  }
+
+  /**
+   * Patch thresholds for one process, the system block, or the defaults
+   * (target undefined). Hot-reloads the daemon's monitor and persists to
+   * ~/.pboss/alert-thresholds.json.
+   */
+  async alertsSet(
+    target: string | undefined,
+    patch: Record<string, unknown>
+  ): Promise<unknown> {
+    const res = await this.sendOrThrow({
+      type: "alertsSet",
+      data: { target, patch },
+    });
+    return res.data;
+  }
+
+  /**
+   * Drop overrides: one process name, `"system"`, or `"all"`.
+   */
+  async alertsReset(target: string): Promise<unknown> {
+    const res = await this.sendOrThrow({
+      type: "alertsReset",
+      data: { target },
+    });
+    return res.data;
+  }
+
+  /**
+   * Fire one synthetic alert event end-to-end (kind: cpu, mem, restart,
+   * eventloop, handles, system-cpu, system-mem) — verifies the delivery
+   * chain and the user's integrations without a real spike.
+   */
+  async alertsTest(
+    process: string,
+    kind: string
+  ): Promise<{ queued: boolean; event: unknown }> {
+    const res = await this.sendOrThrow({
+      type: "alertsTest",
+      data: { process, kind },
+    });
+    return res.data;
+  }
+
   // ── cloud ────────────────────────────────────────────────────────────
 
   /**

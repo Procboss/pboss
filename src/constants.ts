@@ -41,6 +41,8 @@ export const METRICS_PORT = 9616;
 
 /** Cloud link state (per-server credential, written 0600). */
 export const CLOUD_FILE = join(PBOSS_HOME, "cloud.json");
+/** Resource threshold alert config (`pboss alerts`), same dir pattern. */
+export const ALERT_THRESHOLDS_FILE = join(PBOSS_HOME, "alert-thresholds.json");
 /** User login state (`pboss login`), 0600 — separate from the machine credential. */
 export const CLOUD_USER_FILE = join(PBOSS_HOME, "cloud-user.json");
 /** Default ProcBoss Cloud endpoint; override with --url or PBOSS_CLOUD_URL. */

@@ -376,3 +376,158 @@ export class LogManager {
     await this.rotate(paths.errFile, options);
   }
 }
+
+/* ── log search (log.search cloud command + CLI) ─────────────────────── */
+
+/** One matching line found by searchLogFiles. */
+export interface LogSearchMatch {
+  /** The file it came from (basename — rotations included). */
+  file: string;
+  /** Parsed epoch-ms timestamp (null when the line carries none). */
+  ts: number | null;
+  /** The message text (the searchable part, not the raw JSON envelope). */
+  line: string;
+  level?: "err" | "out";
+}
+
+export interface LogSearchResult {
+  matches: LogSearchMatch[];
+  /** Basenames actually scanned (missing files are skipped silently). */
+  scannedFiles: string[];
+  /** True when the result hit maxResults before exhausting the files. */
+  truncated: boolean;
+}
+
+/** Lines examined per file — bounds the worst case (a 10MB log is ~100k
+ *  lines; anything past this is pathological and still bounded work). */
+const SEARCH_LINE_CAP = 200_000;
+
+/**
+ * Time-ranged regex search across a process's logs — the LIVE files plus
+ * every rotation on disk (`.N` and `.N.gz`, in rotation order: newest
+ * first). `from`/`to` are epoch ms; lines without a parseable timestamp
+ * are kept only when no range was given. An invalid regex degrades to a
+ * case-insensitive literal match instead of throwing.
+ */
+export async function searchLogFiles(
+  files: Array<string | undefined>,
+  query: string,
+  opts: { from?: number; to?: number; maxResults?: number } = {}
+): Promise<LogSearchResult> {
+  const maxResults = Math.max(1, Math.min(1000, opts.maxResults ?? 200));
+  let re: RegExp;
+  try {
+    re = new RegExp(query, "i");
+  } catch {
+    re = new RegExp(query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
+  }
+
+  // Expand each base file with its rotations: file, file.1.gz, file.1,
+  // file.2.gz, file.2… — higher N is OLDER; within one N, .gz vs plain is
+  // the same content at different compression stages, so prefer .gz.
+  const expanded: Array<{ path: string; level: "err" | "out" }> = [];
+  const dirEntries = new Map<string, Set<string>>();
+  for (const f of files) {
+    if (!f) continue;
+    const dir = dirname(f);
+    const base = basename(f);
+    if (!dirEntries.has(dir)) {
+      try {
+        dirEntries.set(dir, new Set(await readdir(dir)));
+      } catch (err) {
+        ignore(`readdir ${dir} for log search`, err);
+        dirEntries.set(dir, new Set());
+      }
+    }
+    const names = dirEntries.get(dir)!;
+    const level: "err" | "out" = base.includes("error") ? "err" : "out";
+    expanded.push({ path: f, level });
+    // rotations, oldest last but scanned newest-first below
+    const rotations: Array<{ n: number; gz: boolean }> = [];
+    for (const name of names) {
+      const m = new RegExp(`^${escapeRe(base)}\\.(\\d+)(\\.gz)?$`).exec(name);
+      if (m) rotations.push({ n: Number(m[1]), gz: Boolean(m[2]) });
+    }
+    rotations.sort((a, b) => a.n - b.n);
+    const seen = new Set<number>();
+    for (const r of rotations) {
+      if (seen.has(r.n)) continue; // .gz won the race above (sorted same N)
+      seen.add(r.n);
+      expanded.push({
+        path: join(dir, `${base}.${r.n}${r.gz ? ".gz" : ""}`),
+        level,
+      });
+    }
+  }
+
+  // Scan NEWEST first: live file, then .1, .2 …
+  const matches: LogSearchMatch[] = [];
+  const scannedFiles: string[] = [];
+  let truncated = false;
+
+  for (let i = 0; i < expanded.length && matches.length < maxResults; i++) {
+    const { path, level } = expanded[i]!;
+    let text: string;
+    try {
+      const f = Bun.file(path);
+      if (!(await f.exists())) continue;
+      const buf = await f.arrayBuffer();
+      text = path.endsWith(".gz")
+        ? new TextDecoder().decode(Bun.gunzipSync(new Uint8Array(buf)))
+        : new TextDecoder().decode(buf);
+    } catch (err) {
+      ignore(`read log file ${path} for search`, err);
+      continue;
+    }
+    scannedFiles.push(basename(path));
+
+    const lines = text.split(/\r?\n/);
+    const start = Math.max(0, lines.length - SEARCH_LINE_CAP);
+    for (let li = start; li < lines.length; li++) {
+      const raw = lines[li]!;
+      if (!raw) continue;
+      const parsed = parseLineForSearch(raw);
+      if (opts.from !== undefined || opts.to !== undefined) {
+        if (parsed.ts === null) continue; // untimestamped + a range = skip
+        if (opts.from !== undefined && parsed.ts < opts.from) continue;
+        if (opts.to !== undefined && parsed.ts > opts.to) continue;
+      }
+      if (re.test(parsed.msg)) {
+        matches.push({ file: basename(path), ts: parsed.ts, line: parsed.msg, level });
+        if (matches.length >= maxResults) {
+          truncated = i < expanded.length - 1 || li < lines.length - 1;
+          break;
+        }
+      }
+    }
+  }
+
+  return { matches, scannedFiles, truncated };
+}
+
+function parseLineForSearch(
+  raw: string
+): { ts: number | null; msg: string } {
+  try {
+    const entry = JSON.parse(raw) as LogEntry;
+    if (entry && typeof entry.ts === "string" && typeof entry.msg === "string") {
+      const t = Date.parse(entry.ts);
+      return {
+        ts: Number.isFinite(t) ? t : null,
+        msg: entry.msg,
+      };
+    }
+  } catch {
+    // pre-JSON format: [ISO] message
+  }
+  const m = raw.match(isoRegex);
+  const ts = m ? Date.parse(m[0]) : NaN;
+  return {
+    ts: Number.isFinite(ts) ? ts : null,
+    msg: (m ? raw.replace(`[${m[0]}]`, "") : raw).trim(),
+  };
+}
+
+function escapeRe(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}

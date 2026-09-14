@@ -762,6 +762,236 @@ class PBossCLI {
     }
   }
 
+  // -------------------------------------------------------------------------
+  // Resource threshold alerts — `pboss alerts <show|set|reset|test>`
+  // -------------------------------------------------------------------------
+
+  private printAlertsUsage() {
+    console.log(`Usage: pboss alerts <command> [options]
+
+${colorize("Commands:", "cyan")}
+  show [process]              Effective thresholds: defaults + overrides merged
+  set <process> <flags>       Override thresholds for one process (persisted)
+  set --system <flags>        Override whole-server thresholds
+  reset <process|--system|all>  Drop overrides (back to defaults)
+  test <process> <kind>       Fire a synthetic alert end-to-end — verifies the
+                              delivery chain (outbox → cloud → integrations)
+
+${colorize("Process flags:", "cyan")}
+  --cpu-spike N          CPU spike trigger % (default 95)      --cpu-spike-clear N
+  --cpu-sustained N      Sustained CPU trigger % (default 70)  --cpu-sustained-clear N
+  --mem-spike N          Memory growth %/min (default 40)      --mem-high-pct N (% of limit, default 85)
+  --mem-high-mb N        Memory ceiling MB when no maxMemoryRestart is set
+  --eventloop N          Event-loop latency ms (default 100)   --eventloop-clear N
+  --restarts N           Restarts in the rolling window (default 5)
+
+${colorize("System flags:", "cyan")}
+  --cpu N                System CPU trigger % (default 85)     --cpu-clear N
+  --mem-free-pct N       Free-memory floor % (default 10)      --mem-free-clear N
+
+Every alert also supports sustained durations in the JSON file
+(~/.pboss/alert-thresholds.json) — the CLI covers the common knobs.`);
+  }
+
+  private renderThresholds(label: string, t: Record<string, unknown>, indent = "  ") {
+    console.log(colorize(`${indent}${label}`, "bold"));
+    const lvl = (name: string, v: { trigger: number; clear: number; sustainedSec: number }, unit: string) =>
+      console.log(
+        `${indent}  ${padRight(name, 26)} trigger ${padRight(String(v.trigger) + unit, 12)} clear ${padRight(String(v.clear) + unit, 12)} sustained ${v.sustainedSec}s`
+      );
+    lvl("cpu.spike", t.cpuSpikePercent as never, "%");
+    lvl("cpu.sustained", t.cpuSustainedPercent as never, "%");
+    const spike = t.memSpikeGrowthPercent as { trigger: number; windowSec: number; minDeltaMB: number };
+    console.log(
+      `${indent}  ${padRight("mem.spike", 26)} growth ≥ ${spike.trigger}% in ${spike.windowSec}s AND ≥ ${spike.minDeltaMB}MB`
+    );
+    const high = t.memHighPercentOfLimit as { trigger: number; clear: number; absoluteMB?: number | null };
+    console.log(
+      `${indent}  ${padRight("mem.high", 26)} ${high.trigger}% of limit (clear ${high.clear}%)${high.absoluteMB ? ` — absolute ${high.absoluteMB}MB` : " — off without a limit"}`
+    );
+    const loop = t.restartLoop as { count: number; windowSec: number };
+    console.log(
+      `${indent}  ${padRight("restart.loop", 26)} ${loop.count} restarts in ${loop.windowSec}s (rolling)`
+    );
+    lvl("eventloop.latency", t.eventLoopLatencyMs as never, "ms");
+    const handles = t.handleGrowth as { multiplier: number; minAbsolute: number; baselineWindowSec: number; sustainedSec: number };
+    console.log(
+      `${indent}  ${padRight("handles.leak", 26)} ≥ ${handles.multiplier}× the ${handles.baselineWindowSec}s baseline AND ≥ ${handles.minAbsolute} (sustained ${handles.sustainedSec}s)`
+    );
+  }
+
+  async cmdAlerts(args: string[]) {
+    const sub = args[0];
+    const rest = args.slice(1);
+    try {
+      switch (sub) {
+        case "show": {
+          const summary = (await this.pboss.alertsShow()) as {
+            system: Record<string, unknown>;
+            defaults: Record<string, unknown>;
+            overrides: Record<string, unknown>;
+            effective: Array<{ process: string; disabled: boolean; thresholds: Record<string, unknown> }>;
+          };
+          console.log(colorize("Server-wide (system) thresholds", "cyan"));
+          const sysCpu = (summary.system as { cpuPercent: { trigger: number; clear: number; sustainedSec: number } }).cpuPercent;
+          const sysMem = (summary.system as { memFreePercent: { trigger: number; clear: number; sustainedSec: number } }).memFreePercent;
+          console.log(`  system.cpu.high    trigger ${sysCpu.trigger}% (clear ${sysCpu.clear}%, sustained ${sysCpu.sustainedSec}s)`);
+          console.log(`  system.mem.high    free < ${sysMem.trigger}% (clear > ${sysMem.clear}%, sustained ${sysMem.sustainedSec}s)`);
+          console.log("");
+          this.renderThresholds("Defaults (every process without overrides)", summary.defaults);
+          if (Object.keys(summary.overrides).length > 0) {
+            console.log(colorize("  File overrides (~/.pboss/alert-thresholds.json)", "dim"));
+            for (const name of Object.keys(summary.overrides)) {
+              console.log(`    ${name}: configured`);
+            }
+          }
+          if (summary.effective.length > 0) {
+            console.log("");
+            console.log(colorize("Per-process (effective)", "cyan"));
+            for (const p of summary.effective) {
+              const mark = p.disabled ? colorize("✗ disabled", "red") : colorize("✓ active", "green");
+              console.log(`  ${padRight(p.process, 24)} ${mark}`);
+            }
+          } else {
+            console.log("");
+            console.log(colorize("  (no processes running)", "dim"));
+          }
+          break;
+        }
+
+        case "set": {
+          const isSystem = rest.includes("--system");
+          // positional target = first non-flag arg that is not a flag VALUE
+          const VALUE_FLAGS = new Set([
+            "--cpu-spike", "--cpu-spike-clear", "--cpu-spike-sec",
+            "--cpu-sustained", "--cpu-sustained-clear",
+            "--mem-spike", "--mem-high-pct", "--mem-high-clear", "--mem-high-mb",
+            "--eventloop", "--eventloop-clear", "--restarts",
+            "--cpu", "--cpu-clear", "--cpu-sustained-sec",
+            "--mem-free-pct", "--mem-free-clear", "--mem-sustained-sec",
+          ]);
+          const positionals: string[] = [];
+          for (let i = 0; i < rest.length; i++) {
+            const a = rest[i]!;
+            if (a === "--system") continue;
+            if (a.startsWith("-")) {
+              if (VALUE_FLAGS.has(a)) i++;
+              continue;
+            }
+            positionals.push(a);
+          }
+          const target = positionals[0];
+          const patch: Record<string, unknown> = {};
+          const num = (v: string | undefined) => (v !== undefined && Number.isFinite(Number(v)) ? Number(v) : undefined);
+          const flagOf = (name: string) => {
+            const i = rest.indexOf(name);
+            return i >= 0 ? rest[i + 1] : undefined;
+          };
+          if (isSystem) {
+            const cpu: Record<string, number> = {};
+            if (num(flagOf("--cpu")) !== undefined) cpu.trigger = num(flagOf("--cpu"))!;
+            if (num(flagOf("--cpu-clear")) !== undefined) cpu.clear = num(flagOf("--cpu-clear"))!;
+            if (num(flagOf("--cpu-sustained-sec")) !== undefined) cpu.sustainedSec = num(flagOf("--cpu-sustained-sec"))!;
+            const mem: Record<string, number> = {};
+            if (num(flagOf("--mem-free-pct")) !== undefined) mem.trigger = num(flagOf("--mem-free-pct"))!;
+            if (num(flagOf("--mem-free-clear")) !== undefined) mem.clear = num(flagOf("--mem-free-clear"))!;
+            if (num(flagOf("--mem-sustained-sec")) !== undefined) mem.sustainedSec = num(flagOf("--mem-sustained-sec"))!;
+            if (Object.keys(cpu).length > 0) patch.cpuPercent = cpu;
+            if (Object.keys(mem).length > 0) patch.memFreePercent = mem;
+          } else {
+            if (!target) {
+              console.error(colorize("Usage: pboss alerts set <process> --cpu-spike 90 …  (or --system for server-wide)", "red"));
+              process.exit(1);
+            }
+            const f = flagOf;
+            const spike: Record<string, number> = {};
+            if (num(f("--cpu-spike")) !== undefined) spike.trigger = num(f("--cpu-spike"))!;
+            if (num(f("--cpu-spike-clear")) !== undefined) spike.clear = num(f("--cpu-spike-clear"))!;
+            if (num(f("--cpu-spike-sec")) !== undefined) spike.sustainedSec = num(f("--cpu-spike-sec"))!;
+            const sustained: Record<string, number> = {};
+            if (num(f("--cpu-sustained")) !== undefined) sustained.trigger = num(f("--cpu-sustained"))!;
+            if (num(f("--cpu-sustained-clear")) !== undefined) sustained.clear = num(f("--cpu-sustained-clear"))!;
+            const memSpike: Record<string, number> = {};
+            if (num(f("--mem-spike")) !== undefined) memSpike.trigger = num(f("--mem-spike"))!;
+            const memHigh: Record<string, number> = {};
+            if (num(f("--mem-high-pct")) !== undefined) memHigh.trigger = num(f("--mem-high-pct"))!;
+            if (num(f("--mem-high-clear")) !== undefined) memHigh.clear = num(f("--mem-high-clear"))!;
+            if (num(f("--mem-high-mb")) !== undefined) (memHigh as Record<string, unknown>).absoluteMB = num(f("--mem-high-mb"))!;
+            const loop: Record<string, number> = {};
+            if (num(f("--restarts")) !== undefined) loop.count = num(f("--restarts"))!;
+            const eventloop: Record<string, number> = {};
+            if (num(f("--eventloop")) !== undefined) eventloop.trigger = num(f("--eventloop"))!;
+            if (num(f("--eventloop-clear")) !== undefined) eventloop.clear = num(f("--eventloop-clear"))!;
+            if (Object.keys(spike).length > 0) patch.cpuSpikePercent = spike;
+            if (Object.keys(sustained).length > 0) patch.cpuSustainedPercent = sustained;
+            if (Object.keys(memSpike).length > 0) patch.memSpikeGrowthPercent = memSpike;
+            if (Object.keys(memHigh).length > 0) patch.memHighPercentOfLimit = memHigh;
+            if (Object.keys(loop).length > 0) patch.restartLoop = loop;
+            if (Object.keys(eventloop).length > 0) patch.eventLoopLatencyMs = eventloop;
+          }
+          if (Object.keys(patch).length === 0) {
+            console.error(colorize("Nothing to set — pass at least one threshold flag (see pboss alerts help)", "red"));
+            process.exit(1);
+          }
+          await this.pboss.alertsSet(isSystem ? "system" : target, patch);
+          console.log(
+            colorize(
+              `✓ ${isSystem ? "System" : `"${target}"`} thresholds updated (live) and saved to ~/.pboss/alert-thresholds.json`,
+              "green"
+            )
+          );
+          break;
+        }
+
+        case "reset": {
+          const target = rest[0];
+          if (!target) {
+            console.error(colorize("Usage: pboss alerts reset <process|--system|all>", "red"));
+            process.exit(1);
+          }
+          const resolved = target === "--system" || target === "-s" ? "system" : target;
+          await this.pboss.alertsReset(resolved);
+          console.log(colorize(`✓ Threshold overrides cleared (${resolved})`, "green"));
+          break;
+        }
+
+        case "test": {
+          const procName = rest.find((a) => !a.startsWith("-"));
+          const kind = rest.find((a) => !a.startsWith("-") && a !== procName);
+          if (!procName || !kind) {
+            console.error(colorize("Usage: pboss alerts test <process> <kind>", "red"));
+            console.error("Kinds: cpu, mem, restart, eventloop, handles, system-cpu, system-mem");
+            process.exit(1);
+          }
+          const result = (await this.pboss.alertsTest(procName, kind)) as {
+            queued: boolean;
+            event: { kind: string; process: string; detail?: string };
+          };
+          console.log(
+            colorize(
+              result.queued
+                ? `⚠ Test alert queued (${result.event.kind} for ${result.event.process}) — it will be delivered when the cloud link reconnects`
+                : `✓ Test alert sent (${result.event.kind} for ${result.event.process}) — check your integrations`,
+              result.queued ? "yellow" : "green"
+            )
+          );
+          if (result.event.detail) console.log(`  ${result.event.detail}`);
+          break;
+        }
+
+        case "help":
+        case "--help":
+        case "-h":
+        default:
+          this.printAlertsUsage();
+          if (sub && !["help", "--help", "-h"].includes(sub)) process.exit(1);
+      }
+    } catch (err: any) {
+      console.error(colorize(`Error: ${err.message}`, "red"));
+      process.exit(1);
+    }
+  }
+
   async cmdDescribe(args: string[]) {
     const target = args[0];
     if (!target) {
@@ -2127,6 +2357,9 @@ ${colorize("Notes:", "dim")}
     
     ${colorize("Monitoring:", "cyan")}
     monit                         Show live metrics snapshot
+    alerts show                   Effective resource-alert thresholds
+    alerts set <process> <flags> Override thresholds (persisted, live)
+    alerts test <process> <kind>  Fire a synthetic alert end-to-end
     dashboard [--port N]          Start web dashboard
     dashboard stop                Stop web dashboard
     prometheus                    Print Prometheus metrics
@@ -2357,6 +2590,9 @@ ${colorize("Notes:", "dim")}
         break;
       case "cron":
         await this.cmdCron(commandArgs);
+        break;
+      case "alerts":
+        await this.cmdAlerts(commandArgs);
         break;
       case "cloud":
         await this.cmdCloud(commandArgs);

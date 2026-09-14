@@ -64,6 +64,14 @@ export class CronJobManager {
   private watchdog: ReturnType<typeof setInterval> | null = null;
   private runningIds = new Set<number>();
 
+  /**
+   * Result hook (the daemon wires this to the cloud agent): called after
+   * every completed run with the job and its exit code — failures and
+   * one-shot completions become cloud events. Failures of the hook never
+   * break job execution.
+   */
+  onJobResult: ((job: CronJob, exitCode: number | null) => void) | null = null;
+
   // ── lifecycle ────────────────────────────────────────────────────────────
 
   /** Load persisted jobs and start the scheduler. */
@@ -196,6 +204,25 @@ export class CronJobManager {
     if (!job) throw new Error(`No cron job found for "${target}" — see pboss cron list`);
     await this.execute(job);
     await this.save();
+    return job;
+  }
+
+  /**
+   * Enable or disable a job by id or name (the cloud's cron.enable /
+   * cron.disable). A disabled job keeps its definition but never fires;
+   * re-enabling reschedules it from NOW (missed runs are skipped, same as
+   * a daemon restart). Returns the updated job.
+   */
+  async setEnabled(target: string | number, enabled: boolean): Promise<CronJob> {
+    const job = this.find(target);
+    if (!job) throw new Error(`No cron job found for "${target}" — see pboss cron list`);
+    if (job.state === "completed") {
+      throw new Error(`Job "${job.name}" already completed (one-shot) — recreate it to run again`);
+    }
+    job.enabled = enabled;
+    this.recomputeNext(job);
+    await this.save();
+    this.scheduleWake();
     return job;
   }
 
@@ -401,6 +428,13 @@ export class CronJobManager {
       job.nextRun = null;
     } else {
       this.recomputeNext(job);
+    }
+
+    try {
+      this.onJobResult?.(job, exitCode);
+    } catch (err) {
+      // a failing observer must never break job execution
+      warn(`cron onJobResult hook (${job.name})`, err);
     }
 
     this.scheduleWake();
