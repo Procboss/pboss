@@ -603,7 +603,9 @@ ${plist}`;
         }
       } else {
         // Same spawn shape as api.launchDaemon: daemon output goes to the
-        // daemon log files, not to this shell.
+        // daemon log files, not to this shell — including `detached: true`
+        // (issue #36: the daemon must outlive this CLI process; without it
+        // the Run-key daemon died the moment `startup install` returned).
         const outLog = Bun.file(DAEMON_OUT_LOG_FILE);
         const errLog = Bun.file(DAEMON_ERR_LOG_FILE);
         if (!(await outLog.exists())) await Bun.write(outLog, "");
@@ -612,6 +614,7 @@ ${plist}`;
           stdout: outLog,
           stderr: errLog,
           stdin: "ignore",
+          detached: true,
           env: { ...(process.env as Record<string, string>) },
         });
         proc.unref();

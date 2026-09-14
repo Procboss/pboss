@@ -474,4 +474,48 @@ describe("Windows Support & Cross-Platform Compatibility", () => {
       expect(dm.getServerOpts().unix).toBe(DAEMON_SOCKET);
     });
   });
+
+  describe("Daemon spawn detachment (issue #36)", () => {
+    // Owner report 2026-09-15, Windows with NO persistence installed: `pboss
+    // start` brought the daemon up, then it died the instant the CLI process
+    // exited. Root cause: the daemon Bun.spawn calls lacked `detached: true`
+    // — unref() only stops Bun's event loop from WAITING on the child; it
+    // does not detach the OS process (POSIX: no setsid; Windows: no
+    // UV_PROCESS_DETACHED, child tied to the parent's lifetime). The daemon
+    // must outlive every CLI invocation that starts it.
+    //
+    // Pinned off-Windows by source inspection (same pattern as the
+    // install.ps1 / postinstall pins): every spawn that redirects to the
+    // DAEMON LOG FILES is a daemon launch, and each must be detached.
+
+    test("every daemon-launch spawn is detached (api.ts + startup-manager.ts)", () => {
+      for (const rel of ["src/api.ts", "src/startup-manager.ts"]) {
+        const src = readFileSync(join(import.meta.dir, "..", rel), "utf8");
+        const blocks = src
+          .split("Bun.spawn(")
+          .slice(1)
+          .map((rest) => rest.slice(0, rest.indexOf("});")));
+        const daemonLaunches = blocks.filter((b) => b.includes("stdout: outLog"));
+        expect(daemonLaunches.length).toBeGreaterThan(0);
+        for (const block of daemonLaunches) {
+          expect(block).toContain("detached: true");
+        }
+      }
+    });
+
+    test("detached daemon spawns never opt into IPC (incompatible with detach)", () => {
+      for (const rel of ["src/api.ts", "src/startup-manager.ts"]) {
+        const src = readFileSync(join(import.meta.dir, "..", rel), "utf8");
+        const blocks = src
+          .split("Bun.spawn(")
+          .slice(1)
+          .map((rest) => rest.slice(0, rest.indexOf("});")));
+        for (const block of blocks) {
+          if (block.includes("detached: true")) {
+            expect(block).not.toContain("ipc");
+          }
+        }
+      }
+    });
+  });
 });

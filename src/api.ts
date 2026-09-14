@@ -1295,10 +1295,20 @@ export class PBoss extends EventEmitter<PBossEvents> {
       stdout: outLog,
       stderr: errLog,
       stdin: "ignore",
+      // detached: the daemon must OUTLIVE this CLI process. `pboss start`
+      // (and every ensure-daemon path) brings it up and returns; without
+      // detachment the child stays tied to this process's lifetime — on
+      // Windows it is killed when the CLI exits (issue #36: with no
+      // persistence installed, the daemon vanished the moment `pboss
+      // start` returned); on POSIX the missing setsid() leaves it reachable
+      // by terminal teardown. unref() below only stops Bun's event loop
+      // from WAITING on the child — it does not detach the OS process.
+      detached: true,
       env: { ...(process.env as Record<string, string>) },
     });
 
-    // Detach — we don't want to keep a handle
+    // Release Bun's handle/exit-wait; OS-level detachment is
+    // `detached: true` above.
     proc.unref();
 
     // Poll until daemon is responsive (up to 5 s)
