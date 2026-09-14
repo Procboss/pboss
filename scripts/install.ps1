@@ -100,7 +100,11 @@ try {
     try { Stop-Process -Name "pboss" -ErrorAction SilentlyContinue } catch {}
 
     Write-Host "Compiling standalone pboss executable for Windows..." -ForegroundColor Cyan
-    & bun install | Out-Null
+    # --ignore-scripts: this is a SOURCE build, not a package install — the
+    # postinstall hook would no-op (it only acts on global installs) and its
+    # shell-guard syntax trips Bun's Windows shell parser. Lifecycle scripts
+    # of the (pure-JS) dependencies are not needed to compile the binary.
+    & bun install --ignore-scripts | Out-Null
 
     $outputExe = Join-Path $installDir "pboss.exe"
     & bun build --compile --minify --bytecode .\src\index.ts --outfile $outputExe

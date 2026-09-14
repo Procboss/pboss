@@ -1,11 +1,20 @@
 import { describe, test, expect, afterEach } from "bun:test";
-import { StartupManager, buildWindowsTaskRegistrationScript } from "../src/startup-manager";
+import {
+  StartupManager,
+  buildWindowsTaskRegistrationScript,
+  buildWindowsRunKeyAddCommand,
+  buildWindowsRunKeyRemoveCommand,
+  buildWindowsRunKeyQueryCommand,
+  parseWindowsRunKeyQuery,
+  WINDOWS_RUN_KEY,
+} from "../src/startup-manager";
 import { ClusterManager } from "../src/cluster-manager";
 import { LogManager } from "../src/log-manager";
 import { treeKill } from "../src/utils";
 import { tmpdir } from "os";
 import { join } from "path";
 import { mkdir, rm, writeFile, readFile } from "fs/promises";
+import { readFileSync } from "fs";
 import type { ProcessDescription } from "../src/types";
 
 const SAVED_USERNAME = process.env.USERNAME;
@@ -102,6 +111,130 @@ describe("Windows Support & Cross-Platform Compatibility", () => {
       expect(script).toContain("New-ScheduledTaskTrigger -AtLogOn");
       expect(script).not.toContain("-User ");
       expect(script).toContain("New-ScheduledTaskPrincipal -LogonType Interactive -RunLevel Highest");
+    });
+  });
+
+  describe("Windows Registry Run key fallback (denied task registration)", () => {
+    // Owner report 2026-09-14, Windows install: Register-ScheduledTask fails
+    // "Access is denied" even for a per-user task, the CLI still exited 0,
+    // and the installer printed "✓ Boot persistence enabled" for a machine
+    // with no persistence. The Run key is the fallback: same logon trigger,
+    // zero Task Scheduler permissions. These are pure functions — the exact
+    // reg.exe argv `pboss startup install` runs on Windows — pinned here
+    // without a Windows host.
+
+    test("compiled install: exe + __daemon, path with spaces quoted", () => {
+      const argv = buildWindowsRunKeyAddCommand([
+        "C:\\Users\\razzb\\AppData\\Local\\pboss\\pboss.exe",
+        "__daemon",
+      ]);
+      expect(argv[0]).toBe("add");
+      expect(argv[1]).toBe(WINDOWS_RUN_KEY);
+      expect(argv).toContain("/v");
+      expect(argv).toContain("PBOSS_Daemon");
+      expect(argv).toContain("REG_SZ");
+      // No spaces in the exe path → no quotes needed.
+      expect(argv).toContain(
+        "C:\\Users\\razzb\\AppData\\Local\\pboss\\pboss.exe __daemon"
+      );
+      // /f — re-running startup install must overwrite, not fail.
+      expect(argv[argv.length - 1]).toBe("/f");
+
+      const spaced = buildWindowsRunKeyAddCommand([
+        "C:\\Program Files\\pboss\\pboss.exe",
+        "__daemon",
+      ]);
+      expect(spaced).toContain('"C:\\Program Files\\pboss\\pboss.exe" __daemon');
+    });
+
+    test("script install: bun path and daemon path both quoted when spaced", () => {
+      const argv = buildWindowsRunKeyAddCommand([
+        "C:\\Program Files\\Bun\\bun.exe",
+        "run",
+        "C:\\Users\\zak b\\daemon.ts",
+      ]);
+      expect(argv).toContain(
+        '"C:\\Program Files\\Bun\\bun.exe" run "C:\\Users\\zak b\\daemon.ts"'
+      );
+    });
+
+    test("empty daemon command is rejected (same guard as the task script)", () => {
+      expect(() => buildWindowsRunKeyAddCommand([])).toThrow("executable");
+    });
+
+    test("remove and query target the same value in the same key", () => {
+      expect(buildWindowsRunKeyRemoveCommand()).toEqual([
+        "delete",
+        WINDOWS_RUN_KEY,
+        "/v",
+        "PBOSS_Daemon",
+        "/f",
+      ]);
+      expect(buildWindowsRunKeyQueryCommand()).toEqual([
+        "query",
+        WINDOWS_RUN_KEY,
+        "/v",
+        "PBOSS_Daemon",
+      ]);
+    });
+
+    test("the Run key is HKCU — per-user, no elevation possible to need", () => {
+      expect(WINDOWS_RUN_KEY).toBe(
+        "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run"
+      );
+    });
+
+    test("parseWindowsRunKeyQuery extracts the command from reg query output", () => {
+      const output = [
+        "",
+        "HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Run",
+        "    PBOSS_Daemon    REG_SZ    \"C:\\Program Files\\pboss\\pboss.exe\" __daemon",
+        "",
+      ].join("\r\n");
+      expect(parseWindowsRunKeyQuery(output)).toBe(
+        '"C:\\Program Files\\pboss\\pboss.exe" __daemon'
+      );
+    });
+
+    test("parseWindowsRunKeyQuery: no REG_SZ line (not installed) is null", () => {
+      expect(parseWindowsRunKeyQuery("ERROR: The system was unable to find the specified registry key or value.")).toBeNull();
+      expect(parseWindowsRunKeyQuery("")).toBeNull();
+    });
+  });
+
+  describe("Windows install must not lie about persistence (exit code honesty)", () => {
+    // install() THROWS when both the task and the Run key fail, so the CLI
+    // exits nonzero and install.ps1 prints its warning branch instead of
+    // "✓ Boot persistence enabled". The pinned strings live in
+    // src/startup-manager.ts install(); here we pin the installer side.
+
+    test("install.ps1 gates the ✓ boot persistence line on the exit code", () => {
+      const ps1 = readFileSync(join(import.meta.dir, "..", "scripts", "install.ps1"), "utf8");
+      const okIdx = ps1.indexOf("✓ Boot persistence enabled");
+      const gateIdx = ps1.indexOf("if ($LASTEXITCODE -eq 0) {");
+      expect(okIdx).toBeGreaterThan(0);
+      expect(gateIdx).toBeGreaterThan(0);
+      // The success line sits INSIDE the exit-code-0 branch, after the gate.
+      expect(okIdx).toBeGreaterThan(gateIdx);
+      // And the honest warning branch exists for the nonzero case.
+      expect(ps1).toContain("⚠ Boot persistence could not be configured automatically");
+      expect(ps1).toContain("pboss startup install");
+    });
+
+    test("install.ps1 source build skips lifecycle scripts (no postinstall parse bomb)", () => {
+      const ps1 = readFileSync(join(import.meta.dir, "..", "scripts", "install.ps1"), "utf8");
+      expect(ps1).toContain("bun install --ignore-scripts");
+    });
+
+    test("package.json postinstall carries no shell redirect tokens", () => {
+      // Bun 1.4.2's Windows shell fails to parse `>/dev/null 2>&1` in a
+      // lifecycle script ("expected a command or assignment but got:
+      // 'Redirect'") — the script must stay free of redirects and use only
+      // `|| exit 0`, which parses everywhere (bun shell, sh, cmd).
+      const pkg = JSON.parse(readFileSync(join(import.meta.dir, "..", "package.json"), "utf8"));
+      const postinstall = pkg.scripts.postinstall;
+      expect(postinstall).toBe("bun src/postinstall.ts || exit 0");
+      expect(postinstall).not.toMatch(/\/dev\/null|2>&1|>/);
     });
   });
 

@@ -141,7 +141,9 @@ fi
 cd "$TMP_DIR"
 
 echo -e "${CYAN}Compiling standalone pboss executable for this device...${RESET}"
-bun install >/dev/null 2>&1
+# --ignore-scripts: source build, not a package install — the postinstall
+# hook only acts on global installs and is not needed to compile the binary.
+bun install --ignore-scripts >/dev/null 2>&1
 if ! bun build --compile --minify --bytecode ./src/index.ts --outfile "$TMP_DIR/pboss" >/dev/null 2>&1; then
   echo -e "${RED}✗ Failed to compile pboss with Bun v$(bun --version).${RESET}"
   echo "Ensure Bun 1.1.30+ is installed (https://bun.sh) and re-run the installer."
