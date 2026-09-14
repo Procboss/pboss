@@ -13,6 +13,7 @@ import {
   metrics,
   prometheus,
 } from "../src/api";
+import type { PbossProcessEvent } from "../src/events";
 import type { DaemonResponse, ProcessState, MetricSnapshot } from "../src/types";
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -79,8 +80,9 @@ describe("PBoss API", () => {
   // ───────────────────── Connection lifecycle ─────────────────────────
 
   describe("connect()", () => {
-    test("sets connected = true and emits daemon:connected on success", async () => {
+    test("emits daemon:connected on success", async () => {
       const aliveSpy = spyOn(pboss as any, "isDaemonAlive").mockResolvedValue(true);
+      const subSpy = spyOn(pboss as any, "subscribeEvents").mockResolvedValue(undefined);
       sendMock.mockResolvedValue(okResponse({ pid: 42 }, "ping"));
 
       const events: string[] = [];
@@ -92,13 +94,17 @@ describe("PBoss API", () => {
       expect(pboss.connected).toBe(true);
       expect(pboss.daemonPid).toBe(42);
       expect(events).toContain("daemon:connected");
+      // Issue #32: connecting also opens the persistent event stream.
+      expect(subSpy).toHaveBeenCalledTimes(1);
 
       aliveSpy.mockRestore();
+      subSpy.mockRestore();
     });
 
     test("launches daemon when not alive", async () => {
       const aliveSpy = spyOn(pboss as any, "isDaemonAlive").mockResolvedValue(false);
       const launchSpy = spyOn(pboss as any, "launchDaemon").mockResolvedValue(undefined);
+      const subSpy = spyOn(pboss as any, "subscribeEvents").mockResolvedValue(undefined);
       sendMock.mockResolvedValue(okResponse({ pid: 99 }, "ping"));
 
       await pboss.connect();
@@ -108,6 +114,7 @@ describe("PBoss API", () => {
 
       aliveSpy.mockRestore();
       launchSpy.mockRestore();
+      subSpy.mockRestore();
     });
 
     test("throws when ping fails after connection", async () => {
@@ -165,17 +172,18 @@ describe("PBoss API", () => {
       expect(callData.script).not.toContain("./");
     });
 
-    test("emits process:start event", async () => {
+    test("does not emit a synthetic process:start (issue #32: events come from the daemon stream)", async () => {
       const procs = [makeProcess()];
       sendMock.mockResolvedValue(okResponse(procs, "start"));
 
-      const emitted: ProcessState[][] = [];
+      const emitted: PbossProcessEvent[] = [];
       pboss.on("process:start", (p) => emitted.push(p));
 
       await pboss.start({ script: "./app.ts", name: "test" });
 
-      expect(emitted).toHaveLength(1);
-      expect(emitted[0]).toEqual(procs);
+      // The old behavior fired this client's own event right after its own
+      // request resolved. Real events now arrive through the event stream.
+      expect(emitted).toHaveLength(0);
     });
 
     test("throws PBossError on daemon failure", async () => {
@@ -209,14 +217,14 @@ describe("PBoss API", () => {
       }
     });
 
-    test("emits process:start event", async () => {
+    test("does not emit a synthetic process:start (issue #32)", async () => {
       sendMock.mockResolvedValue(okResponse([], "ecosystem"));
-      const emitted: any[] = [];
+      const emitted: PbossProcessEvent[] = [];
       pboss.on("process:start", (p) => emitted.push(p));
 
       await pboss.startEcosystem({ apps: [{ script: "./a.ts" }] });
 
-      expect(emitted).toHaveLength(1);
+      expect(emitted).toHaveLength(0);
     });
   });
 
@@ -263,14 +271,14 @@ describe("PBoss API", () => {
       );
     });
 
-    test("emits process:stop event", async () => {
+    test("does not emit a synthetic process:stop (issue #32)", async () => {
       sendMock.mockResolvedValue(okResponse([], "stop"));
-      const emitted: any[] = [];
+      const emitted: PbossProcessEvent[] = [];
       pboss.on("process:stop", (p) => emitted.push(p));
 
       await pboss.stop("test");
 
-      expect(emitted).toHaveLength(1);
+      expect(emitted).toHaveLength(0);
     });
   });
 
@@ -303,12 +311,12 @@ describe("PBoss API", () => {
       );
     });
 
-    test("emits process:restart event", async () => {
+    test("does not emit a synthetic process:restart (issue #32)", async () => {
       sendMock.mockResolvedValue(okResponse([], "restart"));
-      const emitted: any[] = [];
+      const emitted: PbossProcessEvent[] = [];
       pboss.on("process:restart", (p) => emitted.push(p));
       await pboss.restart("app");
-      expect(emitted).toHaveLength(1);
+      expect(emitted).toHaveLength(0);
     });
   });
 
@@ -331,12 +339,12 @@ describe("PBoss API", () => {
       );
     });
 
-    test("emits process:reload event", async () => {
+    test("does not emit a synthetic process:reload (issue #32)", async () => {
       sendMock.mockResolvedValue(okResponse([], "reload"));
-      const emitted: any[] = [];
+      const emitted: PbossProcessEvent[] = [];
       pboss.on("process:reload", (p) => emitted.push(p));
       await pboss.reload("app");
-      expect(emitted).toHaveLength(1);
+      expect(emitted).toHaveLength(0);
     });
   });
 
@@ -359,12 +367,12 @@ describe("PBoss API", () => {
       );
     });
 
-    test("emits process:delete event", async () => {
+    test("does not emit a synthetic process:delete (issue #32)", async () => {
       sendMock.mockResolvedValue(okResponse([], "delete"));
-      const emitted: any[] = [];
+      const emitted: PbossProcessEvent[] = [];
       pboss.on("process:delete", (p) => emitted.push(p));
       await pboss.delete("app");
-      expect(emitted).toHaveLength(1);
+      expect(emitted).toHaveLength(0);
     });
   });
 
@@ -394,12 +402,17 @@ describe("PBoss API", () => {
       );
     });
 
-    test("emits process:scale event", async () => {
+    test("scale surfaces on the event stream as start/stop+delete per process (issue #32)", async () => {
       sendMock.mockResolvedValue(okResponse([], "scale"));
-      const emitted: any[] = [];
-      pboss.on("process:scale", (p) => emitted.push(p));
+      const emitted: PbossProcessEvent[] = [];
+      pboss.on("process:start", (p) => emitted.push(p));
+      pboss.on("process:stop", (p) => emitted.push(p));
+      pboss.on("process:delete", (p) => emitted.push(p));
+      // The old synthetic "process:scale" echo is gone — scale-ups arrive
+      // as process:start, scale-downs as process:stop + process:delete,
+      // all from the daemon.
       await pboss.scale("app", 3);
-      expect(emitted).toHaveLength(1);
+      expect(emitted).toHaveLength(0);
     });
   });
 

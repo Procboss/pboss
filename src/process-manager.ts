@@ -31,6 +31,14 @@
  import { GracefulReload } from "./graceful-reload";
  import { parseMemory, DUMP_FILE } from "./utils";
  import { ignore } from "./error-handling";
+ import { EventEmitter } from "events";
+ import {
+   PROCESS_EVENT_KINDS,
+   type PbossProcessEvent,
+   type ProcessEventKind,
+   type ProcessEventSource,
+   type ProcessManagerEventMap,
+ } from "./events";
  import { mkdir } from "fs/promises";
  import {
    DEFAULT_KILL_TIMEOUT,
@@ -43,7 +51,18 @@
 import path from "path";
 import type { ReadableStreamController } from "bun";
  
- export class ProcessManager {
+ /**
+ * The canonical source of pboss's internal events (issue #32).
+ *
+ * Every ProcessContainer state transition — operator-initiated OR
+ * autonomous (crash autorestart, maxMemoryRestart, watch, cron,
+ * health-check) — is funneled here and re-emitted under typed
+ * `process:*` keys. Modules receive this exact object in `init(pm)` and
+ * can `pm.on("process:crashed", …)` without polling; remote clients
+ * receive the same events over the daemon's SSE `subscribeEvents` stream
+ * (see subscribeEvents() below).
+ */
+ export class ProcessManager extends EventEmitter<ProcessManagerEventMap> {
    private processes: Map<number, ProcessContainer> = new Map();
    private nextId: number = 0;
    public logManager: LogManager;
@@ -67,6 +86,7 @@ import type { ReadableStreamController } from "bun";
   private nsLocks = new Map<string, Promise<unknown>>();
  
    constructor() {
+     super();
      this.logManager = new LogManager();
      this.clusterManager = new ClusterManager();
      this.healthChecker = new HealthChecker();
@@ -249,7 +269,7 @@ import type { ReadableStreamController } from "bun";
         `[pboss] namespace "${ns}" member ${container.name} exited — stopping ${sibling.name} (onNsMemberExit: exit)`
       );
       sibling
-        .stop()
+        .stop(false, "policy")
         .then(() => this.persist())
         .catch((err) =>
           ignore(`policy stop of ${sibling.name} (onNsMemberExit: exit)`, err)
@@ -257,10 +277,86 @@ import type { ReadableStreamController } from "bun";
     }
   }
 
-  /** Wire the issue-#31 exit policy hook onto a freshly built container. */
+  /** Wire the issue-#31 exit policy hook AND the issue-#32 event hook
+   * onto a freshly built container — every container the manager ever
+   * creates (start paths and resurrect) goes through here. */
   private attach(container: ProcessContainer): ProcessContainer {
     container.onFinalExit = (c) => this.handleNsMemberExit(c);
+    container.onProcessEvent = (c, event, source, extra) =>
+      this.emitProcessEvent(c, event, source, extra);
     return container;
+  }
+
+  /**
+   * Issue #32: turn a container transition into the canonical typed
+   * event. One event = one process, with a fresh state snapshot. Guarded:
+   * a throwing listener is recorded, never allowed to break the
+   * supervisor path that caused the transition.
+   */
+  private emitProcessEvent(
+    container: ProcessContainer,
+    event: ProcessEventKind,
+    source: ProcessEventSource,
+    extra: Partial<PbossProcessEvent> = {}
+  ): void {
+    const payload: PbossProcessEvent = {
+      event,
+      source,
+      at: Date.now(),
+      process: container.getState(),
+      ...extra,
+    };
+    try {
+      (this.emit as (event: string, payload: PbossProcessEvent) => void)(
+        event,
+        payload
+      );
+    } catch (err) {
+      ignore(`emit ${event} for ${container.name}`, err);
+    }
+  }
+
+  /**
+   * Issue #32: bridge the canonical events onto a daemon SSE stream —
+   * the `subscribeEvents` counterpart of streamLogs(). Every `process:*`
+   * event is JSON-framed (`data: {...}\n\n`) onto `streamController`;
+   * aborting `signal` (client disconnect / daemon shutdown) removes ALL
+   * of this subscription's listeners from the ProcessManager, so nothing
+   * leaks and no dangling controllers are retained.
+   *
+   * Multiple concurrent subscriptions are independent — each client gets
+   * every event.
+   */
+  async subscribeEvents(
+    streamController: ReadableStreamDefaultController,
+    signal: AbortSignal
+  ): Promise<void> {
+    const forward = (event: PbossProcessEvent) => {
+      try {
+        streamController.enqueue(`data: ${JSON.stringify(event)}\n\n`);
+      } catch {
+        // Stream closed/broken — detach immediately (below).
+        detach();
+      }
+    };
+
+    const detach = () => {
+      for (const kind of PROCESS_EVENT_KINDS) {
+        (this.off as (event: string, l: (e: PbossProcessEvent) => void) => void)(
+          kind,
+          forward
+        );
+      }
+    };
+
+    for (const kind of PROCESS_EVENT_KINDS) {
+      (this.on as (event: string, l: (e: PbossProcessEvent) => void) => void)(
+        kind,
+        forward
+      );
+    }
+
+    signal.addEventListener("abort", detach, { once: true });
   }
 
   /**
@@ -308,7 +404,11 @@ import type { ReadableStreamController } from "bun";
         );
       }
       states.push(c.getState());
-      if (opts.remove) this.processes.delete(c.id);
+      if (opts.remove) {
+        this.processes.delete(c.id);
+        // Issue #32: group delete — one removal event per member.
+        this.emitProcessEvent(c, "process:delete", "user");
+      }
     }
     await this.persist();
     if (errors.length > 0) {
@@ -607,6 +707,8 @@ import type { ReadableStreamController } from "bun";
         for (const c of group.containers) {
           try {
             await this.gracefulReload.reload([c]);
+            // Issue #32: one reload event per member, emitted at completion.
+            this.emitProcessEvent(c, "process:reload", "user");
           } catch (err) {
             errors.push(
               `${c.name}: ${err instanceof Error ? err.message : String(err)}`
@@ -625,6 +727,10 @@ import type { ReadableStreamController } from "bun";
     const containers = this.resolveTargetOrThrow(target, "reload");
     // Use graceful reload for zero downtime
     await this.gracefulReload.reload(containers);
+    // Issue #32: the graceful reload op completed for these processes.
+    for (const c of containers) {
+      this.emitProcessEvent(c, "process:reload", "user");
+    }
     await this.persist();
     return containers.map((c) => c.getState());
   }
@@ -646,6 +752,9 @@ import type { ReadableStreamController } from "bun";
       await c.stop(true);
       states.push(c.getState());
       this.processes.delete(c.id);
+      // Issue #32: removal from the list is a manager-level transition —
+      // the container only knows about stopping, not deletion.
+      this.emitProcessEvent(c, "process:delete", "user");
     }
     await this.persist();
     return states;
@@ -742,6 +851,10 @@ import type { ReadableStreamController } from "bun";
     async reloadAll(): Promise<ProcessState[]> {
       const containers = Array.from(this.processes.values());
       await this.gracefulReload.reload(containers);
+      // Issue #32: one reload event per process, emitted at completion.
+      for (const c of containers) {
+        this.emitProcessEvent(c, "process:reload", "user");
+      }
       await this.persist();
       return containers.map((c) => c.getState());
     }
@@ -751,6 +864,7 @@ import type { ReadableStreamController } from "bun";
       for (const c of this.processes.values()) {
         await c.stop(true);
         states.push(c.getState());
+        this.emitProcessEvent(c, "process:delete", "user");
       }
       this.healthChecker.stopAll();
       this.cronManager.cancelAll();
@@ -797,6 +911,8 @@ import type { ReadableStreamController } from "bun";
        for (const c of toRemove) {
          await c.stop(true);
          this.processes.delete(c.id);
+         // Issue #32: scaled-down instances are deleted from the list.
+         this.emitProcessEvent(c, "process:delete", "user");
        }
        await this.persist();
        return containers.slice(0, count).map((c) => c.getState());
@@ -969,11 +1085,13 @@ import type { ReadableStreamController } from "bun";
         // Entries saved while stopped (the user stopped them, or they exited
         // cleanly) are restored as stopped containers — listed, ready to
         // `pboss restart <name>`, but NOT auto-started. Everything else was
-        // supposed to be running, so start it.
+        // supposed to be running, so start it. Issue #32: resurrect is the
+        // one start path whose events carry source "system" (boot restore,
+        // not an operator action).
         if (item.stopped) {
           states.push(container.getState());
         } else {
-          await container.start();
+          await container.start("system");
           states.push(container.getState());
         }
       }

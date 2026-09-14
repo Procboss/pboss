@@ -19,6 +19,7 @@ import {
   ignore,
   warn,
   recentSuppressed,
+  resetSuppressed,
   DaemonConflictError,
   EXIT_DAEMON_CONFLICT,
 } from "../src/error-handling";
@@ -82,6 +83,10 @@ describe("error-handling convention (no silent suppression in src/)", () => {
 
 describe("ignore() / warn() behavior", () => {
   const realDebug = process.env.PBOSS_DEBUG;
+  // bun test runs all files in one process — earlier files' supervision
+  // noise can fill the ring to its cap, making `length === before + 1`
+  // impossible. Drain it so these delta assertions are hermetic.
+  beforeEach(() => resetSuppressed());
   afterEach(() => {
     if (realDebug === undefined) delete process.env.PBOSS_DEBUG;
     else process.env.PBOSS_DEBUG = realDebug;

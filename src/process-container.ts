@@ -27,6 +27,7 @@ import { HealthChecker } from "./health-checker";
 import { CronManager } from "./cron-manager";
 import { treeKill, readEnvFileOverrides } from "./utils";
 import { ignore, warn } from "./error-handling";
+import type { PbossProcessEvent, ProcessEventKind, ProcessEventSource } from "./events";
 import { join } from "path";
 import {
   PID_DIR,
@@ -74,6 +75,31 @@ export class ProcessContainer {
    */
   public onFinalExit: ((container: ProcessContainer) => void) | null = null;
 
+  /**
+   * Issue #32: invoked on every REAL state transition (online, deliberate
+   * stop, autonomous exit, restart-back-online, terminal error). Wired by
+   * the ProcessManager — the canonical event source — so autonomous
+   * behavior (crash/memory/watch/cron/health restarts) is as visible as
+   * API-initiated operations. Same wiring pattern as onFinalExit. Guarded:
+   * a broken listener can never take down the supervisor's exit paths.
+   */
+  public onProcessEvent:
+    | ((
+        container: ProcessContainer,
+        event: ProcessEventKind,
+        source: ProcessEventSource,
+        extra?: Partial<PbossProcessEvent>
+      ) => void)
+    | null = null;
+
+  /**
+   * Issue #32: set while a restart is bringing this container back up —
+   * makes the upcoming start() fire `process:restart` (with the restart's
+   * source) instead of `process:start`. Set by restart(source) and by the
+   * crash-autorestart timer; consumed and cleared by start().
+   */
+  private pendingRestartSource: ProcessEventSource | null = null;
+
   private logManager: LogManager;
   private clusterManager: ClusterManager;
   private healthChecker: HealthChecker;
@@ -83,6 +109,12 @@ export class ProcessContainer {
   private monitorInterval: ReturnType<typeof setInterval> | null = null;
   private logRotateInterval: ReturnType<typeof setInterval> | null = null;
   private isRestarting: boolean = false;
+  /**
+   * Issue #32: true while a restart's internal stop phase runs — its
+   * completion must NOT surface as a standalone `process:stop` (one
+   * restart = one `process:restart` event, when the process is back).
+   */
+  private suppressStopEvent: boolean = false;
 
   constructor(
     id: number,
@@ -102,7 +134,7 @@ export class ProcessContainer {
     this.createdAt = Date.now();
   }
 
-  async start(): Promise<void> {
+  async start(source: ProcessEventSource = "user"): Promise<void> {
     if (this.status === "online") return;
 
     this.status = "launching";
@@ -160,7 +192,7 @@ export class ProcessContainer {
           },
           (_id, reason) => {
             console.log(`[pboss] Health check failed for ${this.name}: ${reason}`);
-            this.restart();
+            this.restart("health");
           }
         );
       }
@@ -169,11 +201,26 @@ export class ProcessContainer {
       if (this.config.cronRestart) {
         this.cronManager.schedule(this.id, this.config.cronRestart, () => {
           console.log(`[pboss] Cron restart triggered for ${this.name}`);
-          this.restart();
+          this.restart("cron");
         });
+      }
+
+      // Issue #32: the process is really online now — emit the canonical
+      // transition. A restart's second phase reports `process:restart`
+      // (with the restart's source) instead of a plain start.
+      const restartSource = this.pendingRestartSource;
+      this.pendingRestartSource = null;
+      if (restartSource) {
+        this.notify("process:restart", restartSource);
+      } else {
+        this.notify("process:start", source);
       }
     } catch (err: any) {
       this.status = "errored";
+      this.pendingRestartSource = null;
+      this.notify("process:errored", source, {
+        reason: err?.message ?? String(err),
+      });
  
       await this.logManager.appendJSONLog(logPaths.errFile, `[pboss] Failed to start: ${err.message}`);
       
@@ -330,7 +377,7 @@ export class ProcessContainer {
           // 3. Max memory restart
           if (this.config.maxMemoryRestart && this.memory > this.config.maxMemoryRestart) {
             console.log(`[pboss] ${this.name} exceeded memory limit (${this.memory} > ${this.config.maxMemoryRestart}), restarting...`);
-            await this.restart();
+            await this.restart("memory");
           }
           
         } catch (err) {
@@ -376,7 +423,7 @@ export class ProcessContainer {
             if (debounceTimer) clearTimeout(debounceTimer);
             debounceTimer = setTimeout(() => {
               console.log(`[pboss] ${filename} changed, restarting ${this.name}...`);
-              this.restart();
+              this.restart("watch");
             }, 1000);
           }
         );
@@ -412,23 +459,52 @@ export class ProcessContainer {
     const deliberateStop = this.stopInitiated;
     this.stopInitiated = false;
 
+    // Decide the supervision outcome FIRST so the issue-#32 crash event
+    // can report an accurate `willRestart` at notify time.
+    let gaveUp = false;
     if (wasOnline && this.config.autorestart) {
       if (uptime < this.config.minUptime) {
         this.unstableRestarts++;
         // Cap consecutive unstable restarts
         if (this.unstableRestarts >= this.config.maxRestarts) {
-          console.log(`[pboss] ${this.name} reached max consecutive unstable restarts (${this.config.maxRestarts}), not restarting`);
-          this.status = "errored";
-          // Terminal: the supervisor gave up — this member has left the
-          // running set for good, so siblings may react (onNsMemberExit).
-          if (!deliberateStop) this.notifyFinalExit();
-          return;
+          gaveUp = true;
         }
       } else {
         // Process survived minUptime: reset the consecutive unstable restart budget
         this.unstableRestarts = 0;
       }
+    }
+    const willRestart = wasOnline && this.config.autorestart && !gaveUp;
 
+    // Issue #32: the process exited on its own — not because pboss stopped
+    // it. This is the crash signal every listener (module, second client,
+    // CLI in another terminal) hears, with the raw exit facts attached.
+    // A clean `exit 0` is still reported here (source "crash", exitCode 0)
+    // so "process exited by itself" is one uniform contract — severity is
+    // the consumer's call.
+    if (!deliberateStop) {
+      this.notify("process:crashed", "crash", {
+        exitCode: this.lastExitCode,
+        exitSignal: this.lastExitSignal,
+        willRestart,
+      });
+      if (gaveUp) {
+        this.notify("process:errored", "crash", {
+          reason: `reached max consecutive unstable restarts (${this.config.maxRestarts}) — supervision gave up`,
+        });
+      }
+    }
+
+    if (gaveUp) {
+      console.log(`[pboss] ${this.name} reached max consecutive unstable restarts (${this.config.maxRestarts}), not restarting`);
+      this.status = "errored";
+      // Terminal: the supervisor gave up — this member has left the
+      // running set for good, so siblings may react (onNsMemberExit).
+      if (!deliberateStop) this.notifyFinalExit();
+      return;
+    }
+
+    if (wasOnline && this.config.autorestart) {
       // A restart is already scheduled — the exit is transient, not a
       // member exit. Siblings do not react yet.
       this.status = "waiting-restart";
@@ -437,7 +513,11 @@ export class ProcessContainer {
       this.restartTimer = setTimeout(() => {
         this.restartCount++; // Keep cumulative for observability
         console.log(`[pboss] Restarting ${this.name} (cumulative attempt ${this.restartCount})`);
-        this.start().catch((err) => {
+        // Issue #32: this is the crash-autorestart's bring-back — the
+        // start() below reports it as `process:restart` (source "crash"),
+        // not a plain `process:start`.
+        this.pendingRestartSource = "crash";
+        this.start("crash").catch((err) => {
           console.error(`[pboss] Failed to restart ${this.name}:`, err);
         });
       }, delay);
@@ -446,6 +526,22 @@ export class ProcessContainer {
       // Terminal and self-initiated (a deliberate stop would have had
       // stopInitiated set) — the member exited for good.
       if (!deliberateStop) this.notifyFinalExit();
+    }
+  }
+
+  /** Issue #32: forward a real state transition to the manager's canonical
+   * event source. Guarded so a broken listener can never take down the
+   * supervisor's exit path — same contract as notifyFinalExit. */
+  private notify(
+    event: ProcessEventKind,
+    source: ProcessEventSource,
+    extra?: Partial<PbossProcessEvent>
+  ) {
+    if (!this.onProcessEvent) return;
+    try {
+      this.onProcessEvent(this, event, source, extra);
+    } catch (err) {
+      ignore(`onProcessEvent (${event}) for ${this.name}`, err);
     }
   }
 
@@ -474,7 +570,7 @@ export class ProcessContainer {
     this.cronManager.cancel(this.id);
   }
 
-  async stop(force: boolean = false): Promise<void> {
+  async stop(force: boolean = false, source: ProcessEventSource = "user"): Promise<void> {
     if (this.status !== "online" && this.status !== "launching" && this.status !== "waiting-restart") {
       return;
     }
@@ -548,12 +644,34 @@ export class ProcessContainer {
     this.process = null;
     this.memory = 0;
     this.cpu = 0;
+
+    // Issue #32: a deliberate pboss stop completed — the canonical
+    // `process:stop` transition (suppressed during a restart's internal
+    // stop phase: a restart is one operation, reported once when the
+    // process is back online).
+    if (!this.suppressStopEvent) {
+      this.notify("process:stop", source);
+    }
   }
 
-  async restart(): Promise<void> {
+  async restart(source: ProcessEventSource = "user"): Promise<void> {
     this.isRestarting = true;
     const wasAutoRestart = this.config.autorestart;
-    await this.stop();
+    // Issue #32: the restart's own start() reports `process:restart` with
+    // this source once the process is back online — the internal stop
+    // phase stays silent so one operation is exactly one event.
+    this.pendingRestartSource = source;
+    this.suppressStopEvent = true;
+    try {
+      await this.stop();
+    } catch (err) {
+      // The restart never reached its start phase — no restart event may
+      // be attributed to a LATER start() call.
+      this.pendingRestartSource = null;
+      throw err;
+    } finally {
+      this.suppressStopEvent = false;
+    }
     this.config.autorestart = wasAutoRestart;
     this.isRestarting = false;
     await this.start();

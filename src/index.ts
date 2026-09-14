@@ -97,7 +97,11 @@ class PBossCLI {
 
   constructor(noDaemon: boolean = false) {
     this.noDaemon = noDaemon;
-    this.pboss = new PBoss({ noDaemon });
+    // Issue #32: daemon-mode CLI commands share the process-wide PBoss
+    // singleton — the instance that owns the persistent event-stream
+    // subscription — instead of minting a private client. noDaemon mode
+    // stays a dedicated instance (it embeds its own in-process daemon).
+    this.pboss = noDaemon ? new PBoss({ noDaemon: true }) : PBoss.getInstance();
   }
 
   // -------------------------------------------------------------------------

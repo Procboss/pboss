@@ -244,6 +244,15 @@ export default class Daemon {
         await pm.streamLogs(msg.data.target, streamController, signal);
         break;
       }
+      case "subscribeEvents": {
+        // Issue #32: the real internal event system's client bridge —
+        // same SSE/ReadableStream transport as streamLogs, but forwarding
+        // the ProcessManager's canonical `process:*` events instead of log
+        // lines. Client disconnect aborts `signal` and removes every
+        // listener this subscription added (see subscribeEvents).
+        await pm.subscribeEvents(streamController, signal);
+        break;
+      }
       default:
     }
   }

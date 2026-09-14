@@ -1400,6 +1400,36 @@ export default {
 };
 ```
 
+Since issue #32, the `pm` handed to `init(pm)` is a real event source: it extends `EventEmitter`, so modules react the instant something happens instead of polling `pm.list()` on a timer. Every daemon-side transition fires a typed `process:*` event — including autonomous ones a module could never see before (crash autorestarts, `maxMemoryRestart` trips, file-watch restarts, cron restarts, health-check restarts):
+
+```
+// crash-shipper/index.ts — a module that reacts instantly
+import type { ProcessManager } from "pboss";
+
+export default {
+  name: "crash-shipper",
+  version: "1.0.0",
+
+  init(pm: ProcessManager) {
+    pm.on("process:crashed", (e) => {
+      // e.source, e.exitCode, e.exitSignal, e.willRestart, e.process
+      ship("crash", e.process.name, e.exitCode ?? e.exitSignal);
+    });
+    pm.on("process:restart", (e) => {
+      ship("restart", e.process.name, e.source); // user|crash|memory|watch|cron|health
+    });
+    pm.on("process:errored", (e) => {
+      ship("gave-up", e.process.name, e.reason);
+    });
+  },
+
+  destroy() { /* off() your listeners here */ },
+};
+```
+
+The available keys are `process:start`, `process:stop`, `process:restart`, `process:crashed`, `process:errored`, `process:delete`, and `process:reload`; payloads are the same `PbossProcessEvent` objects the client API emits (see [Events](#events)). Listener errors are caught and recorded — a buggy module can never take down the supervisor's exit paths.
+
+
 ---
 
 ### Daemon Control
@@ -2472,25 +2502,40 @@ Messages are JSON objects with a `type` field for routing and an optional `id` f
 
 ### Events
 
-The `PBoss` class extends `EventEmitter` and emits the following typed events:
+The `PBoss` class extends `EventEmitter`. Since issue #32, `process:*` events are **real daemon state changes**, not synthetic echoes of your own calls: every event originates in the daemon's `ProcessManager` and reaches every subscribed client over a persistent event stream — the same connection `connect()` opens. If client A restarts a process, client B hears `process:restart`; a crash-triggered autorestart or a `maxMemoryRestart` trip fires events no client asked for.
+
+Each `process:*` event carries one `PbossProcessEvent` object (one event = one process):
+
+| Field | Type | Description |
+|---|---|---|
+| `event` | `string` | The event name (identical to the key you subscribed to) |
+| `source` | `string` | What caused it: `user`, `crash`, `memory`, `watch`, `cron`, `health`, `policy`, or `system` (boot resurrect) |
+| `at` | `number` | Epoch milliseconds at emit time |
+| `process` | `ProcessState` | Fresh state snapshot of the affected process |
+| `exitCode` / `exitSignal` | `number\|null` / `string\|null` | `process:crashed` — raw exit facts |
+| `willRestart` | `boolean` | `process:crashed` — was an autorestart scheduled? |
+| `reason` | `string` | Human-readable detail (e.g. the give-up reason on `process:errored`) |
 
 | Event | Payload | Description |
 |---|---|---|
 | `daemon:connected` | — | Daemon connection established |
-| `daemon:disconnected` | — | Client disconnected from daemon |
+| `daemon:disconnected` | — | Client disconnected, or the stream ended because the daemon died |
 | `daemon:launched` | `pid: number` | Daemon was spawned by this client |
 | `daemon:killed` | — | Daemon was killed via `kill()` |
 | `error` | `error: Error` | Transport or polling error |
-| `process:start` | `processes: ProcessState[]` | Process(es) started |
-| `process:stop` | `processes: ProcessState[]` | Process(es) stopped |
-| `process:restart` | `processes: ProcessState[]` | Process(es) restarted |
-| `process:reload` | `processes: ProcessState[]` | Process(es) reloaded |
-| `process:delete` | `processes: ProcessState[]` | Process(es) deleted |
-| `process:scale` | `processes: ProcessState[]` | Process group scaled |
-| `metrics` | `snapshot: MetricSnapshot` | Metrics snapshot received |
+| `process:start` | `event: PbossProcessEvent` | A process actually came online (start / resume / resurrect / scale-up) |
+| `process:stop` | `event: PbossProcessEvent` | pboss deliberately stopped it (user op or namespace policy) |
+| `process:restart` | `event: PbossProcessEvent` | Back online after a restart — manual or autonomous, see `source` |
+| `process:crashed` | `event: PbossProcessEvent` | The process exited on its own (NOT a pboss stop); check `exitCode` / `exitSignal` / `willRestart` |
+| `process:errored` | `event: PbossProcessEvent` | Terminal: start failed or the unstable-restart budget was exhausted |
+| `process:delete` | `event: PbossProcessEvent` | Removed from pboss's list |
+| `process:reload` | `event: PbossProcessEvent` | A graceful reload completed |
+| `metrics` | `snapshot: MetricSnapshot` | Metrics snapshot received (client-side polling) |
 | `log:data` | `logs: Array<{ name, id, out, err }>` | Log data retrieved |
 | `cron:add` | `job: CronJob` | A standalone cron job was scheduled |
 | `cron:remove` | `job: CronJob` | A standalone cron job was removed |
+
+The synthetic `process:scale` echo was removed with issue #32: scale-ups arrive as one `process:start` per new instance, scale-downs as `process:stop` + `process:delete` per removed instance.
 
 ```ts
 import PBoss from "pboss";
@@ -2499,19 +2544,21 @@ const pboss = new PBoss();
 
 pboss.on("daemon:connected", () => console.log("Connected!"));
 pboss.on("daemon:disconnected", () => console.log("Disconnected"));
-pboss.on("process:start", (procs) => {
-  console.log("Started:", procs.map((p) => p.name).join(", "));
+pboss.on("process:start", (e) => {
+  console.log("Started:", e.process.name);
 });
-pboss.on("process:stop", (procs) => {
-  console.log("Stopped:", procs.map((p) => p.name).join(", "));
+pboss.on("process:crashed", (e) => {
+  console.log(`${e.process.name} exited (code ${e.exitCode ?? "signal " + e.exitSignal})${e.willRestart ? " — restarting" : ""}`);
+});
+pboss.on("process:restart", (e) => {
+  console.log(`${e.process.name} is back online (${e.source} restart)`);
 });
 pboss.on("error", (err) => console.error("ProcBoss error:", err.message));
-pboss.on("metrics", (snapshot) => {
-  console.log(`${snapshot.processes.length} processes, system CPU ${snapshot.system.cpu}%`);
-});
 
-await pboss.connect();
+await pboss.connect(); // opens the event stream; events flow from here
 ```
+
+The stream opens automatically with `connect()`; call `await pboss.subscribeEvents()` manually if you use the static/request-style helpers without connecting and still want events. `disconnect()` closes the stream; the daemon also detaches the subscription when the socket dies, so nothing leaks on either side.
 
 ---
 

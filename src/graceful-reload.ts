@@ -36,6 +36,9 @@ export class GracefulReload {
   
       console.log(`[pboss] Graceful reload: reloading ${container.name} (${i + 1}/${containers.length})`);
   
+      // Captured BEFORE start() — the old generation's process object (for
+      // an online container start() is a no-op, so this stays current).
+      const oldProcess = container.process;
       const startPromise = container.start();
   
       if (container.config.waitReady) {
@@ -58,6 +61,21 @@ export class GracefulReload {
       }
   
       if (oldPid) {
+        // Issue #32: pboss itself is terminating the old generation — that
+        // exit must NOT surface as a `process:crashed` event (crashed is
+        // reserved for exits pboss did not initiate). handleExit resets the
+        // flag when it runs; the exited reset also covers the case where
+        // handleExit is suppressed mid-restart.
+        (container as any).stopInitiated = true;
+        if (oldProcess) {
+          oldProcess.exited
+            .then(() => {
+              if ((container as any).stopInitiated) (container as any).stopInitiated = false;
+            })
+            .catch((err: unknown) =>
+              ignore("reset stopInitiated after reload kill", err)
+            );
+        }
         try {
           if (container.config.treekill !== false) {
             await treeKill(oldPid, "SIGTERM");

@@ -99,3 +99,16 @@ export function warn(context: string, err?: unknown): void {
 export function recentSuppressed(): Suppressed[] {
   return [...(globalAny.__pbossSuppressed ?? [])];
 }
+
+/**
+ * Drain the suppression ring — test/tooling helper only.
+ *
+ * `bun test` runs every file in one process with a shared module registry,
+ * so the ring accumulates records from ALL earlier files. The ring-delta
+ * assertions in tests/error-handling.test.ts (and any future ones) call
+ * this first so a full ring (RING_LIMIT) from earlier activity cannot
+ * make `length === before + 1` impossible. Production paths never call it.
+ */
+export function resetSuppressed(): void {
+  globalAny.__pbossSuppressed = [];
+}

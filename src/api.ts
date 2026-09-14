@@ -33,6 +33,10 @@ import { daemonSpawnCommand } from "./install-mode";
 import { ignore } from "./error-handling";
 import { probeDaemon } from "./daemon-probe";
 import Daemon from "./daemon";
+import {
+  PROCESS_EVENT_KINDS,
+  type PbossProcessEvent,
+} from "./events";
 import type {
   DaemonMessage,
   DaemonResponse,
@@ -53,7 +57,8 @@ import type {
 export interface PBossEvents {
   /** Daemon successfully connected */
   "daemon:connected": [];
-  /** Daemon connection lost */
+  /** Daemon connection lost — explicit disconnect, or the event stream
+   * ended underneath (daemon killed / socket died) */
   "daemon:disconnected": [];
   /** Daemon launched by this client */
   "daemon:launched": [pid: number];
@@ -61,21 +66,26 @@ export interface PBossEvents {
   "daemon:killed": [];
   /** Error on the transport layer */
   "error": [error: Error];
-  /** Process started */
-  "process:start": [processes: ProcessState[]];
-  /** Process stopped */
-  "process:stop": [processes: ProcessState[]];
-  /** Process restarted */
-  "process:restart": [processes: ProcessState[]];
-  /** Process reloaded */
-  "process:reload": [processes: ProcessState[]];
-  /** Process deleted */
-  "process:delete": [processes: ProcessState[]];
-  /** Process scaled */
-  "process:scale": [processes: ProcessState[]];
-  /** Metrics snapshot received */
+  /** A process came online — start/resume/resurrect/scale-up (real daemon
+   * state change, issue #32 — NOT a synthetic echo of your own call) */
+  "process:start": [event: PbossProcessEvent];
+  /** A process was stopped deliberately (user op or namespace policy) */
+  "process:stop": [event: PbossProcessEvent];
+  /** A process is back online following a restart — manual or autonomous
+   * (crash / maxMemoryRestart / watch / cron / health — see event.source) */
+  "process:restart": [event: PbossProcessEvent];
+  /** A process exited on its own — NOT a pboss stop (see event.exitCode /
+   * event.exitSignal / event.willRestart) */
+  "process:crashed": [event: PbossProcessEvent];
+  /** Terminal: start failed or the unstable-restart budget was exhausted */
+  "process:errored": [event: PbossProcessEvent];
+  /** A process was deleted (removed from pboss's list) */
+  "process:delete": [event: PbossProcessEvent];
+  /** A graceful reload completed */
+  "process:reload": [event: PbossProcessEvent];
+  /** Metrics snapshot received (client-side polling convenience) */
   "metrics": [snapshot: MetricSnapshot];
-  /** Log data received */
+  /** Log data received (response convenience of logs()) */
   "log:data": [logs: LogItem[]];
   /** Standalone cron job added */
   "cron:add": [job: CronJob];
@@ -326,6 +336,15 @@ export class PBoss extends EventEmitter<PBossEvents> {
   private _daemonPid: number | null = null;
   private _pollTimer: ReturnType<typeof setInterval> | null = null;
   private _inProcessDaemon: Daemon | null = null;
+  /**
+   * Issue #32: the one persistent `subscribeEvents` stream per client
+   * (daemon mode). Null when not subscribed. Aborting it closes the SSE
+   * request, which makes the daemon detach its ProcessManager listeners —
+   * nothing leaks on either side.
+   */
+  private _eventStream: AbortController | null = null;
+  /** Issue #32: detach hook for the noDaemon in-process subscription. */
+  private _inProcessEventDetach: (() => void) | null = null;
 
   constructor(options: PBossOptions = {}) {
     super();
@@ -348,6 +367,12 @@ export class PBoss extends EventEmitter<PBossEvents> {
    * Connect to the pboss daemon.
    * If the daemon is not running it will be spawned automatically
    * (same behaviour as the CLI).
+   *
+   * Connecting also opens the persistent event stream (issue #32): every
+   * real daemon-side state change — yours or anyone else's, manual or
+   * autonomous — is re-emitted on this client's `process:*` events. A
+   * failure to open the stream never fails an otherwise-successful
+   * connect (the ping already proved the daemon) — it is recorded.
    */
   async connect(): Promise<this> {
     ensureDirs();
@@ -360,6 +385,11 @@ export class PBoss extends EventEmitter<PBossEvents> {
       this._connected = true;
       this._daemonPid = process.pid;
       this.emit("daemon:connected");
+      try {
+        await this.subscribeEvents();
+      } catch (err) {
+        ignore("subscribe to in-process event stream", err);
+      }
       return this;
     }
 
@@ -377,17 +407,153 @@ export class PBoss extends EventEmitter<PBossEvents> {
     this._daemonPid = pong.data?.pid ?? null;
     this.emit("daemon:connected");
 
+    try {
+      await this.subscribeEvents();
+    } catch (err) {
+      ignore("subscribe to daemon event stream", err);
+    }
+
     return this;
   }
 
   /**
-   * Disconnect from the daemon. Stops any internal polling but does **not**
-   * kill the daemon — processes keep running.
+   * Disconnect from the daemon. Stops any internal polling and the event
+   * stream but does **not** kill the daemon — processes keep running.
    */
   async disconnect(): Promise<void> {
+    this.stopEventStream();
     this.stopPolling();
     this._connected = false;
     this.emit("daemon:disconnected");
+  }
+
+  //  real events (issue #32)  
+
+  /**
+   * Open the persistent daemon event stream and re-emit every real
+   * `process:*` state change on this client (see PBossEvents). Idempotent —
+   * a second call while subscribed is a no-op.
+   *
+   * Called automatically by `connect()`; call it manually if you use the
+   * request-style helpers (`PBoss.list()` etc.) without connecting but
+   * still want events. In noDaemon mode this hooks the in-process
+   * ProcessManager directly (no transport).
+   *
+   * The stream ends (and cleans up after itself) when the daemon dies or
+   * `disconnect()` is called.
+   */
+  async subscribeEvents(): Promise<void> {
+    if (this._eventStream || this._inProcessEventDetach) return;
+
+    const reemit = (event: PbossProcessEvent) => {
+      (this.emit as (kind: string, e: PbossProcessEvent) => void)(
+        event.event,
+        event
+      );
+    };
+
+    if (this.noDaemon) {
+      if (!this._inProcessDaemon) {
+        this._inProcessDaemon = new Daemon();
+        await this._inProcessDaemon.initialize(false);
+      }
+      const pm = this._inProcessDaemon.pm;
+      if (!pm) return;
+      for (const kind of PROCESS_EVENT_KINDS) {
+        (pm.on as (kind: string, l: (e: PbossProcessEvent) => void) => void)(
+          kind,
+          reemit
+        );
+      }
+      this._inProcessEventDetach = () => {
+        for (const kind of PROCESS_EVENT_KINDS) {
+          (pm.off as (kind: string, l: (e: PbossProcessEvent) => void) => void)(
+            kind,
+            reemit
+          );
+        }
+      };
+      return;
+    }
+
+    await this.startDaemon();
+
+    const controller = new AbortController();
+
+    const response = await fetch("http://localhost/command", {
+      unix: DAEMON_SOCKET,
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ type: "subscribeEvents", mode: "stream" }),
+      signal: controller.signal,
+    });
+
+    if (!response.body) {
+      throw new Error("No event stream received from daemon");
+    }
+
+    this._eventStream = controller;
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    // Background read loop — runs after subscribeEvents() resolves. Ending
+    // (daemon killed, socket died, explicit disconnect) detaches the daemon
+    // subscription and surfaces as `daemon:disconnected` unless the
+    // disconnect was user-initiated (stopEventStream already silenced it).
+    (async () => {
+      try {
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+
+          buffer += decoder.decode(value, { stream: true });
+          const parts = buffer.split("\n\n");
+          buffer = parts.pop()!;
+
+          for (const part of parts) {
+            const line = part.replace(/^data:\s*/, "").trim();
+            if (!line) continue;
+            try {
+              const event = JSON.parse(line) as PbossProcessEvent;
+              if (event && typeof event.event === "string") reemit(event);
+            } catch (err) {
+              // Non-JSON frames (keepalive comments, partial writes) — skip.
+              ignore("parse streamed event frame", err);
+            }
+          }
+        }
+      } catch (err) {
+        // Stream failed under us (daemon died, socket reset) — treat as
+        // stream end; the finally block below handles cleanup.
+        ignore("daemon event stream read", err);
+      } finally {
+        if (this._eventStream === controller) {
+          this._eventStream = null;
+          try { controller.abort(); } catch (err) { ignore("abort event stream", err); }
+          if (this._connected) {
+            this._connected = false;
+            this.emit("daemon:disconnected");
+          }
+        }
+      }
+    })();
+  }
+
+  /** Issue #32: silently close the event stream (explicit disconnect /
+   * kill) — the background read loop observes the abort and exits without
+   * emitting a second `daemon:disconnected`. */
+  private stopEventStream(): void {
+    if (this._eventStream) {
+      const controller = this._eventStream;
+      this._eventStream = null;
+      try { controller.abort(); } catch (err) { ignore("abort event stream", err); }
+    }
+    if (this._inProcessEventDetach) {
+      this._inProcessEventDetach();
+      this._inProcessEventDetach = null;
+    }
   }
 
   //  process management 
@@ -403,8 +569,10 @@ export class PBoss extends EventEmitter<PBossEvents> {
     if (options.script) {
       options.script = resolve(options.script);
     }
+    // Issue #32: no synthetic self-emit — `process:start` now arrives from
+    // the daemon event stream, reflecting the real state change (and is
+    // seen by every subscribed client, not just this one).
     const res = await this.sendOrThrow({ type: "start", data: options });
-    this.emit("process:start", res.data);
     return res.data;
   }
 
@@ -425,7 +593,6 @@ export class PBoss extends EventEmitter<PBossEvents> {
       type: "startTarget",
       data: { target: String(target) },
     });
-    this.emit("process:start", res.data);
     return res.data;
   }
 
@@ -450,7 +617,6 @@ export class PBoss extends EventEmitter<PBossEvents> {
       }
     }
     const res = await this.sendOrThrow({ type: "ecosystem", data: config });
-    this.emit("process:start", res.data);
     return res.data;
   }
 
@@ -470,7 +636,6 @@ export class PBoss extends EventEmitter<PBossEvents> {
     const type = target === "all" ? "stopAll" : "stop";
     const data = target === "all" ? undefined : { target: String(target) };
     const res = await this.sendOrThrow({ type, data });
-    this.emit("process:stop", res.data);
     return res.data;
   }
 
@@ -483,7 +648,6 @@ export class PBoss extends EventEmitter<PBossEvents> {
     const type = target === "all" ? "restartAll" : "restart";
     const data = target === "all" ? undefined : { target: String(target) };
     const res = await this.sendOrThrow({ type, data });
-    this.emit("process:restart", res.data);
     return res.data;
   }
 
@@ -495,7 +659,6 @@ export class PBoss extends EventEmitter<PBossEvents> {
     const type = target === "all" ? "reloadAll" : "reload";
     const data = target === "all" ? undefined : { target: String(target) };
     const res = await this.sendOrThrow({ type, data });
-    this.emit("process:reload", res.data);
     return res.data;
   }
 
@@ -508,19 +671,20 @@ export class PBoss extends EventEmitter<PBossEvents> {
     const type = target === "all" ? "deleteAll" : "delete";
     const data = target === "all" ? undefined : { target: String(target) };
     const res = await this.sendOrThrow({ type, data });
-    this.emit("process:delete", res.data);
     return res.data;
   }
 
   /**
-   * Scale a process group to `count` instances.
+   * Scale a process group to `count` instances. Scale-ups surface as one
+   * `process:start` per new instance and scale-downs as `process:stop` +
+   * `process:delete` per removed instance — all on the event stream
+   * (issue #32 removed the old synthetic `process:scale` echo).
    */
   async scale(target: string | number, count: number): Promise<ProcessState[]> {
     const res = await this.sendOrThrow({
       type: "scale",
       data: { target: String(target), count },
     });
-    this.emit("process:scale", res.data);
     return res.data;
   }
 
@@ -1160,6 +1324,7 @@ export class PBoss extends EventEmitter<PBossEvents> {
 
     this._connected = false;
     this._daemonPid = null;
+    this.stopEventStream();
     this.stopPolling();
     this.emit("daemon:killed");
   }
