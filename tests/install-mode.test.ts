@@ -10,7 +10,7 @@ import {
   bunSearchCandidates,
   bunSearchDescription,
 } from "../src/install-mode";
-import { StartupManager } from "../src/startup-manager";
+import { StartupManager, windowsDaemonLauncherPath } from "../src/startup-manager";
 import { join } from "path";
 import { existsSync } from "fs";
 
@@ -195,7 +195,7 @@ describe("StartupManager honors install mode", () => {
     expect(out).not.toContain("${bunPath}");
   });
 
-  test("windows config quotes the resolved daemon command", async () => {
+  test("windows config routes the boot start through the hidden wscript launcher", async () => {
     const startup = new StartupManager();
     const out = await startup.generate("win32");
 
@@ -204,16 +204,20 @@ describe("StartupManager honors install mode", () => {
     expect(out).toContain("PBOSS_Daemon");
     expect(out).toContain("Register-ScheduledTask");
     expect(out).toContain("resurrect");
-    // The /tr value quotes the whole command line; individual tokens are
-    // quoted only when they contain spaces (paths without spaces stay bare).
-    const bun = Bun.which("bun")!;
-    const daemonScript = daemonSpawnCommand()[2]!;
-    const trValue = [bun, "run", daemonScript]
-      .map((t) => (/\s/.test(t) ? `"${t}"` : t))
-      .join(" ");
+    // Boot persistence launches wscript (a windowless GUI binary), which
+    // starts the daemon hidden via the generated VBS — a raw console
+    // program would pop a visible cmd window at every logon. The /tr value
+    // quotes the whole command line; individual tokens are quoted only
+    // when they contain spaces (paths without spaces stay bare).
+    const vbs = windowsDaemonLauncherPath();
+    const trValue = ["wscript.exe", "//B", /\s/.test(vbs) ? `"${vbs}"` : vbs].join(" ");
     expect(out).toContain(`/tr "${trValue}"`);
-    expect(trValue).toContain(bun);
-    expect(trValue).toContain(daemonScript);
+    expect(trValue).toContain(vbs);
+    // The raw daemon command is still documented — started hidden BY the
+    // launcher — so operators can see what actually runs at logon.
+    expect(out).toContain(
+      `# Daemon command (started hidden by the launcher): ${daemonSpawnCommand().join(" ")}`
+    );
   });
 
   test("generated configs record the detected install mode", async () => {

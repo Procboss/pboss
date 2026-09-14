@@ -1304,6 +1304,11 @@ export class PBoss extends EventEmitter<PBossEvents> {
       // by terminal teardown. unref() below only stops Bun's event loop
       // from WAITING on the child — it does not detach the OS process.
       detached: true,
+      // windowsHide: a detached console child on Windows would otherwise get
+      // its own VISIBLE cmd.exe window (owner report 2026-09-15: after
+      // install, a console running the daemon appeared). With it the daemon
+      // is invisible — and still outlives this CLI (detachment, above).
+      windowsHide: true,
       env: { ...(process.env as Record<string, string>) },
     });
 

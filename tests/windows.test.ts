@@ -5,6 +5,9 @@ import {
   buildWindowsRunKeyAddCommand,
   buildWindowsRunKeyRemoveCommand,
   buildWindowsRunKeyQueryCommand,
+  buildWindowsDaemonLauncherVbs,
+  windowsDaemonLauncherPath,
+  WINDOWS_DAEMON_LAUNCHER_NAME,
   parseWindowsRunKeyQuery,
   WINDOWS_RUN_KEY,
 } from "../src/startup-manager";
@@ -42,6 +45,11 @@ describe("Windows Support & Cross-Platform Compatibility", () => {
       expect(output).toContain("New-ScheduledTaskTrigger -AtLogOn -User");
       expect(output).toContain("-RunLevel Limited");
       expect(output).not.toContain("/rl highest");
+      // Boot persistence starts the daemon through the HIDDEN wscript
+      // launcher — a raw console program would pop a visible cmd window
+      // at every logon (owner report 2026-09-15).
+      expect(output).toContain("wscript.exe //B");
+      expect(output).toContain(WINDOWS_DAEMON_LAUNCHER_NAME);
     });
   });
 
@@ -136,6 +144,131 @@ describe("Windows Support & Cross-Platform Compatibility", () => {
         expect(script).toContain("-RunLevel Limited");
         expect(script).not.toContain("Highest");
       }
+    });
+  });
+
+  describe("Windows hidden daemon launcher — the wscript/VBS shim", () => {
+    // Owner report 2026-09-15 (issue #36 follow-up): right after installing
+    // on Windows, a cmd window appeared running the daemon ("Daemon
+    // listening on C:\Users\...\.pboss\daemon.sock"). Root cause: Task
+    // Scheduler and the Registry Run key can only LAUNCH a program — a
+    // console program launched that way gets a VISIBLE console, right
+    // after install (schtasks /run) and again at every logon. The fix: the
+    // task action and Run key value become `wscript.exe //B <vbs>`, where
+    // the generated VBS starts the daemon with a hidden window and
+    // appends its output to the daemon log files. wscript is a windowless
+    // GUI binary — the one launch vehicle on Windows that never shows a
+    // console. Pinned off-Windows as pure functions + source inspection.
+
+    test("VBS: hidden fire-and-forget Run, compiled install (owner's shape)", () => {
+      const vbs = buildWindowsDaemonLauncherVbs(
+        ["C:\\Users\\razzb\\AppData\\Local\\pboss\\pboss.exe", "__daemon"],
+        "C:\\Users\\razzb\\.pboss\\daemon.out.log",
+        "C:\\Users\\razzb\\.pboss\\daemon.err.log"
+      );
+      // wscript never shows error dialogs at logon.
+      expect(vbs).toContain("Option Explicit");
+      // The whole point: hidden window (0), do not wait (False).
+      expect(vbs).toContain('sh.Run q & comspec & q & " /c " & q & line & q, 0, False');
+      // The executed line: daemon + __daemon, output APPENDED to the same
+      // daemon log files the direct CLI spawn path writes (" are doubled
+      // for the VBS string literal).
+      expect(vbs).toContain(
+        'line = "C:\\Users\\razzb\\AppData\\Local\\pboss\\pboss.exe __daemon 1>> ""C:\\Users\\razzb\\.pboss\\daemon.out.log"" 2>> ""C:\\Users\\razzb\\.pboss\\daemon.err.log"""'
+      );
+      // cmd is resolved through %ComSpec%, never a bare "cmd" guess.
+      expect(vbs).toContain('comspec = sh.ExpandEnvironmentStrings("%ComSpec%")');
+      expect(vbs).not.toContain("\ncmd /");
+    });
+
+    test("VBS: script install with spaces — tokens quoted, VBS-escaped", () => {
+      const vbs = buildWindowsDaemonLauncherVbs(
+        ["C:\\Program Files\\Bun\\bun.exe", "run", "C:\\Users\\zak b\\daemon.ts"],
+        "C:\\Users\\zak b\\.pboss\\daemon.out.log",
+        "C:\\Users\\zak b\\.pboss\\daemon.err.log"
+      );
+      expect(vbs).toContain(
+        'line = """C:\\Program Files\\Bun\\bun.exe"" run ""C:\\Users\\zak b\\daemon.ts"" 1>> ""C:\\Users\\zak b\\.pboss\\daemon.out.log"" 2>> ""C:\\Users\\zak b\\.pboss\\daemon.err.log"""'
+      );
+    });
+
+    test("VBS survives cmd /c quote stripping: outer pair strips, inner stays", () => {
+      // cmd /? rule: with more than two quotes after /c, the FIRST and LAST
+      // quotes are stripped. The VBS wraps the line in exactly one outer
+      // pair, so the stripped result is the intact daemon line.
+      const vbs = buildWindowsDaemonLauncherVbs(
+        ["C:\\Program Files\\pboss\\pboss.exe", "__daemon"],
+        "C:\\pb home\\daemon.out.log",
+        "C:\\pb home\\daemon.err.log"
+      );
+      const m = vbs.match(/line = "(.*)"/)!;
+      const line = m[1]!.replace(/""/g, '"'); // de-VBS-escape
+      const afterCmd = ("\"" + line + "\"").slice(1, -1); // cmd strips first+last
+      expect(afterCmd).toBe(line); // the executed line is EXACTLY the built line
+      expect(afterCmd.startsWith('"C:\\Program Files\\pboss\\pboss.exe"')).toBe(true);
+      expect(afterCmd).toContain('1>> "C:\\pb home\\daemon.out.log"');
+      expect(afterCmd).toContain('2>> "C:\\pb home\\daemon.err.log"');
+    });
+
+    test("VBS: empty daemon command is rejected (same guard as task/Run key)", () => {
+      expect(() => buildWindowsDaemonLauncherVbs([], "a", "b")).toThrow("executable");
+    });
+
+    test("launcher path lives in the pboss home", () => {
+      expect(windowsDaemonLauncherPath()).toContain(WINDOWS_DAEMON_LAUNCHER_NAME);
+      expect(WINDOWS_DAEMON_LAUNCHER_NAME).toBe("daemon-launch.vbs");
+    });
+
+    test("Run key value for the launcher: wscript //B with quoted VBS path", () => {
+      const argv = buildWindowsRunKeyAddCommand([
+        "wscript.exe",
+        "//B",
+        "C:\\Users\\zak b\\.pboss\\daemon-launch.vbs",
+      ]);
+      expect(argv).toContain('wscript.exe //B "C:\\Users\\zak b\\.pboss\\daemon-launch.vbs"');
+    });
+
+    test("task action for the launcher: wscript, not the raw daemon exe", () => {
+      delete process.env.USERNAME;
+      const script = buildWindowsTaskRegistrationScript([
+        "wscript.exe",
+        "//B",
+        "C:\\Users\\zak b\\.pboss\\daemon-launch.vbs",
+      ]);
+      expect(script).toContain("-Execute 'wscript.exe'");
+      expect(script).toContain(
+        "-Argument '//B \"C:\\Users\\zak b\\.pboss\\daemon-launch.vbs\"'"
+      );
+    });
+
+    test("install() wires BOTH persistence mechanisms through the launcher", () => {
+      const src = readFileSync(join(import.meta.dir, "..", "src", "startup-manager.ts"), "utf8");
+      // The launcher command is the wscript shim...
+      expect(src).toContain('["wscript.exe", "//B"');
+      // ...passed to the task registration AND the Run key fallback.
+      expect(src).toContain("buildWindowsTaskRegistrationScript(launcherCmd");
+      expect(src).toContain("buildWindowsRunKeyAddCommand(launcherCmd");
+      // The VBS is written BEFORE anything can fire it.
+      const writeIdx = src.indexOf("this.writeWindowsDaemonLauncher(daemonCmd)");
+      const taskIdx = src.indexOf("buildWindowsTaskRegistrationScript(launcherCmd");
+      const runKeyIdx = src.indexOf("buildWindowsRunKeyAddCommand(launcherCmd");
+      expect(writeIdx).toBeGreaterThan(0);
+      expect(taskIdx).toBeGreaterThan(writeIdx);
+      expect(runKeyIdx).toBeGreaterThan(writeIdx);
+      // Degrades honestly: a failed VBS write falls back to the raw command
+      // (visible, but persistence still works).
+      expect(src).toContain("launcherCmd = daemonCmd");
+    });
+
+    test("uninstall() removes the launcher with the task and Run key", () => {
+      const src = readFileSync(join(import.meta.dir, "..", "src", "startup-manager.ts"), "utf8");
+      const uninstallSrc = src.slice(
+        src.indexOf("async uninstall("),
+        src.indexOf("async status(")
+      );
+      expect(uninstallSrc).toContain("windowsDaemonLauncherPath()");
+      expect(uninstallSrc).toContain("rmSync");
+      expect(uninstallSrc).toContain(WINDOWS_DAEMON_LAUNCHER_NAME);
     });
   });
 
@@ -499,6 +632,26 @@ describe("Windows Support & Cross-Platform Compatibility", () => {
         expect(daemonLaunches.length).toBeGreaterThan(0);
         for (const block of daemonLaunches) {
           expect(block).toContain("detached: true");
+        }
+      }
+    });
+
+    test("every detached daemon spawn also hides its window (windowsHide)", () => {
+      // Owner report 2026-09-15, the follow-up to #36: the detached daemon
+      // now SURVIVES the CLI — but on Windows a detached console child
+      // gets its own VISIBLE cmd.exe window (the console running the
+      // daemon that appeared after install). detached keeps it alive;
+      // windowsHide keeps it invisible. Both, always, together.
+      for (const rel of ["src/api.ts", "src/startup-manager.ts"]) {
+        const src = readFileSync(join(import.meta.dir, "..", rel), "utf8");
+        const blocks = src
+          .split("Bun.spawn(")
+          .slice(1)
+          .map((rest) => rest.slice(0, rest.indexOf("});")));
+        const detached = blocks.filter((b) => b.includes("detached: true"));
+        expect(detached.length).toBeGreaterThan(0);
+        for (const block of detached) {
+          expect(block).toContain("windowsHide: true");
         }
       }
     });

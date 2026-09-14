@@ -33,7 +33,12 @@ import { ignore } from "./error-handling";
 import { colorize } from "./utils";
 import { stopDaemonIfRunning } from "./api";
 import { probeDaemon } from "./daemon-probe";
-import { DAEMON_SOCKET, DAEMON_OUT_LOG_FILE, DAEMON_ERR_LOG_FILE } from "./constants";
+import {
+  PBOSS_HOME,
+  DAEMON_SOCKET,
+  DAEMON_OUT_LOG_FILE,
+  DAEMON_ERR_LOG_FILE,
+} from "./constants";
 import {
   IS_COMPILED,
   findBun,
@@ -254,28 +259,35 @@ export class StartupManager {
 
   private generateWindows(daemonCmd: string[]): string {
     const taskName = "PBOSS_Daemon";
-    // schtasks /tr takes a single command line — quote it as a whole, and
-    // quote individual tokens only when they contain spaces (paths like
-    // "C:\Program Files\..."). `/ru` restricts the onlogon trigger to THIS
-    // user's logon — without it the task fires at anyone's logon while
-    // running as the creating account, which is wrong for a per-user daemon
-    // (its state lives in the creating user's %USERPROFILE%\.pboss).
-    const trValue = daemonCmd.map(quoteWindowsToken).join(" ");
+    // What install() actually registers: the hidden wscript launcher (the
+    // VBS is generated into the pboss home by the same command), not the
+    // raw daemon command — Task Scheduler and the Run key can only LAUNCH
+    // a program, and a launched console program pops a visible cmd window
+    // at logon (owner report 2026-09-15). schtasks /tr takes a single
+    // command line — quote it as a whole, and quote individual tokens only
+    // when they contain spaces (paths like "C:\Program Files\..."). `/ru`
+    // restricts the onlogon trigger to THIS user's logon — without it the
+    // task fires at anyone's logon while running as the creating account,
+    // which is wrong for a per-user daemon (its state lives in the creating
+    // user's %USERPROFILE%\.pboss).
+    const trValue = ["wscript.exe", "//B", quoteWindowsToken(windowsDaemonLauncherPath())].join(" ");
     const resurrectCmd = cliSpawnCommand("resurrect").join(" ");
     return `# PBOSS Windows Startup Configuration
 # Install mode: ${installModeDescription()}
+# Daemon command (started hidden by the launcher): ${daemonCmd.join(" ")}
 #
-# To install as a Scheduled Task that starts automatically on user logon,
-# run this from a regular shell:
+# To install as a Scheduled Task that starts automatically on user logon —
+# with the daemon HIDDEN, no console window — run this from a regular shell:
 #
 # pboss startup install
+#   (this also generates the hidden launcher: ${windowsDaemonLauncherPath()})
 #
-# Equivalent manual commands:
+# Equivalent manual commands (the launcher file must already exist):
 # schtasks /create /tn "${taskName}" /tr "${trValue}" /sc onlogon /ru "%USERNAME%" /f /rl limited
 #
 # Or run with PowerShell (what \`pboss startup install\` itself uses — no
 # nested /tr quoting to get wrong):
-# $Action = New-ScheduledTaskAction -Execute "${daemonCmd[0]}" -Argument "${daemonCmd.slice(1).join(" ")}"
+# $Action = New-ScheduledTaskAction -Execute "wscript.exe" -Argument "//B ${quoteWindowsToken(windowsDaemonLauncherPath())}"
 # $Trigger = New-ScheduledTaskTrigger -AtLogOn -User "$env:USERNAME"
 # $Principal = New-ScheduledTaskPrincipal -UserId "$env:USERNAME" -LogonType Interactive -RunLevel Limited
 # Register-ScheduledTask -TaskName "${taskName}" -Action $Action -Trigger $Trigger -Principal $Principal -Force
@@ -512,9 +524,30 @@ ${plist}`;
       const daemonCmd = daemonSpawnCommand();
       const taskName = "PBOSS_Daemon";
 
+      // Hidden launcher: Windows boot persistence (task and Run key) can
+      // only LAUNCH a program — and a launched console program gets a
+      // VISIBLE cmd.exe window (owner report 2026-09-15: right after
+      // install a console showing "Daemon listening on ..." popped up;
+      // without the launcher it comes back at every logon). wscript.exe is
+      // a windowless GUI binary that starts the daemon hidden via the
+      // generated VBS. Written BEFORE anything can fire it. A failed write
+      // degrades honestly: the raw daemon command still gives working
+      // persistence — just visibly.
+      let launcherCmd = daemonCmd;
+      let launcherNote = "";
+      try {
+        await this.writeWindowsDaemonLauncher(daemonCmd);
+        launcherCmd = ["wscript.exe", "//B", windowsDaemonLauncherPath()];
+        launcherNote = `\nDaemon launch: hidden, no console window (launcher: ${windowsDaemonLauncherPath()})`;
+      } catch (err: unknown) {
+        ignore("write hidden daemon launcher (daemon-launch.vbs)", err);
+        launcherNote =
+          "\nDaemon launch: hidden launcher unavailable — the daemon will start in a visible console window.";
+      }
+
       let taskFailure: string | null = null;
       try {
-        const script = buildWindowsTaskRegistrationScript(daemonCmd, taskName);
+        const script = buildWindowsTaskRegistrationScript(launcherCmd, taskName);
         const proc = Bun.spawn(
           ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
           { stdout: "pipe", stderr: "pipe" }
@@ -537,7 +570,7 @@ ${plist}`;
         // Fallback: the per-user Run key. It fires at this user's logon —
         // the exact moment the denied scheduled task would have — and
         // needs nothing but HKCU write access, which every user has.
-        const [regCode, regErr] = await runReg(buildWindowsRunKeyAddCommand(daemonCmd));
+        const [regCode, regErr] = await runReg(buildWindowsRunKeyAddCommand(launcherCmd));
         if (regCode !== 0) {
           const detail = regErr.trim();
           throw new Error(
@@ -553,7 +586,7 @@ ${plist}`;
           `Scheduled task registration was denied on this host (task not installed):\n${taskFailure}\n` +
             `Boot persistence installed via the per-user Registry Run key instead:\n` +
             `  ${WINDOWS_RUN_KEY}\\PBOSS_Daemon\n` +
-            `pboss starts at your logon and resurrects saved processes.${started}`
+            `pboss starts at your logon and resurrects saved processes.${launcherNote}${started}`
         );
       }
 
@@ -563,7 +596,7 @@ ${plist}`;
       // would betray the "resurrects saved processes" promise.
       const started = await this.bringUpWindowsDaemon(daemonCmd, opts.verifyTimeoutMs, true);
       return (
-        `Windows Scheduled Task "${taskName}" installed successfully.${started}\n` +
+        `Windows Scheduled Task "${taskName}" installed successfully.${launcherNote}${started}\n` +
         `Run on demand: schtasks /run /tn "${taskName}"`
       );
     }
@@ -576,10 +609,11 @@ ${plist}`;
    * (best-effort, never throws — persistence itself already succeeded).
    *
    * Task installs start the TASK (`schtasks /run`), so Task Scheduler owns
-   * the daemon exactly like at logon; Run-key installs spawn the daemon
-   * directly, mirrored after api.launchDaemon (daemon log files, detached,
-   * unref'd). A daemon that is already answering is left alone. Returns a
-   * short status note (starting with "\n") for the install message.
+   * the daemon exactly like at logon — hidden, because the task's action is
+   * the wscript launcher; Run-key installs spawn the daemon directly,
+   * mirrored after api.launchDaemon (daemon log files, detached, unref'd,
+   * hidden on Windows). A daemon that is already answering is left alone.
+   * Returns a short status note (starting with "\n") for the install message.
    */
   private async bringUpWindowsDaemon(
     daemonCmd: string[],
@@ -605,7 +639,9 @@ ${plist}`;
         // Same spawn shape as api.launchDaemon: daemon output goes to the
         // daemon log files, not to this shell — including `detached: true`
         // (issue #36: the daemon must outlive this CLI process; without it
-        // the Run-key daemon died the moment `startup install` returned).
+        // the Run-key daemon died the moment `startup install` returned)
+        // and `windowsHide: true` (a detached console child would otherwise
+        // get its own visible cmd.exe window).
         const outLog = Bun.file(DAEMON_OUT_LOG_FILE);
         const errLog = Bun.file(DAEMON_ERR_LOG_FILE);
         if (!(await outLog.exists())) await Bun.write(outLog, "");
@@ -615,6 +651,7 @@ ${plist}`;
           stderr: errLog,
           stdin: "ignore",
           detached: true,
+          windowsHide: true,
           env: { ...(process.env as Record<string, string>) },
         });
         proc.unref();
@@ -633,6 +670,21 @@ ${plist}`;
       ignore("start Windows daemon after startup install", err);
       return "\nDaemon: could not be started from here — it starts at your next logon.";
     }
+  }
+
+  /**
+   * Write (or refresh) the hidden daemon launcher VBS into the pboss home —
+   * the script Task Scheduler and the Run key execute at logon. Called by
+   * install() BEFORE registration so the launcher exists before anything
+   * can fire it. Throws on write failure; the caller degrades to
+   * registering the raw daemon command (visible, but persistence works).
+   */
+  private async writeWindowsDaemonLauncher(daemonCmd: string[]): Promise<void> {
+    await mkdir(PBOSS_HOME, { recursive: true });
+    await Bun.write(
+      windowsDaemonLauncherPath(),
+      buildWindowsDaemonLauncherVbs(daemonCmd, DAEMON_OUT_LOG_FILE, DAEMON_ERR_LOG_FILE)
+    );
   }
 
   async uninstall(): Promise<string> {
@@ -718,6 +770,19 @@ ${plist}`;
         // when the task is gone too (reported below).
       } else {
         lines.push(`Failed to remove the Run key (reg exit code ${regCode}).`);
+      }
+
+      // The hidden launcher the task/Run key point at: remove it with the
+      // persistence that references it, so ~/.pboss never carries a stale
+      // script whose baked paths went stale after a reinstall elsewhere.
+      const launcherPath = windowsDaemonLauncherPath();
+      if (existsSync(launcherPath)) {
+        try {
+          rmSync(launcherPath, { force: true });
+          lines.push(`Hidden daemon launcher removed (${WINDOWS_DAEMON_LAUNCHER_NAME}).`);
+        } catch (err) {
+          ignore("remove daemon-launch.vbs (uninstall)", err);
+        }
       }
 
       if (lines.length === 0) {
@@ -812,6 +877,11 @@ ${plist}`;
       lines.push(`  Task:       PBOSS_Daemon scheduled task — ${taskInstalled ? "installed" : "not installed"}`);
       lines.push(
         `  Run key:    ${WINDOWS_RUN_KEY}\\PBOSS_Daemon — ${runKeyInstalled ? "installed" : "not installed"}`
+      );
+      lines.push(
+        `  Launcher:   ${windowsDaemonLauncherPath()} — ${
+          existsSync(windowsDaemonLauncherPath()) ? "present" : "missing"
+        }`
       );
       lines.push(
         installed
@@ -1198,12 +1268,14 @@ function psQuote(value: string): string {
 }
 
 /**
- * PowerShell script that registers the pboss daemon as a per-user Scheduled
- * Task firing at the current user's logon. Kept as a pure function so it can
- * be unit-tested off-Windows.
+ * PowerShell script that registers the PBOSS_Daemon boot command as a
+ * per-user Scheduled Task firing at the current user's logon. Kept as a
+ * pure function so it can be unit-tested off-Windows. In production the
+ * command is the hidden wscript launcher (windowsDaemonLauncherPath), not
+ * the raw daemon command — see the launcher section below.
  *
- * Why Register-ScheduledTask instead of `schtasks /create`: the daemon
- * command line often contains quoted paths ("C:\Program Files\..."), and
+ * Why Register-ScheduledTask instead of `schtasks /create`: the command
+ * line often contains quoted paths ("C:\Program Files\..."), and
  * schtasks' /tr quoting rules mangle nested quotes into a broken command
  * line. PowerShell receives -Execute / -Argument as separate values, so no
  * shell layer ever re-parses them.
@@ -1297,6 +1369,81 @@ export function buildWindowsRunKeyRemoveCommand(): string[] {
 /** reg.exe argv (after "reg") that queries the Run key value. */
 export function buildWindowsRunKeyQueryCommand(): string[] {
   return ["query", WINDOWS_RUN_KEY, "/v", WINDOWS_RUN_KEY_NAME];
+}
+
+// ---------------------------------------------------------------------------
+// Windows hidden daemon launcher — the wscript/VBS shim
+// ---------------------------------------------------------------------------
+
+/**
+ * File name of the hidden daemon launcher inside the pboss home
+ * (~/.pboss/daemon-launch.vbs).
+ *
+ * Windows boot persistence (the Scheduled Task and the Registry Run key)
+ * can only LAUNCH a program — and a console program launched at logon gets
+ * a VISIBLE cmd.exe window (owner report 2026-09-15: right after install a
+ * console showing "Daemon listening on ..." popped up; without the
+ * launcher it would have reappeared at every logon). The launcher is the
+ * bridge: wscript.exe is a windowless GUI binary, and its
+ * WshShell.Run(..., 0, False) starts the daemon with a hidden window,
+ * fire-and-forget.
+ */
+export const WINDOWS_DAEMON_LAUNCHER_NAME = "daemon-launch.vbs";
+
+/** Absolute path of the hidden launcher: join(PBOSS_HOME, daemon-launch.vbs). */
+export function windowsDaemonLauncherPath(): string {
+  return join(PBOSS_HOME, WINDOWS_DAEMON_LAUNCHER_NAME);
+}
+
+/**
+ * Content of the hidden daemon launcher VBS. Pure function so it can be
+ * pinned off-Windows — this is the exact script Task Scheduler and the Run
+ * key execute at logon.
+ *
+ * The generated script runs, hidden (window style 0, no waiting):
+ *
+ *   %ComSpec% /c "<exe> <args> 1>> "<daemon.out.log>" 2>> "<daemon.err.log>""
+ *
+ * Redirection: cmd owns the file handles while the daemon runs, so daemon
+ * stdout/stderr land in the SAME log files the direct CLI spawn path
+ * (api.launchDaemon / bringUpWindowsDaemon) writes — a daemon that fails
+ * to come up at logon leaves its error in daemon.err.log instead of in an
+ * invisible (or, before this fix, visible) console. The extra OUTER quote
+ * pair survives cmd's /c quote stripping (cmd /?: with more than two
+ * quotes on the line, the first and the last quote are removed), keeping
+ * quoted exe/log paths intact. Quote characters in the line are doubled
+ * for the VBS string literal — Windows paths cannot contain double
+ * quotes, so doubling is the only escaping needed. %ComSpec% is resolved
+ * through WshShell.ExpandEnvironmentStrings because WshShell.Run does not
+ * expand environment variables itself.
+ */
+export function buildWindowsDaemonLauncherVbs(
+  daemonCmd: string[],
+  outLog: string,
+  errLog: string
+): string {
+  const exeToken = daemonCmd[0];
+  if (!exeToken) throw new Error("daemon command must start with an executable path");
+  const line =
+    daemonCmd.map(quoteWindowsToken).join(" ") + ` 1>> "${outLog}" 2>> "${errLog}"`;
+  const vbsLine = line.replace(/"/g, '""');
+  return `' PBOSS daemon hidden launcher — auto-generated by \`pboss startup install\`.
+' Regenerate:  pboss startup install        Remove:  pboss startup uninstall
+'
+' Boot persistence (the PBOSS_Daemon task and the Run key fallback) starts
+' the daemon THROUGH this script so it never shows a console window.
+' Daemon output is appended to the daemon log files in this directory.
+Option Explicit
+Dim sh, q, comspec, line
+Set sh = CreateObject("WScript.Shell")
+q = Chr(34)
+comspec = sh.ExpandEnvironmentStrings("%ComSpec%")
+line = "${vbsLine}"
+' Window style 0 = hidden; False = do not wait for the daemon. The outer
+' quotes around the /c line survive cmd's quote stripping (cmd /? rule).
+sh.Run q & comspec & q & " /c " & q & line & q, 0, False
+Set sh = Nothing
+`;
 }
 
 /**
