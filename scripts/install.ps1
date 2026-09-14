@@ -90,6 +90,13 @@ try {
     Expand-Archive -Path $zipPath -DestinationPath $tempDir -Force
 
     $sourceDir = Join-Path $tempDir "pboss-main"
+
+    # Echo the source version: install.ps1 always builds the LATEST main
+    # branch, and this line is the fastest way to see WHICH code a host
+    # actually received when comparing install logs.
+    $srcPkg = Get-Content (Join-Path $sourceDir "package.json") -Raw | ConvertFrom-Json
+    Write-Host "✓ Downloaded pboss v$($srcPkg.version) source" -ForegroundColor Green
+
     Set-Location $sourceDir
 
     # Stop a running daemon BEFORE compiling: Windows locks a running

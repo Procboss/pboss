@@ -271,13 +271,13 @@ export class StartupManager {
 # pboss startup install
 #
 # Equivalent manual commands:
-# schtasks /create /tn "${taskName}" /tr "${trValue}" /sc onlogon /ru "%USERNAME%" /f /rl highest
+# schtasks /create /tn "${taskName}" /tr "${trValue}" /sc onlogon /ru "%USERNAME%" /f /rl limited
 #
 # Or run with PowerShell (what \`pboss startup install\` itself uses — no
 # nested /tr quoting to get wrong):
 # $Action = New-ScheduledTaskAction -Execute "${daemonCmd[0]}" -Argument "${daemonCmd.slice(1).join(" ")}"
 # $Trigger = New-ScheduledTaskTrigger -AtLogOn -User "$env:USERNAME"
-# $Principal = New-ScheduledTaskPrincipal -UserId "$env:USERNAME" -LogonType Interactive -RunLevel Highest
+# $Principal = New-ScheduledTaskPrincipal -UserId "$env:USERNAME" -LogonType Interactive -RunLevel Limited
 # Register-ScheduledTask -TaskName "${taskName}" -Action $Action -Trigger $Trigger -Principal $Principal -Force
 #
 # Hosts that DENY per-user task registration ("Access is denied") fall back
@@ -1207,7 +1207,13 @@ function psQuote(value: string): string {
  *
  * The trigger is restricted to the current user's logon (`-User`) — the
  * daemon's state is per-user (~/.pboss), so it must not start for other
- * accounts. `-RunLevel Highest` mirrors the admin shell that registers it.
+ * accounts. `-RunLevel Limited` is deliberate: REGISTERING a task whose
+ * principal demands Highest privileges requires an ELEVATED shell — an
+ * unelevated one is denied with 0x80070005 "Access is denied" (issue #35:
+ * the per-user installer always runs unelevated). The daemon itself is
+ * user-land only — state under %USERPROFILE%\.pboss, user processes — so it
+ * never needs the elevated token; hosts that still deny per-user
+ * registration fall back to the Registry Run key.
  */
 export function buildWindowsTaskRegistrationScript(
   daemonCmd: string[],
@@ -1224,8 +1230,8 @@ export function buildWindowsTaskRegistrationScript(
     ? `New-ScheduledTaskTrigger -AtLogOn -User ${psQuote(user)}`
     : "New-ScheduledTaskTrigger -AtLogOn";
   const principal = user
-    ? `New-ScheduledTaskPrincipal -UserId ${psQuote(user)} -LogonType Interactive -RunLevel Highest`
-    : "New-ScheduledTaskPrincipal -LogonType Interactive -RunLevel Highest";
+    ? `New-ScheduledTaskPrincipal -UserId ${psQuote(user)} -LogonType Interactive -RunLevel Limited`
+    : "New-ScheduledTaskPrincipal -LogonType Interactive -RunLevel Limited";
   return [
     // Without this, cmdlet failures are non-terminating and the exit code
     // stays 0 — the CLI would report success for a failed registration.

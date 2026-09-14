@@ -36,9 +36,12 @@ describe("Windows Support & Cross-Platform Compatibility", () => {
       expect(output).toContain("Register-ScheduledTask");
       expect(output).toContain("resurrect");
       expect(output).toContain("# pboss startup install");
-      // The onlogon trigger is restricted to THIS user's logon.
-      expect(output).toContain('/sc onlogon /ru "%USERNAME%"');
+      // The onlogon trigger is restricted to THIS user's logon, and the
+      // manual commands stay registerable from an unelevated shell.
+      expect(output).toContain('/sc onlogon /ru "%USERNAME%" /f /rl limited');
       expect(output).toContain("New-ScheduledTaskTrigger -AtLogOn -User");
+      expect(output).toContain("-RunLevel Limited");
+      expect(output).not.toContain("/rl highest");
     });
   });
 
@@ -59,10 +62,11 @@ describe("Windows Support & Cross-Platform Compatibility", () => {
         expect(script).toContain(
           "-Execute 'C:\\Program Files\\pboss\\pboss.exe' -Argument '__daemon'"
         );
-        // Trigger + principal are bound to the invoking user.
+        // Trigger + principal are bound to the invoking user; RunLevel
+        // Limited keeps registration possible from an unelevated shell.
         expect(script).toContain("New-ScheduledTaskTrigger -AtLogOn -User 'zak'");
         expect(script).toContain(
-          "New-ScheduledTaskPrincipal -UserId 'zak' -LogonType Interactive -RunLevel Highest"
+          "New-ScheduledTaskPrincipal -UserId 'zak' -LogonType Interactive -RunLevel Limited"
         );
         // Failures must be terminating or the exit code stays 0.
         expect(script).toContain("$ErrorActionPreference = 'Stop'");
@@ -110,7 +114,28 @@ describe("Windows Support & Cross-Platform Compatibility", () => {
       const script = buildWindowsTaskRegistrationScript(["pboss.exe", "__daemon"]);
       expect(script).toContain("New-ScheduledTaskTrigger -AtLogOn");
       expect(script).not.toContain("-User ");
-      expect(script).toContain("New-ScheduledTaskPrincipal -LogonType Interactive -RunLevel Highest");
+      expect(script).toContain("New-ScheduledTaskPrincipal -LogonType Interactive -RunLevel Limited");
+    });
+
+    test("RunLevel Limited, never Highest — Highest needs an elevated shell (issue #35)", () => {
+      // Registering a task whose principal demands Highest privileges fails
+      // "Access is denied" (0x80070005) from a normal shell, and the
+      // per-user installer always runs unelevated — issue #35's root cause.
+      // The daemon is user-land only, so it never needs the elevated token.
+      // Permanent ban, same spirit as the postinstall redirect-token ban.
+      delete process.env.USERNAME;
+      const unelevated = buildWindowsTaskRegistrationScript(["pboss.exe", "__daemon"]);
+      process.env.USERNAME = "zak";
+      let withUser: string;
+      try {
+        withUser = buildWindowsTaskRegistrationScript(["pboss.exe", "__daemon"]);
+      } finally {
+        process.env.USERNAME = SAVED_USERNAME;
+      }
+      for (const script of [unelevated, withUser]) {
+        expect(script).toContain("-RunLevel Limited");
+        expect(script).not.toContain("Highest");
+      }
     });
   });
 
