@@ -33,7 +33,7 @@ import { ignore } from "./error-handling";
 import { colorize } from "./utils";
 import { stopDaemonIfRunning } from "./api";
 import { probeDaemon } from "./daemon-probe";
-import { DAEMON_SOCKET } from "./constants";
+import { DAEMON_SOCKET, DAEMON_OUT_LOG_FILE, DAEMON_ERR_LOG_FILE } from "./constants";
 import {
   IS_COMPILED,
   findBun,
@@ -280,6 +280,11 @@ export class StartupManager {
 # $Principal = New-ScheduledTaskPrincipal -UserId "$env:USERNAME" -LogonType Interactive -RunLevel Highest
 # Register-ScheduledTask -TaskName "${taskName}" -Action $Action -Trigger $Trigger -Principal $Principal -Force
 #
+# Hosts that DENY per-user task registration ("Access is denied") fall back
+# to the per-user Registry Run key — same logon trigger, no Task Scheduler
+# permissions needed (\`pboss startup install\` does this automatically):
+# reg add "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run" /v ${taskName} /t REG_SZ /d "${trValue}" /f
+#
 # To resurrect processes after startup:
 # ${resurrectCmd}
 `;
@@ -498,13 +503,18 @@ ${plist}`;
     } else if (os === "win32") {
       // The task is registered for the CURRENT user (their logon, their
       // %USERPROFILE%\.pboss) — no Administrator gate upfront: per-user
-      // registration is allowed unelevated. If THIS host's policy refuses
-      // it, the failure path below names the elevated re-run honestly.
+      // registration is allowed unelevated. Hosts whose policy STILL
+      // refuses it ("Access is denied" on hardened boxes) fall back to the
+      // per-user Registry Run key below: same logon trigger, zero Task
+      // Scheduler permissions required. Only when BOTH mechanisms fail is
+      // this an error — thrown, so the CLI exits nonzero and installers
+      // stop printing success banners for a machine with no persistence.
       const daemonCmd = daemonSpawnCommand();
       const taskName = "PBOSS_Daemon";
-      const script = buildWindowsTaskRegistrationScript(daemonCmd, taskName);
 
+      let taskFailure: string | null = null;
       try {
+        const script = buildWindowsTaskRegistrationScript(daemonCmd, taskName);
         const proc = Bun.spawn(
           ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
           { stdout: "pipe", stderr: "pipe" }
@@ -517,21 +527,109 @@ ${plist}`;
           }),
         ]);
         if (code !== 0) {
-          const detail = errText.trim();
-          return (
-            `Failed to create the scheduled task (powershell exit code ${code}).` +
-            (detail ? `\n${detail}` : "") +
-            `\nIf this host requires elevation for per-user tasks, re-run from an\nAdministrator shell:  pboss startup install`
+          taskFailure = `powershell exit code ${code}` + (errText.trim() ? `\n${errText.trim()}` : "");
+        }
+      } catch (err: unknown) {
+        taskFailure = err instanceof Error ? err.message : String(err);
+      }
+
+      if (taskFailure !== null) {
+        // Fallback: the per-user Run key. It fires at this user's logon —
+        // the exact moment the denied scheduled task would have — and
+        // needs nothing but HKCU write access, which every user has.
+        const [regCode, regErr] = await runReg(buildWindowsRunKeyAddCommand(daemonCmd));
+        if (regCode !== 0) {
+          const detail = regErr.trim();
+          throw new Error(
+            `Failed to install boot persistence on this host.\n` +
+              `Scheduled task registration failed (${taskFailure}).\n` +
+              `Registry Run key fallback failed (reg exit code ${regCode})` +
+              (detail ? `: ${detail}` : ".") +
+              `\nIf this host requires elevation for per-user tasks, re-run from an\nAdministrator shell:  pboss startup install`
           );
         }
-
-        return `Windows Scheduled Task "${taskName}" installed successfully.\nRun on demand: schtasks /run /tn "${taskName}"`;
-      } catch (err: any) {
-        return `Failed to create scheduled task: ${err.message}. If this host requires elevation for per-user tasks, re-run from an Administrator shell.`;
+        const started = await this.bringUpWindowsDaemon(daemonCmd, opts.verifyTimeoutMs, false);
+        return (
+          `Scheduled task registration was denied on this host (task not installed):\n${taskFailure}\n` +
+            `Boot persistence installed via the per-user Registry Run key instead:\n` +
+            `  ${WINDOWS_RUN_KEY}\\PBOSS_Daemon\n` +
+            `pboss starts at your logon and resurrects saved processes.${started}`
+        );
       }
+
+      // Task registered — bring the daemon up NOW (parity with the Linux
+      // path): installers and `pboss upgrade` stop the daemon before
+      // replacing the binary; leaving the fleet down until the next logon
+      // would betray the "resurrects saved processes" promise.
+      const started = await this.bringUpWindowsDaemon(daemonCmd, opts.verifyTimeoutMs, true);
+      return (
+        `Windows Scheduled Task "${taskName}" installed successfully.${started}\n` +
+        `Run on demand: schtasks /run /tn "${taskName}"`
+      );
     }
 
     return "Unsupported platform for auto-install. Manual setup required.";
+  }
+
+  /**
+   * Bring the Windows daemon up right after a persistence install
+   * (best-effort, never throws — persistence itself already succeeded).
+   *
+   * Task installs start the TASK (`schtasks /run`), so Task Scheduler owns
+   * the daemon exactly like at logon; Run-key installs spawn the daemon
+   * directly, mirrored after api.launchDaemon (daemon log files, detached,
+   * unref'd). A daemon that is already answering is left alone. Returns a
+   * short status note (starting with "\n") for the install message.
+   */
+  private async bringUpWindowsDaemon(
+    daemonCmd: string[],
+    verifyTimeoutMs: number | undefined,
+    viaTask: boolean
+  ): Promise<string> {
+    try {
+      const alive = await probeDaemon(DAEMON_SOCKET);
+      if (alive) {
+        return `\nDaemon: already running (pid ${alive.pid}) — processes stay up.`;
+      }
+
+      if (viaTask) {
+        const proc = Bun.spawn(["schtasks", "/run", "/tn", "PBOSS_Daemon"], {
+          stdout: "ignore",
+          stderr: "ignore",
+          stdin: "ignore",
+        });
+        if ((await proc.exited) !== 0) {
+          return "\nDaemon: could not be started from here — it starts at your next logon.";
+        }
+      } else {
+        // Same spawn shape as api.launchDaemon: daemon output goes to the
+        // daemon log files, not to this shell.
+        const outLog = Bun.file(DAEMON_OUT_LOG_FILE);
+        const errLog = Bun.file(DAEMON_ERR_LOG_FILE);
+        if (!(await outLog.exists())) await Bun.write(outLog, "");
+        if (!(await errLog.exists())) await Bun.write(errLog, "");
+        const proc = Bun.spawn(daemonCmd, {
+          stdout: outLog,
+          stderr: errLog,
+          stdin: "ignore",
+          env: { ...(process.env as Record<string, string>) },
+        });
+        proc.unref();
+      }
+
+      const deadline = Date.now() + (verifyTimeoutMs ?? 10_000);
+      while (Date.now() < deadline) {
+        await Bun.sleep(300);
+        const probe = await probeDaemon(DAEMON_SOCKET);
+        if (probe) {
+          return `\nDaemon: started (pid ${probe.pid}) — saved processes are back.`;
+        }
+      }
+      return "\nDaemon: did not answer in time — it starts at your next logon.";
+    } catch (err) {
+      ignore("start Windows daemon after startup install", err);
+      return "\nDaemon: could not be started from here — it starts at your next logon.";
+    }
   }
 
   async uninstall(): Promise<string> {
@@ -579,6 +677,7 @@ ${plist}`;
       return "PBOSS launch agent removed";
     } else if (os === "win32") {
       const taskName = "PBOSS_Daemon";
+      const lines: string[] = [];
       try {
         const proc = Bun.spawn(["schtasks", "/delete", "/tn", taskName, "/f"], {
           stdout: "pipe",
@@ -592,20 +691,36 @@ ${plist}`;
           }),
         ]);
         if (code === 0) {
-          return `Windows Scheduled Task "${taskName}" removed.`;
+          lines.push(`Windows Scheduled Task "${taskName}" removed.`);
+        } else if (/cannot find|does not exist|not exist/i.test(errText)) {
+          // "The system cannot find the file specified" = no such task —
+          // reported honestly below (combined with the Run key result).
+        } else {
+          lines.push(
+            `Failed to remove scheduled task (schtasks exit code ${code}).` +
+              (errText.trim() ? `\n${errText.trim()}` : "")
+          );
         }
-        // "The system cannot find the file specified" = no such task —
-        // report that honestly instead of fake success.
-        if (/cannot find|does not exist|not exist/i.test(errText)) {
-          return `No "${taskName}" scheduled task found — nothing to remove.`;
-        }
-        return (
-          `Failed to remove scheduled task (schtasks exit code ${code}).` +
-          (errText.trim() ? `\n${errText.trim()}` : "")
-        );
       } catch (err: any) {
-        return `Failed to remove scheduled task: ${err.message}`;
+        lines.push(`Failed to remove scheduled task: ${err.message}`);
       }
+
+      // The Run-key fallback from a denied task registration is the SAME
+      // persistence and must be removed by the SAME command.
+      const [regCode, regErr] = await runReg(buildWindowsRunKeyRemoveCommand());
+      if (regCode === 0) {
+        lines.push("Registry Run key PBOSS_Daemon removed.");
+      } else if (/unable to find|cannot find/i.test(regErr)) {
+        // No Run key was installed — nothing to remove; only noteworthy
+        // when the task is gone too (reported below).
+      } else {
+        lines.push(`Failed to remove the Run key (reg exit code ${regCode}).`);
+      }
+
+      if (lines.length === 0) {
+        return `No "${taskName}" scheduled task or Run key found — nothing to remove.`;
+      }
+      return lines.join("\n");
     }
 
     return "Unsupported platform";
@@ -672,20 +787,37 @@ ${plist}`;
         lines.push(`  → install it with:  ${startupInstallHint()}`);
       }
     } else if (os === "win32") {
-      let installed = false;
+      // Both persistence modes are reported: the scheduled task AND the
+      // Registry Run key fallback — `startup status` must never call a
+      // Run-key machine "not installed".
+      let taskInstalled = false;
       try {
         const proc = Bun.spawn(["schtasks", "/query", "/tn", "PBOSS_Daemon"], {
           stdout: "ignore",
           stderr: "ignore",
           stdin: "ignore",
         });
-        installed = (await proc.exited) === 0;
+        taskInstalled = (await proc.exited) === 0;
       } catch (err) {
         ignore("schtasks /query (startup status)", err);
       }
-      lines.push("Boot startup service (Task Scheduler)");
-      lines.push(`  Service:    PBOSS_Daemon scheduled task`);
-      lines.push(`  Installed:  ${installed ? "yes" : "no"}`);
+      const [regCode, , runStdout] = await runReg(buildWindowsRunKeyQueryCommand(), true);
+      const runKeyInstalled = regCode === 0;
+      const runValue = runKeyInstalled ? parseWindowsRunKeyQuery(runStdout) : null;
+      installed = taskInstalled || runKeyInstalled;
+      lines.push("Boot startup service (Windows)");
+      lines.push(`  Task:       PBOSS_Daemon scheduled task — ${taskInstalled ? "installed" : "not installed"}`);
+      lines.push(
+        `  Run key:    ${WINDOWS_RUN_KEY}\\PBOSS_Daemon — ${runKeyInstalled ? "installed" : "not installed"}`
+      );
+      lines.push(
+        installed
+          ? "  Installed:  yes — the daemon starts at your logon"
+          : "  Installed:  no"
+      );
+      if (runValue) {
+        lines.push(`  Command:    ${runValue}`);
+      }
       if (!installed) {
         lines.push(`  → install it with:  ${startupInstallHint()}`);
       }
@@ -1018,21 +1150,27 @@ export async function bootServiceInstalled(
     };
   }
   if (os === "win32") {
+    let installed = false;
     try {
       const proc = Bun.spawn(["schtasks", "/query", "/tn", "PBOSS_Daemon"], {
         stdout: "ignore",
         stderr: "ignore",
         stdin: "ignore",
       });
-      const installed = (await proc.exited) === 0;
-      return {
-        installed,
-        howToInstall: startupInstallHint(),
-      };
+      installed = (await proc.exited) === 0;
     } catch (err) {
       ignore("schtasks /query (boot presence check)", err);
-      return { installed: false, howToInstall: startupInstallHint() };
     }
+    if (!installed) {
+      // A denied task registration falls back to the Registry Run key —
+      // that machine HAS persistence; the first-start hint must not nag.
+      const [regCode] = await runReg(buildWindowsRunKeyQueryCommand());
+      installed = regCode === 0;
+    }
+    return {
+      installed,
+      howToInstall: startupInstallHint(),
+    };
   }
   return { installed: false, howToInstall: startupInstallHint() };
 }
@@ -1097,4 +1235,114 @@ export function buildWindowsTaskRegistrationScript(
     `$Principal = ${principal}`,
     `Register-ScheduledTask -TaskName ${psQuote(taskName)} -Action $Action -Trigger $Trigger -Principal $Principal -Force | Out-Null`,
   ].join("\n");
+}
+
+// ---------------------------------------------------------------------------
+// Windows Registry Run key — the fallback persistence mode
+// ---------------------------------------------------------------------------
+
+/**
+ * The per-user Run key: the ONLY per-user boot mechanism on Windows that
+ * needs no Task Scheduler permissions at all. Hosts that deny
+ * Register-ScheduledTask even for per-user tasks ("Access is denied" —
+ * hardened boxes, locked-down task folders) can still always write HKCU.
+ * The key fires at this user's logon — the exact moment the denied
+ * scheduled task would have.
+ */
+export const WINDOWS_RUN_KEY = "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run";
+
+/** The value name inside the Run key. */
+export const WINDOWS_RUN_KEY_NAME = "PBOSS_Daemon";
+
+/**
+ * reg.exe argv (after "reg") that writes the daemon command into the Run
+ * key. Pure function so it can be unit-tested off-Windows. Tokens with
+ * spaces are double-quoted — the Run key value is a command line, so the
+ * exe path MUST be quoted when it contains spaces ("C:\Program Files\...").
+ * `/f` forces the overwrite: re-running `pboss startup install` (and the
+ * installer's upgrade path) must refresh the command, not fail on the
+ * existing value.
+ */
+export function buildWindowsRunKeyAddCommand(daemonCmd: string[]): string[] {
+  const exeToken = daemonCmd[0];
+  if (!exeToken) throw new Error("daemon command must start with an executable path");
+  const value = daemonCmd.map(quoteWindowsToken).join(" ");
+  return [
+    "add",
+    WINDOWS_RUN_KEY,
+    "/v",
+    WINDOWS_RUN_KEY_NAME,
+    "/t",
+    "REG_SZ",
+    "/d",
+    value,
+    "/f",
+  ];
+}
+
+/** reg.exe argv (after "reg") that removes the Run key value. */
+export function buildWindowsRunKeyRemoveCommand(): string[] {
+  return ["delete", WINDOWS_RUN_KEY, "/v", WINDOWS_RUN_KEY_NAME, "/f"];
+}
+
+/** reg.exe argv (after "reg") that queries the Run key value. */
+export function buildWindowsRunKeyQueryCommand(): string[] {
+  return ["query", WINDOWS_RUN_KEY, "/v", WINDOWS_RUN_KEY_NAME];
+}
+
+/**
+ * Run one reg.exe command WITHOUT throwing. reg.exe always exists on
+ * Windows, so a spawn failure is a genuine host oddity, not a missing
+ * binary. Returns [exitCode, stderr, stdout] — the caller decides what a
+ * nonzero code means (add: fallback failed; delete: "unable to find" is the
+ * benign nothing-installed case; query: nonzero = not installed).
+ * `keepStdout` opt-in: only `startup status` needs the value text back.
+ */
+async function runReg(
+  args: string[],
+  keepStdout = false
+): Promise<[number, string, string]> {
+  try {
+    const proc = Bun.spawn(["reg", ...args], {
+      stdout: "pipe",
+      stderr: "pipe",
+      stdin: "ignore",
+    });
+    const [code, errText, outText] = await Promise.all([
+      proc.exited,
+      new Response(proc.stderr).text().catch((err: unknown) => {
+        ignore("read reg stderr (Run key)", err);
+        return "";
+      }),
+      keepStdout
+        ? new Response(proc.stdout).text().catch((err: unknown) => {
+            ignore("read reg stdout (Run key status)", err);
+            return "";
+          })
+        : Promise.resolve(""),
+    ]);
+    return [code, errText, keepStdout ? outText : ""];
+  } catch (err) {
+    ignore(`reg ${args[0]} (Run key)`, err);
+    // 127 = command effectively unavailable — callers treat nonzero as
+    // failure/not-installed, which is the honest verdict here too.
+    return [127, err instanceof Error ? err.message : String(err), ""];
+  }
+}
+
+/**
+ * Extract the command line from `reg query` output, off-Windows-testable.
+ * Output shape (one line):
+ *   HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run
+ *       PBOSS_Daemon    REG_SZ    "C:\...\pboss.exe" __daemon
+ */
+export function parseWindowsRunKeyQuery(output: string): string | null {
+  const line = output
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .find((l) => l.includes("REG_SZ"));
+  if (!line) return null;
+  const idx = line.indexOf("REG_SZ");
+  const value = line.slice(idx + "REG_SZ".length).trim();
+  return value || null;
 }
