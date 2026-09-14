@@ -562,6 +562,127 @@ and survives daemon restarts.
 
 ---
 
+#### Dependencies — `dependsOn` (issue #33)
+
+Any process can declare what it needs before it can start. pboss resolves
+the whole dependency graph, starts what it owns in the right order, checks
+what the operating system owns, and refuses to start anything whose
+requirements are not met:
+
+```js
+// ecosystem.config.js
+module.exports = {
+  apps: [
+    { name: "postgres", script: "./postgres-wrapper.ts" },
+    { name: "api", script: "./api.ts", dependsOn: ["postgres", "redis"] },
+    { name: "worker", script: "./worker.ts", dependsOn: ["api"] },
+  ],
+};
+```
+
+```bash
+pboss start worker        # starts postgres → api → worker, in that order
+pboss start api.ts --name api --depends-on postgres,redis   # CLI form
+```
+
+**Resolution order.** A dependency name resolves against **pboss processes
+first** (exact names and cluster instances). If nothing matches, pboss asks
+the system service manager — on Linux, systemd: `postgresql` maps to
+`postgresql.service`, `mongodb` to `mongod.service`, `redis` to
+`redis.service`, with common alias differences covered. Only an **active**
+unit satisfies a dependency. pboss never starts, stops, or otherwise manages
+a system service — it checks state, nothing more.
+
+**Policies.** Every dependency is `"required"` (default — it must be
+satisfied before the dependent starts) or `"optional"` (preferred, never
+blocks):
+
+```js
+dependsOn: ["postgres", { name: "metrics", policy: "optional" }]
+```
+
+The CLI flag accepts `name` or `name:optional` entries, comma-separated:
+`--depends-on postgres,metrics:optional`.
+
+**Behavior.**
+
+- Already-running dependencies are never restarted — `pboss start api`
+  (or `restart api`) leaves a running `postgres` alone.
+- Recursive: starting `worker` above pulls up `api`, which pulls up
+  `postgres`. Independent dependencies start concurrently (the graph is
+  level-ordered, not a flat chain).
+- Cycles (`a → b → a`, or a self-reference) are detected **before** anything
+  starts, with a clear error — never an infinite loop.
+- Rollback is invocation-scoped (same contract as namespaces): if `api`
+  fails, dependencies **this start brought up** are stopped again; processes
+  that were already running are preserved. Dependencies started for a
+  namespace group join that group's rollback scope — other namespaces are
+  never touched.
+- `restart` pre-flights dependencies **before** stopping the process, so a
+  blocked restart fails while the process is still running instead of
+  stopping it and failing to bring it back. Restarting a dependency never
+  restarts its dependents (runtime propagation is a future policy).
+- Dependencies can cross namespace boundaries — `web` in namespace
+  `frontend` may depend on `api` in namespace `backend`; ecosystem starts
+  order the groups so dependencies come up first.
+- `dependsOn` persists with the process configuration, and boot recovery
+  (resurrect) brings the fleet up dependencies-first regardless of the
+  dump's save order. One failed graph never blocks unrelated graphs.
+
+**Stop and delete safety.** Stopping a dependency prints a warning naming
+the dependents (they keep running). Deleting one is **refused** with the
+names of the processes that still require it — `--force` (CLI) or
+`{ force: true }` (API) overrides:
+
+```
+Error: Cannot delete "postgres" (postgres) — "api" still depends on it.
+Those processes will fail to start until the dependency is restored or removed from their dependsOn.
+Run with --force (CLI) or pass { force: true } (API) to delete it anyway.
+```
+
+**Diagnostics are machine-readable.** A blocked start fails with the
+provider, service and state (`Dependency "postgresql" is unavailable.
+Provider: systemd, Service: postgresql.service, State: inactive`) — and the
+daemon response carries the same facts as a structured
+`dependencyFailure` object for API clients and automation.
+
+---
+
+#### pboss deps
+
+Inspect the dependency graph (issue #33) — direct dependencies with their
+provider, state and satisfaction, plus the reverse view:
+
+```bash
+pboss deps api
+```
+
+```
+api
+├── postgres     [running]    ProcBoss  ✓
+├── redis        [running]    ProcBoss  ✓
+├── postgresql   [active]     systemd  ✓
+└── metrics      [not-found]  systemd  ✗ ~ (optional)
+```
+
+`--reverse` answers the other direction — who depends on this process:
+
+```bash
+pboss deps postgres --reverse
+```
+
+```
+postgres
+├── api      [online]
+└── worker   [online]
+```
+
+A target that is not a process or namespace is a clear error. Namespaces
+report each member. Resolution runs for the report but **nothing is
+started** — `pboss deps` is pure inspection.
+
+---
+
 #### pboss scale
 
 Dynamically scale a process group up or down.
@@ -1710,6 +1831,7 @@ The complete set of options available for each entry in the apps array:
 | `nodeArgs` | `string[]` | — | Additional runtime arguments |
 | `namespace` | `string` | — | Namespace for grouping processes |
 | `onNsMemberExit` | `"ignore"` \| `"exit"` | `ignore` | Reaction to a namespace sibling's terminal exit (namespaced processes only; see [Namespaces](#namespaces--group-level-lifecycle)) |
+| `dependsOn` | `string` \| `{ name, policy }` array | — | Dependencies that must be satisfied before start (issue #33; see [Dependencies](#dependencies--dependson-issue-33)). Names resolve to pboss processes first, then systemd units; `policy` is `"required"` (default) or `"optional"` |
 | `sourceMapSupport` | `boolean` | `false` | Enable source map support |
 | `waitReady` | `boolean` | `false` | Wait for process to emit ready signal |
 | `listenTimeout` | `number` | `3000` | Timeout when waiting for ready signal |
@@ -2226,6 +2348,28 @@ import { describe } from "pboss";
 const details = await describe("api");
 console.log(details[0]);
 ```
+
+#### `deps(target: string | number): Promise<DepsReport[]>` (issue #33)
+
+Inspect a process's dependencies: every direct dependency with its provider
+(`"pboss"` / `"systemd"` / `"unresolved"`), state and satisfaction, the direct
+dependents (reverse view), and the circular chain when the process sits on
+one. Pure inspection — nothing is started.
+
+```ts
+import { deps } from "pboss";
+
+const reports = await deps("api");
+for (const dep of reports[0]!.dependencies) {
+  console.log(`${dep.name} — ${dep.provider} ${dep.status ?? "?"} ${dep.satisfied ? "✓" : "✗"}`);
+}
+```
+
+A namespace target reports each member. Dependency failures on `start()`
+(and every other lifecycle call) throw a `PBossError` whose
+`err.response.dependencyFailure` carries the same facts as a structured
+object — provider, service, state, machine-readable `reason` — so automation
+never has to parse human text.
 
 ---
 

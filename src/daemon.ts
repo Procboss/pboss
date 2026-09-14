@@ -18,6 +18,7 @@ import { ProcessManager } from "./process-manager";
 import { Dashboard } from "./dashboard";
 import { ModuleManager } from "./module-manager";
 import { CronJobManager } from "./cron-jobs";
+import { DependencyError } from "./dependencies";
 import { CloudAgent, loadCloudConfig, saveCloudConfig, resolveCloudUrl, fetchFleet, type CloudConfig } from "./cloud";
 import {
   DAEMON_SOCKET,
@@ -294,8 +295,16 @@ export default class Daemon {
           return { type: "reload", data: states, success: true, id: msg.id };
         }
         case "delete": {
-          const states = await pm.del(msg.data.target);
+          // Issue #33: `force` bypasses the has-dependents refusal
+          // (mirrors the CLI's --force).
+          const states = await pm.del(msg.data.target, { force: msg.data?.force === true });
           return { type: "delete", data: states, success: true, id: msg.id };
+        }
+        case "deps": {
+          // Issue #33: dependency inspection — providers, states,
+          // dependents, cycles. Machine-readable by construction.
+          const reports = await pm.depsReport(msg.data.target);
+          return { type: "deps", data: reports, success: true, id: msg.id };
         }
         case "scale": {
           const states = await pm.scale(msg.data.target, msg.data.count);
@@ -552,7 +561,12 @@ export default class Daemon {
         console.error(err, err.stack);
       }
 
-      return { type: "error", error, success: false, id: msg.id };
+      // Issue #33: dependency failures carry structured details — keep
+      // the human-readable message AND expose the machine-readable form
+      // on the response (err.response.dependencyFailure on the client).
+      const dependencyFailure = err instanceof DependencyError ? err.details : undefined;
+
+      return { type: "error", error, success: false, id: msg.id, ...(dependencyFailure ? { dependencyFailure } : {}) };
 
     }
   }

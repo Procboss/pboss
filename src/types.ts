@@ -42,6 +42,99 @@ export type NsMemberExitPolicy = "ignore" | "exit";
 
 export const NS_MEMBER_EXIT_POLICIES: readonly NsMemberExitPolicy[] = ["ignore", "exit"];
 
+// ── Issue #33: first-class process dependencies ─────────────────────────
+
+/**
+ * What happens when a dependency is unavailable.
+ *
+ * - `required` (default): the dependent process cannot start until the
+ *   dependency is satisfied.
+ * - `optional`: the dependency is preferred but never blocks startup.
+ *
+ * The model is intentionally policy-based (not a hard-coded "block always")
+ * so future policies (stop/restart propagation, restart-on-recovery) can be
+ * added without changing the configuration format.
+ */
+export type DependencyPolicy = "required" | "optional";
+
+export const DEPENDENCY_POLICIES: readonly DependencyPolicy[] = ["required", "optional"];
+
+/** A dependency as declared in configuration: a bare name, or an object. */
+export interface DependencyObject {
+  name: string;
+  policy?: DependencyPolicy;
+}
+
+export type DependencySpec = string | DependencyObject;
+
+/** The internal, persisted form — always fully specified. */
+export interface NormalizedDependency {
+  name: string;
+  policy: DependencyPolicy;
+}
+
+/** Where a dependency was resolved. `unresolved` = nowhere. */
+export type DependencyProviderKind = "pboss" | "systemd" | "unresolved";
+
+/** systemd unit states we distinguish (issue #33 "System service state"). */
+export type SystemServiceState =
+  | "active"
+  | "inactive"
+  | "failed"
+  | "activating"
+  | "not-found"
+  | "unknown";
+
+/** One resolved dependency — what `pboss deps` and the API report. */
+export interface DependencyResolution {
+  /** Dependency name exactly as declared in `dependsOn`. */
+  name: string;
+  policy: DependencyPolicy;
+  provider: DependencyProviderKind;
+  /** ProcBoss process name (cluster base) or systemd unit name. */
+  target?: string;
+  /** "running"/"stopped"/"partial" (pboss) or a SystemServiceState. */
+  status?: string;
+  satisfied: boolean;
+  /** Machine-readable cause when not satisfied. */
+  reason?: string;
+}
+
+/** A process that depends on another (reverse view). */
+export interface DependentRef {
+  name: string;
+  status?: string;
+  policy: DependencyPolicy;
+}
+
+/** The full dependency report for one process (`pboss deps <target>`). */
+export interface DepsReport {
+  process: string;
+  namespace?: string;
+  dependencies: DependencyResolution[];
+  dependents: DependentRef[];
+  /** Populated when the process sits on a circular dependency chain. */
+  circular?: string[] | null;
+}
+
+/**
+ * Machine-readable failure details — attached to dependency errors so
+ * automation and AI agents can diagnose blocked startups without parsing
+ * human terminal output (issue #33 "AI/automation considerations").
+ */
+export interface DependencyFailureDetails {
+  /** The process being started. */
+  process: string;
+  /** The dependency that failed. */
+  dependency: string;
+  provider: DependencyProviderKind;
+  /** systemd unit name, when provider is systemd. */
+  service?: string;
+  /** Last-known state of the dependency. */
+  state?: string;
+  reason: string;
+}
+
 export interface ProcessDescription {
   id: number;
   name: string;
@@ -99,6 +192,8 @@ export interface ProcessDescription {
   namespace?: string;
   /** Issue #31: reaction to a namespace sibling's terminal exit. */
   onNsMemberExit?: NsMemberExitPolicy;
+  /** Issue #33: normalized dependencies (persisted with the config). */
+  dependsOn?: NormalizedDependency[];
   // Version tracking
   version?: string;
   versioningConfig?: VersioningConfig;
@@ -180,6 +275,8 @@ export interface StartOptions {
   namespace?: string;
   /** Issue #31: `"ignore"` (default) or `"exit"` — see NsMemberExitPolicy. */
   onNsMemberExit?: NsMemberExitPolicy;
+  /** Issue #33: names or `{ name, policy }` objects the process requires. */
+  dependsOn?: DependencySpec[];
   nodeArgs?: string[];
   sourceMapSupport?: boolean;
   /**
@@ -280,6 +377,8 @@ export interface DaemonResponse {
   /** Populated by the "ecosystem" command: standalone cron jobs applied. */
   cronsAdded?: number;
   cronsUpdated?: number;
+  /** Issue #33: structured dependency-failure details (machine-readable). */
+  dependencyFailure?: DependencyFailureDetails;
 }
 
 export interface MetricSnapshot {

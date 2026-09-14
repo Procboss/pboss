@@ -40,6 +40,9 @@ import type {
   ProcessState,
   LogItem,
   CronJob,
+  DependencySpec,
+  DependencyPolicy,
+  DepsReport,
 } from "./types";
 import { statusColor } from "./colors";
 import { liveWatchProcess, printProcessTable, printCronTable } from "./process-table";
@@ -247,6 +250,46 @@ class PBossCLI {
         case "--namespace":
           opts.namespace = args[++i];
           break;
+        case "--depends-on": {
+          // Issue #33: comma-separated dependency list; each entry is
+          // "name" (required) or "name:optional". Objects with policies
+          // are the ecosystem-file form — the flag keeps it terse.
+          const value = args[++i];
+          if (!value) {
+            console.error(
+              colorize("Error: --depends-on requires a comma-separated list (e.g. --depends-on postgres,redis)", "red")
+            );
+            process.exit(1);
+          }
+          const specs: DependencySpec[] = [];
+          for (const raw of value.split(",")) {
+            const token = raw.trim();
+            if (!token) continue;
+            const [rawName, rawPolicy] = token.split(":");
+            const policy = rawPolicy as DependencyPolicy | undefined;
+            const name = rawName;
+            if (policy && policy !== "required" && policy !== "optional") {
+              console.error(
+                colorize(
+                  `Error: dependency policy must be "required" or "optional" (got "${policy}" in "${token}")`,
+                  "red"
+                )
+              );
+              process.exit(1);
+            }
+            if (!name) {
+              console.error(colorize(`Error: empty dependency name in "${value}"`, "red"));
+              process.exit(1);
+            }
+            specs.push(policy ? { name, policy } : name);
+          }
+          if (specs.length === 0) {
+            console.error(colorize(`Error: --depends-on needs at least one name`, "red"));
+            process.exit(1);
+          }
+          opts.dependsOn = specs;
+          break;
+        }
         case "--on-ns-member-exit": {
           // Issue #31: namespace member-exit policy — "ignore" (default)
           // or "exit". Validated again daemon-side at the single start()
@@ -552,7 +595,10 @@ class PBossCLI {
           }
         }
       }
-      const states = await this.pboss.delete(target);
+      // Issue #33: --force doubles as the has-dependents override — the
+      // daemon refuses to delete a dependency other apps still require
+      // unless forced.
+      const states = await this.pboss.delete(target, { force });
       this.printNamespaceSummary("Deleted", states, target);
       console.log(colorize("✓ Deleted", "green"));
       printProcessTable(states);
@@ -627,6 +673,88 @@ class PBossCLI {
         liveWatchProcess(states);
       } else {
         printProcessTable(states);
+      }
+    } catch (err: any) {
+      console.error(colorize(`Error: ${err.message}`, "red"));
+      process.exit(1);
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // Issue #33: dependency inspection — `pboss deps <target> [--reverse]`
+  // -------------------------------------------------------------------------
+
+  /**
+   * Render one process's dependency report, in the issue's shape:
+   *
+   *   api
+   *   ├── postgres     [running]   ProcBoss
+   *   ├── redis        [stopped]   ProcBoss
+   *   ├── postgresql   [active]    systemd
+   *   └── metrics      [not-found] unresolved  (optional)
+   *
+   * `--reverse` flips to the dependent view: which apps depend on this one.
+   */
+  private printDepsReport(report: DepsReport, reverse: boolean) {
+    const label = report.namespace
+      ? `${report.process}  (namespace: ${report.namespace})`
+      : report.process;
+    console.log(colorize(label, "bold"));
+
+    if (reverse) {
+      if (report.dependents.length === 0) {
+        console.log(`  ${colorize("(no dependents — nothing depends on this process)", "dim")}`);
+      }
+      report.dependents.forEach((d, i) => {
+        const branch = i === report.dependents.length - 1 ? "└──" : "├──";
+        const status = d.status ?? "unknown";
+        console.log(
+          `${branch} ${padRight(d.name, 18)} [${colorize(status, statusColor(status))}]`
+        );
+      });
+      return;
+    }
+
+    if (report.dependencies.length === 0) {
+      console.log(`  ${colorize("(no dependencies declared)", "dim")}`);
+    }
+    report.dependencies.forEach((d, i) => {
+      const branch = i === report.dependencies.length - 1 ? "└──" : "├──";
+      const provider =
+        d.provider === "pboss" ? "ProcBoss" : d.provider === "systemd" ? "systemd" : "unresolved";
+      const status = d.status ?? "unknown";
+      const optional = d.policy === "optional" ? "  (optional)" : "";
+      const okColor = d.satisfied ? "green" : d.policy === "optional" ? "yellow" : "red";
+      const mark = d.satisfied ? "✓" : d.policy === "optional" ? "~" : "✗";
+      console.log(
+        `${branch} ${padRight(d.name, 18)} [${colorize(status, statusColor(status))}]${padRight(` ${provider}`, 12)} ${colorize(mark, okColor)}${optional}`
+      );
+      if (!d.satisfied && d.reason && d.policy !== "optional") {
+        console.log(
+          `    ${colorize(`└─ blocked: ${d.reason}${d.target ? ` (${d.target})` : ""}`, "red")}`
+        );
+      }
+    });
+    if (report.circular && report.circular.length > 0) {
+      console.log(
+        colorize(`  ⚠ circular dependency: ${report.circular.join(" → ")}`, "red")
+      );
+    }
+  }
+
+  async cmdDeps(args: string[]) {
+    const reverse = args.some((a) => a === "--reverse" || a === "-r");
+    const target = args.find((a) => !a.startsWith("-"));
+    if (!target) {
+      console.error(
+        colorize("Usage: pboss deps <id|name|namespace|all> [--reverse]", "red")
+      );
+      process.exit(1);
+    }
+    try {
+      const reports = await this.pboss.deps(target);
+      for (const report of reports) {
+        this.printDepsReport(report, reverse);
       }
     } catch (err: any) {
       console.error(colorize(`Error: ${err.message}`, "red"));
@@ -1983,10 +2111,14 @@ ${colorize("Notes:", "dim")}
     reload [id|name|namespace|all]  Graceful zero-downtime reload
     delete [id|name|namespace|all]  Stop and remove process(es) or a
                                   whole namespace (--force skips the
-                                  namespace confirmation)
+                                  namespace confirmation AND the
+                                  has-dependents refusal)
     scale <id|name> <count>       Scale to N instances
     list | ls | status            List all processes
     describe <id|name>            Show detailed process info
+    deps <id|name|namespace|all>  Inspect dependencies: provider, state,
+                                  satisfaction — and who depends on whom
+                                  --reverse: which processes depend on it
     reset <id|name|all>           Reset restart counters
     
     ${colorize("Logs:", "cyan")}
@@ -2094,6 +2226,11 @@ ${colorize("Notes:", "dim")}
                                   ignore (default) or exit — with exit,
                                   a member leaving the namespace for good
                                   stops the other members too
+    --depends-on <a,b:optional>   Dependencies (issue #33): comma list,
+                                  each "name" (required) or "name:optional".
+                                  ProcBoss apps first, then systemd units;
+                                  pboss starts stopped app dependencies and
+                                  checks system services (never starts them)
     --wait-ready                  Wait for ready signal
     --health-check-url <url>      HTTP health check endpoint
     -- <args...>                  Pass arguments to script
@@ -2113,6 +2250,9 @@ ${colorize("Notes:", "dim")}
     pboss start stellarforge          (resume stopped namespace — atomic)
     pboss delete stellarforge --force
     pboss start web.ts --namespace shop --on-ns-member-exit exit
+    pboss start api.ts --name api --depends-on postgres,redis
+    pboss deps api                  (what does api need?)
+    pboss deps postgres --reverse   (who needs postgres?)
     pboss scale api 8
     pboss logs api --lines 100
     pboss monit
@@ -2163,6 +2303,9 @@ ${colorize("Notes:", "dim")}
       case "show":
       case "info":
         await this.cmdDescribe(commandArgs);
+        break;
+      case "deps":
+        await this.cmdDeps(commandArgs);
         break;
       case "logs":
       case "log":

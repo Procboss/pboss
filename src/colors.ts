@@ -41,6 +41,18 @@ export function statusColor(status: string): string {
       return "yellow";
     case "stopping":
       return "magenta";
+    // Issue #33: dependency/system-service states (`pboss deps`).
+    case "running":
+    case "active":
+      return "green";
+    case "failed":
+    case "not-found":
+      return "red";
+    case "partial":
+    case "inactive":
+    case "activating":
+    case "unavailable":
+      return "yellow";
     default:
       return "white";
   }

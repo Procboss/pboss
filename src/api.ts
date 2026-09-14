@@ -48,6 +48,7 @@ import type {
   MetricSnapshot,
   ProcessStatus,
   LogItem,
+  DepsReport,
 } from "./types";
 
 // 
@@ -666,11 +667,48 @@ export class PBoss extends EventEmitter<PBossEvents> {
    * Stop and remove one or more processes from pboss's list — a namespace
    * target deletes the whole group (the CLI confirms first; --force
    * skips). Throws a clear error when nothing matches (except `"all"`).
+   *
+   * Issue #33: deleting a process that other processes still `dependsOn`
+   * throws unless `{ force: true }` — pboss refuses to silently break
+   * another app's dependency graph.
    */
-  async delete(target: string | number = "all"): Promise<ProcessState[]> {
+  async delete(
+    target: string | number = "all",
+    opts: { force?: boolean } = {}
+  ): Promise<ProcessState[]> {
     const type = target === "all" ? "deleteAll" : "delete";
-    const data = target === "all" ? undefined : { target: String(target) };
+    // `force` rides along only when set — the ordinary delete keeps its
+    // historical wire shape ({ target }) for every existing client.
+    let data: { target: string; force?: boolean } | undefined;
+    if (target !== "all") {
+      data = { target: String(target) };
+      if (opts.force === true) data.force = true;
+    }
     const res = await this.sendOrThrow({ type, data });
+    return res.data;
+  }
+
+  /**
+   * Inspect a process's dependencies (issue #33): every direct dependency
+   * with its provider (ProcBoss | systemd | unresolved), state and
+   * satisfaction, plus the direct dependents (reverse view) and a cycle
+   * warning when the process sits on a circular chain.
+   *
+   * ```ts
+   * const reports = await pboss.deps("api");
+   * for (const dep of reports[0].dependencies) {
+   *   console.log(dep.name, dep.provider, dep.status, dep.satisfied);
+   * }
+   * ```
+   *
+   * A namespace target reports each member. Throws a clear error when
+   * nothing matches. Pure inspection — nothing is started.
+   */
+  async deps(target: string | number): Promise<DepsReport[]> {
+    const res = await this.sendOrThrow({
+      type: "deps",
+      data: { target: String(target) },
+    });
     return res.data;
   }
 
@@ -1478,10 +1516,22 @@ export class PBoss extends EventEmitter<PBossEvents> {
   }
 
   /**
-   * Delete processes from management.
+   * Delete processes from management. `{ force: true }` bypasses the
+   * issue-#33 has-dependents refusal.
    */
-  static async delete(target: string | number = "all"): Promise<ProcessState[]> {
-    return PBoss.getDefaultInstance().delete(target);
+  static async delete(
+    target: string | number = "all",
+    opts: { force?: boolean } = {}
+  ): Promise<ProcessState[]> {
+    return PBoss.getDefaultInstance().delete(target, opts);
+  }
+
+  /**
+   * Inspect dependencies (issue #33) — providers, states, dependents,
+   * cycles. See the instance method for the report shape.
+   */
+  static async deps(target: string | number): Promise<DepsReport[]> {
+    return PBoss.getDefaultInstance().deps(target);
   }
 
   /**
@@ -1655,6 +1705,7 @@ export const pboss = PBoss.getDefaultInstance();
 
 export const list = () => PBoss.list();
 export const describe = (target: string | number) => PBoss.describe(target);
+export const deps = (target: string | number) => PBoss.deps(target);
 export const logs = (target: string | number = "all", lines: number = 20) => PBoss.logs(target, lines);
 export const streamLogs = (
   target: string | number = "all",

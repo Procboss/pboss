@@ -22,6 +22,7 @@ ProcBoss is free and open-source. If it saves you time, star it on [GitHub](http
 - **Universal runtimes** — auto-detected: Node.js, Bun, Go, Python, Rust, Ruby, PHP, Java JARs, shell scripts, compiled binaries.
 - **Cluster mode** — N instances, per-worker env, automatic ports, zero-downtime rolling reloads.
 - **Namespaces** — group processes (`--namespace my-app`) and operate on the group: `pboss restart my-app`, `pboss delete my-app` (confirmed; `--force` skips). Atomic startup with rollback ([#31](https://github.com/Procboss/pboss/issues/31)): a failed member rolls back only what that start brought up; members already running are never touched; namespace-less processes stay fully independent.
+- **Dependencies** ([#33](https://github.com/Procboss/pboss/issues/33)) — `dependsOn: ["postgres", "redis"]`: pboss resolves the graph (ProcBoss apps first, then systemd units like `postgresql.service`), starts stopped app dependencies recursively in topological order (independent branches concurrently), checks system services without ever managing them, refuses cycles upfront, rolls back only what an invocation started, and keeps boot recovery dependency-ordered. `pboss deps api` (and `--reverse`) inspects the graph; required/optional policies; failures are machine-readable on the API.
 - **Foreground mode** — `--no-daemon` blocks as PID 1, for Docker and Kubernetes.
 - **Web dashboard** — live WebSocket updates, CPU/memory charts, process controls, log viewer. Zero dependencies.
 - **Prometheus metrics** — dedicated `/metrics` endpoint on :9616.
@@ -118,6 +119,22 @@ leaving the namespace for good stops the other members too:
 ```bash
 pboss start web.ts --name web --namespace my-app --on-ns-member-exit exit
 ```
+
+Declare dependencies — pboss starts them first, in the right order, and
+knows when one is missing (issue #33):
+
+```bash
+pboss start api.ts --name api --depends-on postgres,redis
+pboss deps api                 # what does api need — provider, state, ✓/✗
+pboss deps postgres --reverse  # who depends on postgres
+```
+
+Dependencies also live in ecosystem files — `dependsOn: ["postgres"]` —
+with per-dependency policies (`{ name: "metrics", policy: "optional" }`).
+Names that are not pboss apps resolve against systemd (`postgresql` →
+`postgresql.service`): an active unit satisfies the dependency, an
+inactive one blocks it with a clear diagnostic — and pboss never starts
+or stops a system service it does not own.
 
 List all processes:
 

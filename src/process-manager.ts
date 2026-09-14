@@ -33,6 +33,16 @@
  import { ignore } from "./error-handling";
  import { EventEmitter } from "events";
  import {
+   DependencyEngine,
+   parseDependsOn,
+   type StartInvocation,
+ } from "./dependencies";
+ import type {
+   DepsReport,
+   DependentRef,
+   NormalizedDependency,
+ } from "./types";
+ import {
    PROCESS_EVENT_KINDS,
    type PbossProcessEvent,
    type ProcessEventKind,
@@ -71,6 +81,13 @@ import type { ReadableStreamController } from "bun";
    public cronManager: CronManager;
    public monitor: Monitor;
    public gracefulReload: GracefulReload;
+   /**
+    * Issue #33: the dependency engine — resolution, the dependency graph,
+    * providers, the level-concurrent executor, inspection reports and the
+    * stop/delete safety lookups. Owned by THIS manager instance so tests
+    * (and future hosts) can swap the system-service provider per manager.
+    */
+   public dependencies: DependencyEngine;
 
   /**
    * Issue #31: per-namespace operation locks. Every namespace-scoped
@@ -93,6 +110,14 @@ import type { ReadableStreamController } from "bun";
      this.cronManager = new CronManager();
      this.monitor = new Monitor();
      this.gracefulReload = new GracefulReload();
+     // Issue #33: the engine sees the live container list through this
+     // accessor (host interface — no bidirectional construction coupling).
+     this.dependencies = new DependencyEngine({ containers: () => this.allContainers() });
+   }
+
+  /** The engine's view of the live fleet (DependencyHost). */
+   allContainers(): ProcessContainer[] {
+     return Array.from(this.processes.values());
    }
 
   // ── Issue #31: namespace lifecycle helpers ───────────────────────────
@@ -164,13 +189,18 @@ import type { ReadableStreamController } from "bun";
 
   /**
    * Issue #31 rollback: stop `started` (best-effort, newest first — a
-   * startup order is undone in reverse). Returns per-process ✓/✗ lines;
-   * rollback failures are reported, never thrown: the ORIGINAL startup
-   * failure stays the primary error.
+   * startup order is undone in reverse; deduplicated — a container can
+   * enter the set from both the dependency executor and the member
+   * collector). Returns per-process ✓/✗ lines; rollback failures are
+   * reported, never thrown: the ORIGINAL startup failure stays the
+   * primary error.
    */
   private async rollbackInvocation(started: ProcessContainer[]): Promise<string[]> {
     const lines: string[] = [];
+    const seen = new Set<number>();
     for (const c of [...started].reverse()) {
+      if (seen.has(c.id)) continue;
+      seen.add(c.id);
       try {
         await c.stop();
         lines.push(`✓ ${c.name} stopped`);
@@ -186,12 +216,13 @@ import type { ReadableStreamController } from "bun";
 
   /**
    * Issue #31: start every app of ONE namespace as an atomic unit.
-   *
-   * - Members already running are untouched and NEVER rolled back.
-   * - If any member fails to start, only the members THIS invocation
-   *   started are stopped (best-effort, reverse order); the thrown error
-   *   carries the original failure as the primary message plus a separate
-   *   per-member rollback report.
+   * Issue #33: dependencies started BY this group's invocation (deps can
+   * cross namespace boundaries — the issue's example has `postgres` in ns
+   * "data" started for `api` in ns "backend") join the same rollback scope.
+   * Members already running are untouched and NEVER rolled back; if any
+   * member fails, only the containers THIS invocation started — members
+   * AND dependency starts — are stopped (best-effort, reverse order);
+   * already-running processes outside the operation are never touched.
    *
    * Must run under withNamespaceLock(ns).
    */
@@ -205,14 +236,14 @@ import type { ReadableStreamController } from "bun";
     try {
       for (const app of apps) {
         const before = this.snapshotStatuses();
-        const result = await this.start(app);
+        const result = await this.startWithScope(app, { startedByInvocation });
         states.push(...result);
-        startedByInvocation.push(
-          ...this.collectInvocationStarted(
-            result.map((s) => s.id),
-            before
-          )
-        );
+        for (const c of this.collectInvocationStarted(
+          result.map((s) => s.id),
+          before
+        )) {
+          if (!startedByInvocation.includes(c)) startedByInvocation.push(c);
+        }
       }
       return states;
     } catch (primaryErr) {
@@ -231,6 +262,8 @@ import type { ReadableStreamController } from "bun";
    * Issue #31: resume a namespace atomically — the `pboss start
    * <namespace>` path. Same rollback contract as
    * startNamespaceGroupAtomic, for containers that already exist.
+   * Issue #33: each member's dependencies are resolved (and started if
+   * stopped) BEFORE the member itself, inside the shared rollback scope.
    *
    * Must run under withNamespaceLock(ns).
    */
@@ -238,6 +271,7 @@ import type { ReadableStreamController } from "bun";
     ns: string,
     containers: ProcessContainer[]
   ): Promise<ProcessState[]> {
+    const startedByInvocation: ProcessContainer[] = [];
     return this.atomicStartContainers(ns, containers, (c) => {
       // Same resume semantics as start()'s existing-process branch: a
       // fresh attempt clears the unstable-restart debt and restores
@@ -246,7 +280,7 @@ import type { ReadableStreamController } from "bun";
       c.unstableRestarts = 0;
       c.config.autorestart = true;
       return c.start();
-    });
+    }, startedByInvocation);
   }
 
   /**
@@ -446,13 +480,14 @@ import type { ReadableStreamController } from "bun";
     }
 
     try {
+      const startedByInvocation: ProcessContainer[] = [];
       const states = await this.atomicStartContainers(ns, containers, (c) => {
         c.unstableRestarts = 0;
         // The user's pre-restart supervision intent, not the stop
         // mechanism's false.
         c.config.autorestart = autorestartIntent.get(c.id) ?? true;
         return c.start();
-      });
+      }, startedByInvocation);
       if (stopErrors.length > 0) {
         throw new Error(
           `namespace "${ns}" restarted, but ${stopErrors.length} member${stopErrors.length > 1 ? "s" : ""} failed to stop cleanly: ${stopErrors.join("; ")}`
@@ -473,20 +508,33 @@ import type { ReadableStreamController } from "bun";
    * Only members THIS call started are tracked; any failure rolls those
    * back (best-effort) and throws with the original failure primary and
    * the rollback report appended.
+   * Issue #33: `startedByInvocation` is the shared rollback scope — the
+   * dependency executor records dep starts into the SAME array, so a
+   * failure rolls back dependencies started by this invocation while
+   * processes that were already running stay untouched (rules 10/11).
    */
   private async atomicStartContainers(
     ns: string,
     containers: ProcessContainer[],
-    startOne: (c: ProcessContainer) => Promise<void>
+    startOne: (c: ProcessContainer) => Promise<void>,
+    startedByInvocation: ProcessContainer[] = []
   ): Promise<ProcessState[]> {
     const states: ProcessState[] = [];
-    const startedByInvocation: ProcessContainer[] = [];
 
     try {
       for (const c of containers) {
         if (!this.isRunningStatus(c.status)) {
+          // Issue #33: dependencies first — a member never starts before
+          // its required dependencies are satisfied.
+          await this.dependencies.ensureForStart(
+            c.name,
+            this.normalizedDeps(c.config.dependsOn),
+            { startedByInvocation }
+          );
           await startOne(c);
-          if (this.isRunningStatus(c.status)) startedByInvocation.push(c);
+          if (this.isRunningStatus(c.status) && !startedByInvocation.includes(c)) {
+            startedByInvocation.push(c);
+          }
         }
         states.push(c.getState());
       }
@@ -504,9 +552,53 @@ import type { ReadableStreamController } from "bun";
     }
   }
 
+  /** Config deps, tolerated (persisted dumps can predate normalization). */
+  private normalizedDeps(raw: unknown): NormalizedDependency[] {
+    try {
+      return parseDependsOn(raw as import("./types").DependencySpec[] | undefined);
+    } catch {
+      return [];
+    }
+  }
+
   // ── end namespace lifecycle helpers ──────────────────────────────────
  
   async start(options: StartOptions): Promise<ProcessState[]> {
+    // Issue #33: an externally-initiated start owns its rollback scope —
+    // dependencies started for THIS process (redis for api) are rolled
+    // back when the process fails; the issue's exact example.
+    return this.startWithScope(options, null);
+  }
+
+  /**
+   * Issue #33: shared entry point. `scope === null` = own the rollback
+   * (perform it on failure); a passed scope (namespace groups) defers
+   * rollback to the scope owner.
+   */
+  private async startWithScope(
+    options: StartOptions,
+    scope: StartInvocation | null
+  ): Promise<ProcessState[]> {
+    const own = scope === null;
+    const inv: StartInvocation = scope ?? { startedByInvocation: [] };
+    try {
+      return await this.startInternal(options, inv);
+    } catch (err) {
+      if (!own) throw err;
+      const lines = await this.rollbackInvocation(inv.startedByInvocation);
+      const report = lines.length > 0 ? `\nRollback: ${lines.join(", ")}` : "";
+      if (err instanceof Error) {
+        err.message = `${err.message}${report}`;
+        throw err;
+      }
+      throw new Error(`${String(err)}${report}`);
+    }
+  }
+
+  private async startInternal(
+    options: StartOptions,
+    inv: StartInvocation
+  ): Promise<ProcessState[]> {
 
     const resolvedInstances = this.clusterManager.resolveInstances(options.instances);
     const isCluster = options.execMode === "cluster" || resolvedInstances > 1;
@@ -525,6 +617,11 @@ import type { ReadableStreamController } from "bun";
       );
     }
 
+    // Issue #33: validate the dependency configuration at the same choke
+    // point — garbage fails HERE, with a clear message, never deep inside
+    // the executor.
+    const dependsOn = parseDependsOn(options.dependsOn);
+
     options.script = path.isAbsolute(options.script)
       ? options.script
       : path.join(options.cwd || process.cwd(), options.script);
@@ -536,7 +633,24 @@ import type { ReadableStreamController } from "bun";
 
     const existing = this.findExistingProcesses(options, options.script);
     if (existing.length > 0) {
+      // Issue #33: an all-running app keeps its no-op semantics — a
+      // dependency check here would surprise-start unrelated stopped
+      // dependencies on a resume no-op. Only a start that will ACTUALLY
+      // bring something up resolves dependencies first.
+      const willStart = existing.some(
+        (c) =>
+          c.status !== "online" &&
+          c.status !== "launching" &&
+          c.status !== "waiting-restart"
+      );
+      if (willStart) {
+        const appName =
+          options.name || path.basename(options.script).replace(/\.\w+$/, "");
+        await this.dependencies.ensureForStart(appName, dependsOn, inv);
+      }
+
       for (const container of existing) {
+        const wasRunning = this.isRunningStatus(container.status);
         if (
           container.status !== "online" &&
           container.status !== "launching" &&
@@ -553,7 +667,14 @@ import type { ReadableStreamController } from "bun";
           if (options.cwd) {
             container.config.cwd = options.cwd;
           }
+          // Issue #33: keep the declared dependencies on resume too — a
+          // re-`pboss start` of a stopped app must keep honoring its
+          // dependsOn (and persist it again).
+          container.config.dependsOn = dependsOn;
           await container.start();
+          if (!wasRunning && this.isRunningStatus(container.status)) {
+            inv.startedByInvocation.push(container);
+          }
         }
         states.push(container.getState());
       }
@@ -574,6 +695,9 @@ import type { ReadableStreamController } from "bun";
           ));
           this.processes.set(id, container);
           await container.start();
+          if (this.isRunningStatus(container.status)) {
+            inv.startedByInvocation.push(container);
+          }
           states.push(container.getState());
         }
       }
@@ -582,13 +706,19 @@ import type { ReadableStreamController } from "bun";
       return states;
     }
 
+    // Issue #33: dependencies BEFORE the target exists — a blocked start
+    // leaves no half-created process behind, and deps started here are
+    // tracked for the invocation-scoped rollback.
+    const targetName =
+      options.name || path.basename(options.script).replace(/\.\w+$/, "") || `app-${this.nextId}`;
+    await this.dependencies.ensureForStart(targetName, dependsOn, inv);
+
     if (isCluster) {
       // In cluster mode, each instance is a separate container
       for (let i = 0; i < resolvedInstances; i++) {
           
         const id = this.nextId++;
-        const baseName = options.name || path.basename(options.script).replace(/\.\w+$/, "") || `app-${id}`;
-        const name = resolvedInstances > 1 ? `${baseName}-${i}` : baseName;
+        const name = resolvedInstances > 1 ? `${targetName}-${i}` : targetName;
 
         const config = this.buildConfig(id, name, options, resolvedInstances, i);
         
@@ -603,15 +733,15 @@ import type { ReadableStreamController } from "bun";
 
         this.processes.set(id, container);
         await container.start();
+        if (this.isRunningStatus(container.status)) {
+          inv.startedByInvocation.push(container);
+        }
         states.push(container.getState());
       }
       
     } else {
       const id = this.nextId++;
-      const name =
-          options.name ||
-          path.basename(options.script).replace(/\.\w+$/, "") ||
-          `app-${id}`;
+      const name = targetName;
   
       const config = this.buildConfig(id, name, options, 1, 0);
       const container = this.attach(new ProcessContainer(
@@ -624,11 +754,35 @@ import type { ReadableStreamController } from "bun";
   
       this.processes.set(id, container);
       await container.start();
+      if (this.isRunningStatus(container.status)) {
+        inv.startedByInvocation.push(container);
+      }
       states.push(container.getState());
     }
 
     await this.persist();
     return states;
+  }
+
+  /**
+   * Issue #33: warn when stopping processes that other running processes
+   * still require — `pboss stop postgres` must not SILENTLY strand `api`.
+   * A warning, not a block: stopping for maintenance is legitimate, and
+   * dependents keep running (no runtime propagation — a future policy).
+   */
+  private warnDependents(victims: ProcessContainer[], verb: string): void {
+    try {
+      const affected = this.dependencies.stopAffected(victims);
+      if (affected.length === 0) return;
+      const names = victims.map((v) => v.name).join(", ");
+      console.warn(
+        `[pboss] warning: ${verb} "${names}" — still required by ${affected
+          .map((a) => `"${a.name}"`)
+          .join(", ")}. They keep running, but their required dependency will be unavailable until it is started again.`
+      );
+    } catch (err) {
+      ignore("warn dependents", err);
+    }
   }
 
   async stop(target: string | number): Promise<ProcessState[]> {
@@ -637,11 +791,13 @@ import type { ReadableStreamController } from "bun";
     // one stubborn member never leaves the rest of the group running.
     const group = this.resolveGroupTarget(target);
     if (group) {
-      return this.withNamespaceLock(group.ns, () =>
-        this.stopNamespaceGroup(group.ns, group.containers, false, "stop")
-      );
+      return this.withNamespaceLock(group.ns, () => {
+        this.warnDependents(group.containers, "stopping");
+        return this.stopNamespaceGroup(group.ns, group.containers, false, "stop");
+      });
     }
     const containers = this.resolveTargetOrThrow(target, "stop");
+    this.warnDependents(containers, "stopping");
     const states: ProcessState[] = [];
     for (const c of containers) {
       await c.stop();
@@ -662,11 +818,13 @@ import type { ReadableStreamController } from "bun";
   async kill(target: string | number): Promise<ProcessState[]> {
     const group = this.resolveGroupTarget(target);
     if (group) {
-      return this.withNamespaceLock(group.ns, () =>
-        this.stopNamespaceGroup(group.ns, group.containers, true, "kill")
-      );
+      return this.withNamespaceLock(group.ns, () => {
+        this.warnDependents(group.containers, "killing");
+        return this.stopNamespaceGroup(group.ns, group.containers, true, "kill");
+      });
     }
     const containers = this.resolveTargetOrThrow(target, "kill");
+    this.warnDependents(containers, "killing");
     const states: ProcessState[] = [];
     for (const c of containers) {
       await c.stop(true); // force: no graceful SIGTERM window
@@ -689,7 +847,30 @@ import type { ReadableStreamController } from "bun";
     const containers = this.resolveTargetOrThrow(target, "restart");
     const states: ProcessState[] = [];
     for (const c of containers) {
-      await c.restart();
+      // Issue #33: restart is dependency-aware. Dependencies are resolved
+      // (and started if stopped) BEFORE the restart — a blocked restart
+      // fails up front, while the process is still running, instead of
+      // stopping it and failing to bring it back. Already-running
+      // dependencies are never restarted (the issue's "restart api must
+      // not restart postgres"); restarting a dependency never touches its
+      // dependents (no runtime propagation yet).
+      const inv: StartInvocation = { startedByInvocation: [] };
+      try {
+        await this.dependencies.ensureForStart(
+          c.name,
+          this.normalizedDeps(c.config.dependsOn),
+          inv
+        );
+        await c.restart();
+      } catch (err) {
+        const lines = await this.rollbackInvocation(inv.startedByInvocation);
+        const report = lines.length > 0 ? `\nRollback: ${lines.join(", ")}` : "";
+        if (err instanceof Error) {
+          err.message = `${err.message}${report}`;
+          throw err;
+        }
+        throw new Error(`${String(err)}${report}`);
+      }
       states.push(c.getState());
     }
     await this.persist();
@@ -735,7 +916,40 @@ import type { ReadableStreamController } from "bun";
     return containers.map((c) => c.getState());
   }
 
-  async del(target: string | number): Promise<ProcessState[]> {
+  /**
+   * Issue #33: refuse to delete a dependency other processes still
+   * require — deleting it would silently break THEIR dependency graph
+   * (they would fail to start after the next stop/reboot). `--force`
+   * (CLI) / `{ force: true }` (API) overrides; the dependents keep running
+   * either way. `all` deletes everything, so nothing is left stranded.
+   */
+  private assertNoDependents(target: string | number, force: boolean): void {
+    if (target === "all" || force) return;
+    const group = this.resolveGroupTarget(target);
+    const victims = group
+      ? group.containers
+      : this.resolveTarget(target);
+    if (victims.length === 0) return; // unknown target: the existing not-found error reports it
+    const affected = this.dependencies.deleteAffected(victims);
+    if (affected.length === 0) return;
+    const victimNames = victims.map((v) => v.name).join(", ");
+    const dependentList = affected.map((a) => `"${a.name}"`).join(", ");
+    throw new Error(
+      `Cannot delete "${target}" (${victimNames}) — ${dependentList} still ${
+        affected.length > 1 ? "depend" : "depends"
+      } on it.\n` +
+        `Those processes will fail to start until the dependency is restored or removed from their dependsOn.\n` +
+        `Run with --force (CLI) or pass { force: true } (API) to delete it anyway.`
+    );
+  }
+
+  async del(
+    target: string | number,
+    opts: { force?: boolean } = {}
+  ): Promise<ProcessState[]> {
+    // Issue #33: the dependency-graph integrity guard, before anything stops.
+    this.assertNoDependents(target, opts.force === true);
+
     // Issue #31: namespace delete is serialized + best-effort — every
     // member is removed even if one refuses to stop.
     const group = this.resolveGroupTarget(target);
@@ -832,6 +1046,9 @@ import type { ReadableStreamController } from "bun";
        listenTimeout: options.listenTimeout,
        namespace: options.namespace,
        onNsMemberExit: options.onNsMemberExit,
+       // Issue #33: normalized (already validated upstream) — this is what
+       // the dump persists and what the engine reads back at boot.
+       dependsOn: parseDependsOn(options.dependsOn),
        nodeArgs: options.nodeArgs,
        sourceMapSupport: options.sourceMapSupport,
        treekill: true,
@@ -949,6 +1166,47 @@ import type { ReadableStreamController } from "bun";
    describe(target: string | number): ProcessState[] {
      return this.resolveTarget(target).map((p) => p.getState());
    }
+
+  /**
+   * Issue #33: dependency inspection — the `pboss deps` engine-side
+   * twin. One report per matched process (a namespace target reports each
+   * member): every direct dependency with its provider, state and
+   * satisfaction, the direct dependents, and the circular chain (if any).
+   * Pure inspection — resolution runs, but nothing is started.
+   */
+  async depsReport(target: string | number): Promise<DepsReport[]> {
+    const containers =
+      target === "all"
+        ? Array.from(this.processes.values())
+        : this.resolveTarget(target);
+    if (containers.length === 0) {
+      throw new Error(
+        `Process or namespace "${target}" not found — nothing to inspect. ` +
+          `Run 'pboss list' to see registered names and namespaces.`
+      );
+    }
+    const reports: DepsReport[] = [];
+    for (const c of containers) {
+      reports.push(
+        await this.dependencies.reportFor(
+          c.name,
+          c.config.namespace,
+          this.normalizedDeps(c.config.dependsOn)
+        )
+      );
+    }
+    return reports;
+  }
+
+  /**
+   * Issue #33: direct dependents of `target` (live processes whose
+   * dependsOn references it) — the reverse view, exposed for
+   * dashboards/agents.
+   */
+  dependentsOf(target: string | number): DependentRef[] {
+    const containers = this.resolveTarget(target);
+    return this.dependencies.dependentsOf(containers.map((c) => c.name));
+  }
  
    async getLogs(target: string | number, lines: number = 20) {
      
@@ -1039,6 +1297,12 @@ import type { ReadableStreamController } from "bun";
       if (!(await file.exists())) return [];
       const data = await file.json();
       const states: ProcessState[] = [];
+      // Issue #33 (boot): create every container first, then bring the
+      // ones that were running up in DEPENDENCY order — a dump saved in
+      // any order boots with dependencies up before dependents. Failures
+      // are isolated per root: one broken graph never blocks unrelated
+      // graphs (issue rule #12).
+      const toStart: ProcessContainer[] = [];
 
       for (const item of data) {
         const savedConfig: ProcessDescription = item.config;
@@ -1085,14 +1349,60 @@ import type { ReadableStreamController } from "bun";
         // Entries saved while stopped (the user stopped them, or they exited
         // cleanly) are restored as stopped containers — listed, ready to
         // `pboss restart <name>`, but NOT auto-started. Everything else was
-        // supposed to be running, so start it. Issue #32: resurrect is the
-        // one start path whose events carry source "system" (boot restore,
-        // not an operator action).
+        // supposed to be running, so it joins the dependency-ordered boot.
         if (item.stopped) {
           states.push(container.getState());
         } else {
-          await container.start("system");
-          states.push(container.getState());
+          toStart.push(container);
+        }
+      }
+
+      // Issue #33 boot bring-up: dependency-aware, failure-isolated. A
+      // process whose required dependency could not come up stays stopped
+      // with a clear warning; unrelated processes still start.
+      const bootFailed = new Set<string>();
+      for (const c of toStart) {
+        if (c.status === "online" || c.status === "launching") {
+          // Already brought up as someone's dependency earlier in this loop.
+          states.push(c.getState());
+          continue;
+        }
+        // A required dependency already failed this boot — do not retry it
+        // (one honest failure per graph, no boot loops).
+        const deps = this.normalizedDeps(c.config.dependsOn);
+        const blockedBy = deps.find(
+          (d) =>
+            d.policy === "required" &&
+            bootFailed.has(d.name)
+        );
+        if (blockedBy) {
+          bootFailed.add(c.name);
+          console.warn(
+            `[pboss] boot: ${c.name} not started — dependency "${blockedBy.name}" failed to come up`
+          );
+          states.push(c.getState());
+          continue;
+        }
+        try {
+          // Boot deps may exist beyond the fleet (external services) — the
+          // same executor checks them; started deps keep running (a
+          // best-effort boot never rolls back what it managed to start).
+          // Dep starts carry source "system" like every boot restore.
+          await this.dependencies.ensureForStart(
+            c.name,
+            deps,
+            { startedByInvocation: [] },
+            { source: "system" }
+          );
+          // Issue #32: resurrect is the one start path whose events carry
+          // source "system" (boot restore, not an operator action).
+          await c.start("system");
+          states.push(c.getState());
+        } catch (err) {
+          bootFailed.add(c.name);
+          const msg = err instanceof Error ? err.message : String(err);
+          console.warn(`[pboss] boot: ${c.name} not started — ${msg}`);
+          states.push(c.getState());
         }
       }
 
@@ -1106,13 +1416,21 @@ import type { ReadableStreamController } from "bun";
    /**
    * Issue #31: start an ecosystem with namespace-aware lifecycle
    * boundaries.
+   * Issue #33: the sweep is now DEPENDENCY-ORDERED — the engine plans
+   * units (standalone apps, whole namespaces) from every app's
+   * `dependsOn`, validates cycles and shapes upfront (before anything
+   * starts), orders namespace members topologically, and the sweep runs
+   * in that order. Dependencies on processes OUTSIDE the config resolve
+   * through the normal executor at each app's start (ProcBoss live
+   * processes first, then system services).
    *
    * - Apps WITHOUT a namespace are standalone and independent: each is
    *   started on its own, a failure is recorded and the sweep CONTINUES —
    * a failing app never rolls back or blocks other standalone apps.
    * - Apps WITH the same namespace form ONE lifecycle group: the group is
-   *   started atomically (in first-declaration position), and a member
-   * failure rolls back only the members this invocation started.
+   *   started atomically (in its first-declaration position among the
+   * dependency-ordered units), and a member failure rolls back only the
+   * members this invocation started.
    * - A namespace failure never affects other namespaces or standalone
    *   apps; any failure makes the overall operation report + throw at the
    *   end, after everything startable has been started.
@@ -1120,26 +1438,27 @@ import type { ReadableStreamController } from "bun";
   async startEcosystem(config: EcosystemConfig): Promise<ProcessState[]> {
     const states: ProcessState[] = [];
     const failures: string[] = [];
-    const startedGroups = new Set<string>();
 
-    for (const app of config.apps) {
-      if (app.namespace) {
-        // The whole namespace is ONE unit — started at its
-        // first-declaration position, every member included.
-        if (startedGroups.has(app.namespace)) continue;
-        startedGroups.add(app.namespace);
-        const ns = app.namespace;
-        const groupApps = config.apps.filter((a) => a.namespace === ns);
+    // Issue #33: validate + plan BEFORE starting anything — cycles and
+    // malformed dependsOn fail with zero processes touched.
+    const units = this.dependencies.planEcosystemUnits(config);
+
+    for (const unit of units) {
+      if (unit.namespace) {
+        // The whole namespace is ONE unit — dependency-ordered, every
+        // member included, started atomically under the namespace lock.
+        const ns = unit.namespace;
         try {
           states.push(
             ...(await this.withNamespaceLock(ns, () =>
-              this.startNamespaceGroupAtomic(ns, groupApps)
+              this.startNamespaceGroupAtomic(ns, unit.apps)
             ))
           );
         } catch (err) {
           failures.push(err instanceof Error ? err.message : String(err));
         }
       } else {
+        const app = unit.apps[0]!;
         try {
           states.push(...(await this.start(app)));
         } catch (err) {
@@ -1243,7 +1562,19 @@ import type { ReadableStreamController } from "bun";
            c.unstableRestarts = 0;
            c.config.autorestart = true;
            try {
-             await c.start();
+             // Issue #33: dependencies first, rollback-scoped per app.
+             const inv: StartInvocation = { startedByInvocation: [] };
+             try {
+               await this.dependencies.ensureForStart(
+                 c.name,
+                 this.normalizedDeps(c.config.dependsOn),
+                 inv
+               );
+               await c.start();
+             } catch (err) {
+               await this.rollbackInvocation(inv.startedByInvocation);
+               throw err;
+             }
            } catch (err) {
              failures.push(
                `${c.name}: ${err instanceof Error ? err.message : String(err)}`
@@ -1275,7 +1606,9 @@ import type { ReadableStreamController } from "bun";
        return states;
      }
 
-     // Name / id — the original per-process semantics, unchanged.
+     // Name / id — the original per-process semantics, dependency-aware
+     // (issue #33: resuming a stopped process starts its dependencies first;
+     // an already-running process keeps its no-op semantics).
      const containers = this.resolveTargetOrThrow(target, "start");
      const states: ProcessState[] = [];
      for (const c of containers) {
@@ -1289,7 +1622,24 @@ import type { ReadableStreamController } from "bun";
          // restores supervision.
          c.unstableRestarts = 0;
          c.config.autorestart = true;
-         await c.start();
+         const inv: StartInvocation = { startedByInvocation: [] };
+         try {
+           await this.dependencies.ensureForStart(
+             c.name,
+             this.normalizedDeps(c.config.dependsOn),
+             inv
+           );
+           await c.start();
+           if (this.isRunningStatus(c.status)) inv.startedByInvocation.push(c);
+         } catch (err) {
+           const lines = await this.rollbackInvocation(inv.startedByInvocation);
+           const report = lines.length > 0 ? `\nRollback: ${lines.join(", ")}` : "";
+           if (err instanceof Error) {
+             err.message = `${err.message}${report}`;
+             throw err;
+           }
+           throw new Error(`${String(err)}${report}`);
+         }
        }
        states.push(c.getState());
      }
