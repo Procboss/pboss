@@ -646,14 +646,32 @@ ${plist}`;
         const errLog = Bun.file(DAEMON_ERR_LOG_FILE);
         if (!(await outLog.exists())) await Bun.write(outLog, "");
         if (!(await errLog.exists())) await Bun.write(errLog, "");
-        const proc = Bun.spawn(daemonCmd, {
-          stdout: outLog,
-          stderr: errLog,
-          stdin: "ignore",
-          detached: true,
-          windowsHide: true,
-          env: { ...(process.env as Record<string, string>) },
-        });
+        let proc;
+        try {
+          proc = Bun.spawn(daemonCmd, {
+            stdout: outLog,
+            stderr: errLog,
+            stdin: "ignore",
+            detached: true,
+            windowsHide: true,
+            env: { ...(process.env as Record<string, string>) },
+          });
+        } catch (err) {
+          // Log-file open raced the task launcher's cmd.exe handles
+          // (wscript → cmd /c "... 1>> out 2>> err" holds them for the
+          // daemon's lifetime) — EBUSY on Windows. The daemon runs fine
+          // without these files; spawn silently instead of failing the
+          // install (best-effort contract, see method doc).
+          ignore("spawn Run-key daemon with log files (retrying with silent stdio)", err);
+          proc = Bun.spawn(daemonCmd, {
+            stdout: "ignore",
+            stderr: "ignore",
+            stdin: "ignore",
+            detached: true,
+            windowsHide: true,
+            env: { ...(process.env as Record<string, string>) },
+          });
+        }
         proc.unref();
       }
 

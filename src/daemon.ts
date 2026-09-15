@@ -118,17 +118,16 @@ export default class Daemon {
         ignore(`read/verify PID file ${DAEMON_PID_FILE} (stale)`, err);
       }
 
-      // Clean up stale socket so Bun.serve can bind cleanly
+      // Clean up stale socket so Bun.serve can bind cleanly. Stat-based
+      // (existsSync) and unlink-based only: Bun.file(...).exists() OPENs
+      // the path, and a unix socket file cannot be opened (ENXIO on
+      // POSIX, a sharing violation on Windows AF_UNIX reparse points), so
+      // a Bun.file-based cleanup here can never see the socket — the
+      // unlinkSync above is the mechanism that actually works.
       try {
         if (existsSync(DAEMON_SOCKET)) unlinkSync(DAEMON_SOCKET);
       } catch (err) {
         ignore(`unlink stale socket ${DAEMON_SOCKET}`, err);
-      }
-      try {
-        const sock = Bun.file(DAEMON_SOCKET);
-        if (await sock.exists()) await sock.delete();
-      } catch (err) {
-        ignore(`delete stale socket file ${DAEMON_SOCKET}`, err);
       }
 
       // Write PID file

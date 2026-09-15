@@ -17,7 +17,7 @@ import { treeKill } from "../src/utils";
 import { tmpdir } from "os";
 import { join } from "path";
 import { mkdir, rm, writeFile, readFile } from "fs/promises";
-import { readFileSync } from "fs";
+import { readFileSync, readdirSync } from "fs";
 import type { ProcessDescription } from "../src/types";
 
 const SAVED_USERNAME = process.env.USERNAME;
@@ -755,6 +755,83 @@ describe("Windows Support & Cross-Platform Compatibility", () => {
           expect(block).toContain("windowsHide: true");
           expect(block).not.toContain("detached: true");
         }
+      }
+    });
+  });
+
+  describe("Daemon liveness vs the EBUSY reboot bug (issue #36, 2026-09-15 third follow-up)", () => {
+    // Owner report 2026-09-15: after reboot on Windows, `pboss logs -f`
+    // died with "Error: EBUSY: resource busy or locked, open". Root cause
+    // chain: (1) isDaemonAlive() gated on Bun.file(DAEMON_SOCKET).exists()
+    // — but Bun.file().exists() OPENs the path, and a unix socket file
+    // cannot be opened (ENXIO on POSIX, a sharing violation on Windows
+    // AF_UNIX reparse points), so it returned false for a LIVE socket and
+    // isDaemonAlive() permanently said "dead"; (2) every command then went
+    // to launchDaemon() and spawned a DUPLICATE daemon redirecting
+    // stdout/stderr into daemon.out.log / daemon.err.log; (3) on Windows
+    // the logon task's launcher chain (wscript → cmd /c "... 1>> out
+    // 2>> err") keeps cmd.exe's redirect handles on those exact files for
+    // the daemon's whole lifetime — the duplicate's log-file open hit a
+    // sharing violation and the CLI died with the reported EBUSY.
+    //
+    // Pinned off-Windows by source inspection (this sandbox is Linux).
+
+    test("no code path asks Bun.file() about the socket file — stat or connect only", () => {
+      // Bun.file(...).exists() is blind to socket files (it opens the
+      // path; sockets refuse open). Every socket-path check in src/ must
+      // be stat-based (fs existsSync/unlinkSync) or connect-based
+      // (probeDaemon's fetch). DAEMON_SOCKET as a Bun.file() argument is
+      // the banned shape.
+      const srcFiles = readdirSync(join(import.meta.dir, "..", "src")).filter((f) =>
+        f.endsWith(".ts")
+      );
+      let checked = 0;
+      for (const f of srcFiles) {
+        const src = readFileSync(join(import.meta.dir, "..", "src", f), "utf8");
+        checked++;
+        expect(src).not.toContain("Bun.file(DAEMON_SOCKET)");
+        expect(src).not.toMatch(/Bun\.file\(\s*DAEMON_SOCKET/);
+      }
+      expect(checked).toBeGreaterThan(10);
+    });
+
+    test("isDaemonAlive's socket check is stat-based (existsSync), not open-based", () => {
+      const src = readFileSync(join(import.meta.dir, "..", "src", "api.ts"), "utf8");
+      const alive = src.slice(
+        src.indexOf("async isDaemonAlive()"),
+        src.indexOf("async isDaemonAlive()") + 1400
+      );
+      expect(alive).toContain("existsSync(DAEMON_SOCKET)");
+      expect(alive).not.toContain("Bun.file(DAEMON_SOCKET)");
+    });
+
+    test("launchDaemon re-probes before spawning (logon-task race guard)", () => {
+      // isDaemonAlive() can legitimately miss a mid-boot daemon (the PID
+      // file is written just before the socket answers). launchDaemon
+      // must probeDaemon() once more and bow out instead of spawning a
+      // doomed duplicate that races the real one for the socket.
+      const src = readFileSync(join(import.meta.dir, "..", "src", "api.ts"), "utf8");
+      const launch = src.slice(
+        src.indexOf("async launchDaemon()"),
+        src.indexOf("async launchDaemon()") + 1200
+      );
+      expect(launch).toContain("const raced = await probeDaemon()");
+      expect(launch).toContain("if (raced)");
+    });
+
+    test("every log-file daemon spawn has an EBUSY fallback (silent stdio retry)", () => {
+      // The wscript → cmd /c launcher holds daemon.out.log / daemon.err.log
+      // for the daemon's lifetime on Windows; a racing duplicate's log-file
+      // open gets EBUSY. Both direct daemon spawns (api.launchDaemon and
+      // the Run-key branch of bringUpWindowsDaemon) must fall back to
+      // stdio "ignore" instead of failing the command.
+      for (const rel of ["src/api.ts", "src/startup-manager.ts"]) {
+        const src = readFileSync(join(import.meta.dir, "..", rel), "utf8");
+        // the log-redirecting spawn is wrapped in try { ... }
+        expect(src).toMatch(/try\s*\{\s*\n\s*proc = Bun\.spawn\((spawnArgs|daemonCmd),\s*\{\s*\n\s*stdout: outLog,/);
+        // and the catch re-spawns with silent stdio
+        expect(src).toContain('retrying with silent stdio');
+        expect(src).toMatch(/proc = Bun\.spawn\((spawnArgs|daemonCmd),\s*\{\s*\n\s*stdout: "ignore",/);
       }
     });
   });

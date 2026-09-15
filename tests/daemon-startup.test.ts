@@ -248,3 +248,96 @@ describe("kill (ExecStop idempotency)", () => {
     }
   );
 });
+
+describe("CLI against a live daemon (EBUSY reboot bug, issue #36 follow-up)", () => {
+  // Owner report 2026-09-15: after reboot on Windows, `pboss logs -f`
+  // died with "Error: EBUSY: resource busy or locked, open". Root cause:
+  // isDaemonAlive() gated on Bun.file(socket).exists() — which OPENs the
+  // path and therefore cannot see a socket file (ENXIO on POSIX, sharing
+  // violation on Windows) — so it permanently said "dead", every command
+  // spawned a DUPLICATE daemon, and on Windows the duplicate's daemon
+  // log-file open collided with the logon task launcher's cmd.exe
+  // handles (EBUSY). The fixed contract: against a live daemon, CLI
+  // commands must see it, use it, and never spawn a duplicate.
+  test.skipIf(process.platform === "win32")(
+    "a live daemon is visible to isDaemonAlive and commands spawn no duplicate",
+    async () => {
+      const home = mkdtempSync(join(tmpdir(), "pboss-live-"));
+      homes.push(home);
+
+      // 1. Daemon comes up (the "logon task" stand-in).
+      const daemon = spawnCli(["__daemon"], home);
+      expect(await waitResponsive(home)).toBeTrue();
+      const pidBefore = parseInt(readFileSync(join(home, "daemon.pid"), "utf-8").trim());
+
+      // 2. A CLI command that goes through the send()/ensure-daemon path
+      //    (`ping` is the shortest) must succeed.
+      const proc = spawnCli(["ping"], home);
+      const code = await proc.exited;
+      const { out, err } = await drain(proc);
+      expect(code).toBe(0);
+      expect(out).toContain("Daemon is alive");
+
+      // 3. THE regression guard: no doomed duplicate was spawned. A
+      //    duplicate CLI-launched daemon redirects its stderr into
+      //    daemon.err.log and dies with DaemonConflictError ("already
+      //    listening") — so a clean daemon.err.log is the no-duplicate
+      //    proof. (The daemon itself was spawned with piped stdio, not
+      //    the log files, so only a duplicate writes this file.)
+      expect(existsSync(join(home, "daemon.err.log"))).toBeFalse();
+
+      // 4. The daemon serving the command is still the SAME process.
+      const pidAfter = parseInt(readFileSync(join(home, "daemon.pid"), "utf-8").trim());
+      expect(pidAfter).toBe(pidBefore);
+      expect(await probeDaemon(join(home, "daemon.sock"))).not.toBeNull();
+      expect(err).toBe("");
+
+      await hardKillDaemon(home);
+      await daemon.exited;
+      await drain(daemon);
+    }
+  );
+
+  test.skipIf(process.platform === "win32")(
+    "startDaemon() reports the live daemon instead of launching a duplicate",
+    async () => {
+      const home = mkdtempSync(join(tmpdir(), "pboss-startd-"));
+      homes.push(home);
+
+      const daemon = spawnCli(["__daemon"], home);
+      expect(await waitResponsive(home)).toBeTrue();
+
+      // Run the API path in a fresh process (constants capture PBOSS_HOME
+      // at import time): startDaemon() must detect the live daemon and
+      // return without spawning — asserted by the same clean-log rule.
+      const script = join(import.meta.dir, "helpers", "tmp-startd.ts");
+      writeFileSync(
+        script,
+        `const { PBoss } = await import("../../src/api");\n` +
+          `const c = new PBoss();\n` +
+          `if (!(await c.isDaemonAlive())) { console.error("isDaemonAlive=false"); process.exit(1); }\n` +
+          `await c.startDaemon();\n` +
+          `console.log("startd-ok");\n`
+      );
+      const proc = Bun.spawn(["bun", "run", script], {
+        env: { ...process.env, PBOSS_HOME: home },
+        stdout: "pipe",
+        stderr: "pipe",
+        stdin: "ignore",
+      });
+      const code = await proc.exited;
+      const { out, err } = await drain(proc);
+      expect(code).toBe(0);
+      expect(out).toContain("startd-ok");
+      expect(err).toBe("");
+      rmSync(script, { force: true });
+
+      // isDaemonAlive saw the live socket AND no duplicate was spawned.
+      expect(existsSync(join(home, "daemon.err.log"))).toBeFalse();
+
+      await hardKillDaemon(home);
+      await daemon.exited;
+      await drain(daemon);
+    }
+  );
+});

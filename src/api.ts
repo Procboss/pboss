@@ -1256,8 +1256,17 @@ export class PBoss extends EventEmitter<PBossEvents> {
       return false;
     }
 
-    // Verify the socket is responsive
-    if (!(await Bun.file(DAEMON_SOCKET).exists())) return false;
+    // Verify the socket file exists — STAT-based (node:fs), never
+    // Bun.file().exists(): that method OPENs the file, and a unix socket
+    // file cannot be opened (ENXIO on POSIX; a sharing violation on
+    // Windows AF_UNIX reparse points), so it returned false for a LIVE
+    // socket. isDaemonAlive() then permanently said "dead" and every
+    // command spawned a doomed duplicate daemon — on Windows its log-file
+    // open collided with the running daemon's task-launcher handles:
+    // "EBUSY: resource busy or locked, open" (owner report 2026-09-15,
+    // `pboss logs -f` right after reboot). fs.existsSync stats the path
+    // and sees socket files fine.
+    if (!existsSync(DAEMON_SOCKET)) return false;
 
     try {
       const response = await fetch("http://localhost/", {
@@ -1279,6 +1288,21 @@ export class PBoss extends EventEmitter<PBossEvents> {
    */
   async launchDaemon(): Promise<void> {
     await ensureDirs();
+
+    // Someone may have come up while we decided the daemon was dead: the
+    // logon task's daemon writes its PID file only a moment before it
+    // starts answering, so isDaemonAlive() can legitimately miss it. A
+    // duplicate cannot win the socket anyway (it exits 81 via
+    // DaemonConflictError) and on Windows its log-file open collides with
+    // the live daemon's task-launcher handles — the reported EBUSY. Probe
+    // once more and bow out if a daemon is already answering.
+    const raced = await probeDaemon();
+    if (raced) {
+      this._daemonPid = raced.pid;
+      this._connected = true;
+      return;
+    }
+
     // Resolved from the install mode (see install-mode.ts):
     //   compiled → [<pboss binary>, "__daemon"]   (no system Bun needed)
     //   script   → [<bun>, "run", <daemon.ts>]    (system Bun required)
@@ -1291,26 +1315,48 @@ export class PBoss extends EventEmitter<PBossEvents> {
     if (!(await outLog.exists())) await Bun.write(outLog, "");
     if (!(await errLog.exists())) await Bun.write(errLog, "");
 
-    const proc = Bun.spawn(spawnArgs, {
-      stdout: outLog,
-      stderr: errLog,
-      stdin: "ignore",
-      // detached: the daemon must OUTLIVE this CLI process. `pboss start`
-      // (and every ensure-daemon path) brings it up and returns; without
-      // detachment the child stays tied to this process's lifetime — on
-      // Windows it is killed when the CLI exits (issue #36: with no
-      // persistence installed, the daemon vanished the moment `pboss
-      // start` returned); on POSIX the missing setsid() leaves it reachable
-      // by terminal teardown. unref() below only stops Bun's event loop
-      // from WAITING on the child — it does not detach the OS process.
-      detached: true,
-      // windowsHide: a detached console child on Windows would otherwise get
-      // its own VISIBLE cmd.exe window (owner report 2026-09-15: after
-      // install, a console running the daemon appeared). With it the daemon
-      // is invisible — and still outlives this CLI (detachment, above).
-      windowsHide: true,
-      env: { ...(process.env as Record<string, string>) },
-    });
+    let proc;
+    try {
+      proc = Bun.spawn(spawnArgs, {
+        stdout: outLog,
+        stderr: errLog,
+        stdin: "ignore",
+        // detached: the daemon must OUTLIVE this CLI process. `pboss start`
+        // (and every ensure-daemon path) brings it up and returns; without
+        // detachment the child stays tied to this process's lifetime — on
+        // Windows it is killed when the CLI exits (issue #36: with no
+        // persistence installed, the daemon vanished the moment `pboss
+        // start` returned); on POSIX the missing setsid() leaves it reachable
+        // by terminal teardown. unref() below only stops Bun's event loop
+        // from WAITING on the child — it does not detach the OS process.
+        detached: true,
+        // windowsHide: a detached console child on Windows would otherwise get
+        // its own VISIBLE cmd.exe window (owner report 2026-09-15: after
+        // install, a console running the daemon appeared). With it the daemon
+        // is invisible — and still outlives this CLI (detachment, above).
+        windowsHide: true,
+        env: { ...(process.env as Record<string, string>) },
+      });
+    } catch (err) {
+      // The stdout/stderr log-file open can fail on Windows while another
+      // daemon's task launcher holds the same files: wscript →
+      // cmd /c "... 1>> daemon.out.log 2>> daemon.err.log" keeps cmd.exe's
+      // redirect handles open for the daemon's whole lifetime, and the
+      // duplicate spawn this launcher races gets EBUSY on them (owner
+      // report 2026-09-15). The daemon does not need those files to run —
+      // its real logs are the per-process files in logs/; the probe above
+      // already made a true duplicate unlikely. Fall back to silent stdio
+      // rather than failing the command.
+      ignore("spawn daemon with log files (retrying with silent stdio)", err);
+      proc = Bun.spawn(spawnArgs, {
+        stdout: "ignore",
+        stderr: "ignore",
+        stdin: "ignore",
+        detached: true,
+        windowsHide: true,
+        env: { ...(process.env as Record<string, string>) },
+      });
+    }
 
     // Release Bun's handle/exit-wait; OS-level detachment is
     // `detached: true` above.
