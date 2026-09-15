@@ -213,6 +213,11 @@ export function treeKill(pid: number, signal: string = "SIGTERM"): Promise<void>
           const proc = Bun.spawn(["taskkill", ...forceFlag, "/T", "/PID", String(pid)], {
             stdout: "ignore",
             stderr: "ignore",
+            // windowsHide (issue #36 follow-up): treeKill runs inside the
+            // console-less daemon — taskkill.exe is a console tool, and a
+            // console child of a console-less parent gets a VISIBLE console
+            // window. Without this, every process stop/restart popped one.
+            windowsHide: true,
           });
           await proc.exited;
         } catch (err) {

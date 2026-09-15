@@ -1879,6 +1879,9 @@ export async function execOneOff(
     stdout: "pipe",
     stderr: "pipe",
     stdin: "ignore",
+    // windowsHide (issue #36 follow-up): deploy-job commands run from the
+    // console-less daemon; on Windows each would pop a VISIBLE console.
+    windowsHide: true,
   });
 
   let timedOut = false;
@@ -1986,6 +1989,9 @@ export async function gitPull(
     const proc = Bun.spawn(["git", "-C", cwd, ...args], {
       stdout: "pipe",
       stderr: "pipe",
+      // windowsHide (issue #36 follow-up): cloud deploys run from the
+      // console-less daemon — each git call would pop a VISIBLE console.
+      windowsHide: true,
     });
     const stdout = await new Response(proc.stdout).text();
     const stderr = await new Response(proc.stderr).text();
@@ -2002,6 +2008,8 @@ export async function gitPull(
   const check = await Bun.spawn(["git", "-C", cwd, "rev-parse", "--is-inside-work-tree"], {
     stdout: "pipe",
     stderr: "pipe",
+    // windowsHide: same console-less-daemon rule as the git() calls above.
+    windowsHide: true,
   });
   if ((await check.exited) !== 0) {
     throw new Error(

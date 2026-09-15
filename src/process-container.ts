@@ -252,6 +252,14 @@ export class ProcessContainer {
       stdout: "pipe",
       stderr: "pipe",
       stdin: "ignore",
+      // windowsHide (issue #36 follow-up, 2026-09-15): the daemon that runs
+      // this container is detached — it has NO console. A console child of a
+      // console-less parent gets a brand-new VISIBLE console window on
+      // Windows (owner report: `pboss start` opened a terminal per app).
+      // The app's output is piped to the log files anyway; the window was
+      // pure noise. Deliberately NOT detached: the daemon must keep
+      // supervising (and treeKill-ing) this process.
+      windowsHide: true,
     });
 
     this.pid = this.process.pid;

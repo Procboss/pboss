@@ -671,4 +671,91 @@ describe("Windows Support & Cross-Platform Compatibility", () => {
       }
     });
   });
+
+  describe("Daemon children spawn hidden — the console-less-parent rule (issue #36, 2026-09-15 second follow-up)", () => {
+    // Owner report: "pboss start still opens a separate cli terminal even
+    // though it must be in silent background on windows." 1.4.3 detached the
+    // daemon and 1.4.4 hid it — so on Windows the daemon now has NO console
+    // at all. But a console child of a console-less parent gets a brand-new
+    // VISIBLE console window: every app `pboss start` launched, every cluster
+    // worker, every cron tick, every taskkill, every git/deploy/module child
+    // the daemon spawned popped a terminal. The fix is one rule:
+    //
+    //   EVERY spawn made from inside the daemon carries `windowsHide: true`.
+    //
+    // Pinned off-Windows by source inspection. windowsHide is not even PARSED
+    // on POSIX (Bun reads it Windows-only), so the pins change nothing here —
+    // they freeze the Windows contract only. CLI-side spawns (upgrade, deploy,
+    // cloud login, startup install) intentionally keep their visible console:
+    // their parent is the user's own terminal.
+
+    const DAEMON_ONLY_SPAWN_FILES = [
+      "src/process-container.ts", // user apps (fork mode)
+      "src/cluster-manager.ts", // cluster workers
+      "src/cron-jobs.ts", // cron commands
+      "src/module-manager.ts", // module installs (git/npm)
+      "src/cloud.ts", // deploy-job exec + cloud git primitives
+    ] as const;
+
+    test("every Bun.spawn in daemon-only modules hides its window", () => {
+      for (const rel of DAEMON_ONLY_SPAWN_FILES) {
+        const src = readFileSync(join(import.meta.dir, "..", rel), "utf8");
+        const blocks = src
+          .split("Bun.spawn(")
+          .slice(1)
+          .map((rest) => rest.slice(0, rest.indexOf("});")));
+        expect(blocks.length).toBeGreaterThan(0);
+        for (const block of blocks) {
+          expect(block).toContain("windowsHide: true");
+        }
+      }
+    });
+
+    test("treeKill's taskkill runs hidden (daemon-side console tool)", () => {
+      const src = readFileSync(join(import.meta.dir, "..", "src/utils.ts"), "utf8");
+      const blocks = src
+        .split("Bun.spawn(")
+        .slice(1)
+        .map((rest) => rest.slice(0, rest.indexOf("});")));
+      const taskkill = blocks.filter((b) => b.includes("taskkill"));
+      expect(taskkill.length).toBeGreaterThan(0);
+      for (const block of taskkill) {
+        expect(block).toContain("windowsHide: true");
+      }
+    });
+
+    test("deploy-job children (node:child_process) run hidden", () => {
+      const src = readFileSync(join(import.meta.dir, "..", "src/deploy-job.ts"), "utf8");
+      const blocks = src
+        .split("spawn(")
+        .slice(1)
+        .map((rest) => rest.slice(0, rest.indexOf("});")));
+      // every real spawn call passes a cwd — the import destructure and
+      // execFile GC line do not.
+      const spawns = blocks.filter((b) => b.includes("cwd"));
+      expect(spawns.length).toBeGreaterThanOrEqual(2);
+      for (const block of spawns) {
+        expect(block).toContain("windowsHide: true");
+      }
+    });
+
+    test("supervised app spawns are hidden but NEVER detached", () => {
+      // windowsHide and detached answer DIFFERENT questions: hidden = no
+      // console window; detached = daemon stops owning the child. Apps must
+      // stay owned (restart supervision, treeKill reachability). Cargo-culting
+      // `detached: true` onto app spawns would recreate issue #36's death
+      // semantics in reverse — unwatched, unkilled processes.
+      for (const rel of ["src/process-container.ts", "src/cluster-manager.ts"]) {
+        const src = readFileSync(join(import.meta.dir, "..", rel), "utf8");
+        const blocks = src
+          .split("Bun.spawn(")
+          .slice(1)
+          .map((rest) => rest.slice(0, rest.indexOf("});")));
+        for (const block of blocks) {
+          expect(block).toContain("windowsHide: true");
+          expect(block).not.toContain("detached: true");
+        }
+      }
+    });
+  });
 });

@@ -397,6 +397,10 @@ export class CronJobManager {
           stdout: fd,
           stderr: fd,
           stdin: "ignore",
+          // windowsHide (issue #36 follow-up): cron commands run from the
+          // console-less daemon; on Windows each run would otherwise pop a
+          // VISIBLE console window at every schedule tick.
+          windowsHide: true,
           env: { ...process.env, PBOSS_CRON_JOB: job.name },
         });
         exitCode = await proc.exited;

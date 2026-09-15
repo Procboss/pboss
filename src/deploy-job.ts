@@ -274,6 +274,9 @@ function exec(
         GIT_TERMINAL_PROMPT: "0", // never hang asking for credentials
         ...gitAuth,
       },
+      // windowsHide (issue #36 follow-up): deploy jobs run inside the
+      // console-less daemon — build/git commands would pop VISIBLE consoles.
+      windowsHide: true,
     });
     job.children.add(child);
 
@@ -380,7 +383,7 @@ export async function gitInfoForProcess(
   if (!cwd) return { remote: null, branch: null, commit: null, exists: false };
   const git = async (...args: string[]) =>
     new Promise<string>((res, rej) => {
-      const c = spawn("git", args, { cwd });
+      const c = spawn("git", args, { cwd, windowsHide: true });
       let out = "";
       c.stdout?.on("data", (b) => (out += b.toString()));
       c.on("close", (code) => (code === 0 ? res(out.trim()) : rej(new Error(`git ${args.join(" ")} exited ${code}`))));

@@ -124,6 +124,11 @@ export class ClusterManager {
        stdout: logStreams.stdout,
        stderr: logStreams.stderr,
        stdin: "ignore",
+       // windowsHide (issue #36 follow-up): cluster workers spawn from the
+       // console-less daemon — without this flag each worker gets its own
+       // VISIBLE console window on Windows. Same contract as fork mode:
+       // hidden, piped output, still supervised (NOT detached).
+       windowsHide: true,
      });
  
      if (!this.workers.has(config.id)) {

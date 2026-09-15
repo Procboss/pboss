@@ -42,6 +42,9 @@ export class ModuleManager {
       // Clone from git
       const proc = Bun.spawn(["git", "clone", moduleNameOrPath, targetDir], {
         stdout: "pipe", stderr: "pipe",
+        // windowsHide (issue #36 follow-up): module installs run inside the
+        // console-less daemon — git/npm would pop VISIBLE consoles.
+        windowsHide: true,
       });
       await proc.exited;
     } else if (path.isAbsolute(moduleNameOrPath) || moduleNameOrPath.startsWith(".")) {
@@ -59,6 +62,8 @@ export class ModuleManager {
       const proc = Bun.spawn([installer, installVerb, moduleNameOrPath], {
         cwd: MODULE_DIR,
         stdout: "pipe", stderr: "pipe",
+        // windowsHide: console-less-daemon rule (see git clone above).
+        windowsHide: true,
       });
       await proc.exited;
     }
@@ -69,6 +74,8 @@ export class ModuleManager {
       const proc = Bun.spawn([installer, "install"], {
         cwd: targetDir,
         stdout: "pipe", stderr: "pipe",
+        // windowsHide: console-less-daemon rule (see git clone above).
+        windowsHide: true,
       });
       await proc.exited;
     }
