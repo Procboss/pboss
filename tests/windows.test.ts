@@ -160,16 +160,36 @@ describe("Windows Support & Cross-Platform Compatibility", () => {
     // GUI binary — the one launch vehicle on Windows that never shows a
     // console. Pinned off-Windows as pure functions + source inspection.
 
-    test("VBS: hidden fire-and-forget Run, compiled install (owner's shape)", () => {
-      const vbs = buildWindowsDaemonLauncherVbs(
-        ["C:\\Users\\razzb\\AppData\\Local\\pboss\\pboss.exe", "__daemon"],
-        "C:\\Users\\razzb\\.pboss\\daemon.out.log",
-        "C:\\Users\\razzb\\.pboss\\daemon.err.log"
+    const DAEMON_CMD = ["C:\\Users\\razzb\\AppData\\Local\\pboss\\pboss.exe", "__daemon"];
+    const RESURRECT_CMD = [
+      "C:\\Users\\razzb\\AppData\\Local\\pboss\\pboss.exe",
+      "resurrect",
+      "--wait",
+      "15",
+    ];
+    const OUT_LOG = "C:\\Users\\razzb\\.pboss\\daemon.out.log";
+    const ERR_LOG = "C:\\Users\\razzb\\.pboss\\daemon.err.log";
+    const RES_OUT_LOG = "C:\\Users\\razzb\\.pboss\\resurrect.out.log";
+    const RES_ERR_LOG = "C:\\Users\\razzb\\.pboss\\resurrect.err.log";
+
+    const buildVbs = () =>
+      buildWindowsDaemonLauncherVbs(
+        DAEMON_CMD,
+        RESURRECT_CMD,
+        OUT_LOG,
+        ERR_LOG,
+        RES_OUT_LOG,
+        RES_ERR_LOG
       );
+
+    test("VBS: hidden fire-and-forget Run, compiled install (owner's shape)", () => {
+      const vbs = buildVbs();
       // wscript never shows error dialogs at logon.
       expect(vbs).toContain("Option Explicit");
-      // The whole point: hidden window (0), do not wait (False).
-      expect(vbs).toContain('sh.Run q & comspec & q & " /c " & q & line & q, 0, False');
+      // The whole point: hidden window (0), do not wait (False) — for BOTH
+      // commands the launcher runs.
+      const runs = vbs.match(/sh\.Run q & comspec & q & " \/c " & q & line & q, 0, False/g) ?? [];
+      expect(runs.length).toBe(2);
       // The executed line: daemon + __daemon, output APPENDED to the same
       // daemon log files the direct CLI spawn path writes (" are doubled
       // for the VBS string literal).
@@ -184,34 +204,90 @@ describe("Windows Support & Cross-Platform Compatibility", () => {
     test("VBS: script install with spaces — tokens quoted, VBS-escaped", () => {
       const vbs = buildWindowsDaemonLauncherVbs(
         ["C:\\Program Files\\Bun\\bun.exe", "run", "C:\\Users\\zak b\\daemon.ts"],
+        ["C:\\Program Files\\Bun\\bun.exe", "run", "C:\\Users\\zak b\\index.ts", "resurrect", "--wait", "15"],
         "C:\\Users\\zak b\\.pboss\\daemon.out.log",
-        "C:\\Users\\zak b\\.pboss\\daemon.err.log"
+        "C:\\Users\\zak b\\.pboss\\daemon.err.log",
+        "C:\\Users\\zak b\\.pboss\\resurrect.out.log",
+        "C:\\Users\\zak b\\.pboss\\resurrect.err.log"
       );
       expect(vbs).toContain(
         'line = """C:\\Program Files\\Bun\\bun.exe"" run ""C:\\Users\\zak b\\daemon.ts"" 1>> ""C:\\Users\\zak b\\.pboss\\daemon.out.log"" 2>> ""C:\\Users\\zak b\\.pboss\\daemon.err.log"""'
       );
+      expect(vbs).toContain(
+        'line = """C:\\Program Files\\Bun\\bun.exe"" run ""C:\\Users\\zak b\\index.ts"" resurrect --wait 15 1>> ""C:\\Users\\zak b\\.pboss\\resurrect.out.log"" 2>> ""C:\\Users\\zak b\\.pboss\\resurrect.err.log"""'
+      );
+    });
+
+    test("the boot resurrect — the Windows twin of the systemd unit's ExecStartPost", () => {
+      // Owner report 2026-09-15 (issue #36, fifth follow-up): after reboot
+      // on Windows the daemon auto-started but saved processes never came
+      // back — the launcher only started the daemon, nothing ever ran the
+      // resurrect that Linux's ExecStartPost does. The launcher now runs
+      // BOTH, and the resurrect leg must respect the invariants the EBUSY
+      // chain taught us:
+      const vbs = buildVbs();
+      const lines = [...vbs.matchAll(/^line = "(.*)"$/gm)].map((m) => m[1]!.replace(/""/g, '"'));
+      expect(lines.length).toBe(2);
+      const [daemonLine, resurrectLine] = lines;
+      // (1) It IS a resurrect, and it WAITS for the daemon the launcher
+      // just started — `--wait` mode never spawns a competing daemon, so
+      // it can never EBUSY-race the daemon's log handles either.
+      expect(resurrectLine).toContain(" resurrect ");
+      expect(resurrectLine).toContain("--wait 15");
+      // (2) Its own log files — the daemon's cmd.exe redirect handles stay
+      // on daemon.out/err.log for the daemon's lifetime; a second handle
+      // there is the EBUSY sharing-violation class. The resurrect leg
+      // must not touch them.
+      expect(resurrectLine).toContain(`1>> "${RES_OUT_LOG}"`);
+      expect(resurrectLine).toContain(`2>> "${RES_ERR_LOG}"`);
+      expect(resurrectLine).not.toContain(OUT_LOG);
+      expect(resurrectLine).not.toContain(ERR_LOG);
+      // (3) The daemon leg is unchanged: daemon.out/err.log, not the
+      // resurrect logs.
+      expect(daemonLine).toContain(`1>> "${OUT_LOG}"`);
+      expect(daemonLine).not.toContain(RES_OUT_LOG);
+      // (4) The daemon starts FIRST — the resurrect waits for IT
+      //     (`--wait 15` appears only in the resurrect command line).
+      expect(vbs.indexOf("__daemon 1>>")).toBeLessThan(vbs.indexOf("--wait 15"));
     });
 
     test("VBS survives cmd /c quote stripping: outer pair strips, inner stays", () => {
       // cmd /? rule: with more than two quotes after /c, the FIRST and LAST
-      // quotes are stripped. The VBS wraps the line in exactly one outer
-      // pair, so the stripped result is the intact daemon line.
+      // quotes are stripped. The VBS wraps EVERY line in exactly one outer
+      // pair, so the stripped result is the intact command line — for the
+      // daemon AND the resurrect leg. Spaced paths force inner quotes on
+      // every token, the worst case for the stripping rule.
       const vbs = buildWindowsDaemonLauncherVbs(
         ["C:\\Program Files\\pboss\\pboss.exe", "__daemon"],
+        ["C:\\Program Files\\pboss\\pboss.exe", "resurrect", "--wait", "15"],
         "C:\\pb home\\daemon.out.log",
-        "C:\\pb home\\daemon.err.log"
+        "C:\\pb home\\daemon.err.log",
+        "C:\\pb home\\resurrect.out.log",
+        "C:\\pb home\\resurrect.err.log"
       );
-      const m = vbs.match(/line = "(.*)"/)!;
-      const line = m[1]!.replace(/""/g, '"'); // de-VBS-escape
-      const afterCmd = ("\"" + line + "\"").slice(1, -1); // cmd strips first+last
-      expect(afterCmd).toBe(line); // the executed line is EXACTLY the built line
-      expect(afterCmd.startsWith('"C:\\Program Files\\pboss\\pboss.exe"')).toBe(true);
-      expect(afterCmd).toContain('1>> "C:\\pb home\\daemon.out.log"');
-      expect(afterCmd).toContain('2>> "C:\\pb home\\daemon.err.log"');
+      const lines = [...vbs.matchAll(/^line = "(.*)"$/gm)].map((m) => m[1]!.replace(/""/g, '"'));
+      expect(lines.length).toBe(2);
+      for (const line of lines) {
+        const afterCmd = ("\"" + line + "\"").slice(1, -1); // cmd strips first+last
+        expect(afterCmd).toBe(line); // the executed line is EXACTLY the built line
+      }
+      const daemonLine = lines[0]!;
+      expect(daemonLine.startsWith('"C:\\Program Files\\pboss\\pboss.exe"')).toBe(true);
+      expect(daemonLine).toContain('1>> "C:\\pb home\\daemon.out.log"');
+      expect(daemonLine).toContain('2>> "C:\\pb home\\daemon.err.log"');
+      const resurrectLine = lines[1]!;
+      expect(resurrectLine.startsWith('"C:\\Program Files\\pboss\\pboss.exe"')).toBe(true);
+      expect(resurrectLine).toContain('1>> "C:\\pb home\\resurrect.out.log"');
+      expect(resurrectLine).toContain('2>> "C:\\pb home\\resurrect.err.log"');
     });
 
-    test("VBS: empty daemon command is rejected (same guard as task/Run key)", () => {
-      expect(() => buildWindowsDaemonLauncherVbs([], "a", "b")).toThrow("executable");
+    test("VBS: empty daemon or resurrect command is rejected (same guard as task/Run key)", () => {
+      expect(() =>
+        buildWindowsDaemonLauncherVbs([], RESURRECT_CMD, OUT_LOG, ERR_LOG, RES_OUT_LOG, RES_ERR_LOG)
+      ).toThrow("executable");
+      expect(() =>
+        buildWindowsDaemonLauncherVbs(DAEMON_CMD, [], OUT_LOG, ERR_LOG, RES_OUT_LOG, RES_ERR_LOG)
+      ).toThrow("executable");
     });
 
     test("launcher path lives in the pboss home", () => {
@@ -258,6 +334,45 @@ describe("Windows Support & Cross-Platform Compatibility", () => {
       // Degrades honestly: a failed VBS write falls back to the raw command
       // (visible, but persistence still works).
       expect(src).toContain("launcherCmd = daemonCmd");
+    });
+
+    test("the boot resurrect is wired end to end (install-time + logon)", () => {
+      // Owner report 2026-09-15 (issue #36, fifth follow-up): saved
+      // processes never came back after a Windows reboot — the daemon
+      // auto-started but nothing resurrected. Pinned by source inspection:
+      // the launcher must restore, at LOGON and at INSTALL time.
+      const src = readFileSync(join(import.meta.dir, "..", "src", "startup-manager.ts"), "utf8");
+
+      // (1) The VBS is generated with a WAITING resurrect — `--wait` never
+      // spawns a competing daemon (the 1.4.6 EBUSY fix stays closed), 15s
+      // is the logon budget for the daemon's socket.
+      expect(src).toContain('cliSpawnCommand("resurrect", "--wait", "15")');
+      // (2) With its own log files (not the daemon's — handle collision).
+      expect(src).toContain("RESURRECT_OUT_LOG_FILE");
+      expect(src).toContain("RESURRECT_ERR_LOG_FILE");
+      // (3) install() brings the boot up through the SAME launcher at
+      //     install time (task branch: schtasks /run fires the task whose
+      //     action IS the launcher; Run-key branch: spawns launcherCmd) —
+      //     so "saved processes are back" in the install message is true.
+      const bringUpCalls = src.match(/this\.bringUpWindowsDaemon\(launcherCmd,/g) ?? [];
+      expect(bringUpCalls.length).toBe(2);
+      // (4) bringUpWindowsDaemon itself spawns the launcher hidden,
+      //     detached, silently (the VBS's cmd children own the log files —
+      //     this process opens none).
+      const bringUpSrc = src.slice(
+        src.indexOf("private async bringUpWindowsDaemon("),
+        src.indexOf("private async writeWindowsDaemonLauncher(")
+      );
+      expect(bringUpSrc).toContain('launcherCmd[0]?.toLowerCase() === "wscript.exe"');
+      expect(bringUpSrc).toMatch(/Bun\.spawn\(launcherCmd, \{\s*\n\s*stdout: "ignore",/);
+      expect(bringUpSrc).toContain("detached: true");
+      expect(bringUpSrc).toContain("windowsHide: true");
+      // (5) The degraded path (VBS write failed) keeps the raw-command
+      //     spawn with log files + EBUSY fallback, and the message tells
+      //     the user to resurrect manually instead of claiming success.
+      expect(bringUpSrc).toContain("launcher unavailable, run");
+      expect(bringUpSrc).toContain("pboss resurrect");
+      expect(bringUpSrc).toContain('retrying with silent stdio');
     });
 
     test("uninstall() removes the launcher with the task and Run key", () => {
@@ -823,15 +938,17 @@ describe("Windows Support & Cross-Platform Compatibility", () => {
       // The wscript → cmd /c launcher holds daemon.out.log / daemon.err.log
       // for the daemon's lifetime on Windows; a racing duplicate's log-file
       // open gets EBUSY. Both direct daemon spawns (api.launchDaemon and
-      // the Run-key branch of bringUpWindowsDaemon) must fall back to
-      // stdio "ignore" instead of failing the command.
+      // the degraded raw-command branch of bringUpWindowsDaemon — the
+      // variable is launcherCmd there, but it IS the daemon command in that
+      // branch) must fall back to stdio "ignore" instead of failing the
+      // command.
       for (const rel of ["src/api.ts", "src/startup-manager.ts"]) {
         const src = readFileSync(join(import.meta.dir, "..", rel), "utf8");
         // the log-redirecting spawn is wrapped in try { ... }
-        expect(src).toMatch(/try\s*\{\s*\n\s*proc = Bun\.spawn\((spawnArgs|daemonCmd),\s*\{\s*\n\s*stdout: outLog,/);
+        expect(src).toMatch(/try\s*\{\s*\n\s*proc = Bun\.spawn\((spawnArgs|launcherCmd),\s*\{\s*\n\s*stdout: outLog,/);
         // and the catch re-spawns with silent stdio
         expect(src).toContain('retrying with silent stdio');
-        expect(src).toMatch(/proc = Bun\.spawn\((spawnArgs|daemonCmd),\s*\{\s*\n\s*stdout: "ignore",/);
+        expect(src).toMatch(/proc = Bun\.spawn\((spawnArgs|launcherCmd),\s*\{\s*\n\s*stdout: "ignore",/);
       }
     });
   });

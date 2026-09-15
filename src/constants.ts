@@ -28,6 +28,17 @@ export const DAEMON_SOCKET = join(PBOSS_HOME, "daemon.sock");
 export const DAEMON_PID_FILE = join(PBOSS_HOME, "daemon.pid");
 export const DAEMON_OUT_LOG_FILE = join(PBOSS_HOME, "daemon.out.log");
 export const DAEMON_ERR_LOG_FILE = join(PBOSS_HOME, "daemon.err.log");
+/**
+ * The boot resurrect's own logs. The Windows launcher (daemon-launch.vbs)
+ * starts the daemon and then runs `pboss resurrect --wait` — that second
+ * command writes here, deliberately NOT into daemon.out/err.log: the
+ * daemon's cmd.exe redirect handles stay on those files for its whole
+ * lifetime, and a second handle on them is the EBUSY sharing-violation
+ * class (issue #36, 2026-09-15). When apps did not come back after a
+ * reboot on Windows, resurrect.err.log is where the reason lives.
+ */
+export const RESURRECT_OUT_LOG_FILE = join(PBOSS_HOME, "resurrect.out.log");
+export const RESURRECT_ERR_LOG_FILE = join(PBOSS_HOME, "resurrect.err.log");
 export const LOG_DIR = join(PBOSS_HOME, "logs");
 export const PID_DIR = join(PBOSS_HOME, "pids");
 export const DUMP_FILE = join(PBOSS_HOME, "dump.json");

@@ -38,6 +38,8 @@ import {
   DAEMON_SOCKET,
   DAEMON_OUT_LOG_FILE,
   DAEMON_ERR_LOG_FILE,
+  RESURRECT_OUT_LOG_FILE,
+  RESURRECT_ERR_LOG_FILE,
 } from "./constants";
 import {
   IS_COMPILED,
@@ -297,7 +299,9 @@ export class StartupManager {
 # permissions needed (\`pboss startup install\` does this automatically):
 # reg add "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run" /v ${taskName} /t REG_SZ /d "${trValue}" /f
 #
-# To resurrect processes after startup:
+# The launcher starts the daemon HIDDEN and then runs the boot resurrect —
+# saved processes come back at logon, exactly like the systemd unit's
+# ExecStartPost on Linux. Manual equivalent (if you skipped the launcher):
 # ${resurrectCmd}
 `;
   }
@@ -529,20 +533,26 @@ ${plist}`;
       // VISIBLE cmd.exe window (owner report 2026-09-15: right after
       // install a console showing "Daemon listening on ..." popped up;
       // without the launcher it comes back at every logon). wscript.exe is
-      // a windowless GUI binary that starts the daemon hidden via the
-      // generated VBS. Written BEFORE anything can fire it. A failed write
-      // degrades honestly: the raw daemon command still gives working
-      // persistence — just visibly.
+      // a windowless GUI binary that runs the generated VBS: hidden daemon
+      // + hidden boot resurrect (the ExecStartPost twin — without it the
+      // daemon came back after a reboot but the saved process list never
+      // did, owner report 2026-09-15, issue #36 fifth follow-up). Written
+      // BEFORE anything can fire it. A failed write degrades honestly:
+      // the raw daemon command still gives working persistence — just
+      // visibly, and without the boot resurrect.
       let launcherCmd = daemonCmd;
       let launcherNote = "";
       try {
         await this.writeWindowsDaemonLauncher(daemonCmd);
         launcherCmd = ["wscript.exe", "//B", windowsDaemonLauncherPath()];
-        launcherNote = `\nDaemon launch: hidden, no console window (launcher: ${windowsDaemonLauncherPath()})`;
+        launcherNote =
+          `\nDaemon launch: hidden, no console window (launcher: ${windowsDaemonLauncherPath()})` +
+          `\nBoot resurrect: saved processes come back at logon (logs: resurrect.out.log / resurrect.err.log)`;
       } catch (err: unknown) {
         ignore("write hidden daemon launcher (daemon-launch.vbs)", err);
         launcherNote =
-          "\nDaemon launch: hidden launcher unavailable — the daemon will start in a visible console window.";
+          "\nDaemon launch: hidden launcher unavailable — the daemon will start in a visible console window," +
+          "\nand saved processes will NOT auto-resurrect at logon; run:  pboss resurrect";
       }
 
       let taskFailure: string | null = null;
@@ -581,7 +591,7 @@ ${plist}`;
               `\nIf this host requires elevation for per-user tasks, re-run from an\nAdministrator shell:  pboss startup install`
           );
         }
-        const started = await this.bringUpWindowsDaemon(daemonCmd, opts.verifyTimeoutMs, false);
+        const started = await this.bringUpWindowsDaemon(launcherCmd, opts.verifyTimeoutMs, false);
         return (
           `Scheduled task registration was denied on this host (task not installed):\n${taskFailure}\n` +
             `Boot persistence installed via the per-user Registry Run key instead:\n` +
@@ -590,11 +600,13 @@ ${plist}`;
         );
       }
 
-      // Task registered — bring the daemon up NOW (parity with the Linux
-      // path): installers and `pboss upgrade` stop the daemon before
+      // Task registered — bring the boot sequence up NOW (parity with the
+      // Linux path): installers and `pboss upgrade` stop the daemon before
       // replacing the binary; leaving the fleet down until the next logon
-      // would betray the "resurrects saved processes" promise.
-      const started = await this.bringUpWindowsDaemon(daemonCmd, opts.verifyTimeoutMs, true);
+      // would betray the "resurrects saved processes" promise. The task's
+      // action is the launcher, so `schtasks /run` here reproduces the exact
+      // logon sequence: hidden daemon + boot resurrect.
+      const started = await this.bringUpWindowsDaemon(launcherCmd, opts.verifyTimeoutMs, true);
       return (
         `Windows Scheduled Task "${taskName}" installed successfully.${launcherNote}${started}\n` +
         `Run on demand: schtasks /run /tn "${taskName}"`
@@ -605,18 +617,23 @@ ${plist}`;
   }
 
   /**
-   * Bring the Windows daemon up right after a persistence install
+   * Bring the Windows boot up right after a persistence install
    * (best-effort, never throws — persistence itself already succeeded).
    *
    * Task installs start the TASK (`schtasks /run`), so Task Scheduler owns
-   * the daemon exactly like at logon — hidden, because the task's action is
-   * the wscript launcher; Run-key installs spawn the daemon directly,
-   * mirrored after api.launchDaemon (daemon log files, detached, unref'd,
-   * hidden on Windows). A daemon that is already answering is left alone.
-   * Returns a short status note (starting with "\n") for the install message.
+   * the boot sequence exactly like at logon — hidden, because the task's
+   * action is the wscript launcher. Run-key installs spawn the SAME
+   * launcher command the Run key itself runs at logon (wscript → the VBS
+   * does daemon + boot resurrect); only in the degraded case — the
+   * launcher VBS could not be written — does this fall back to spawning
+   * the raw daemon command directly, mirrored after api.launchDaemon
+   * (daemon log files, detached, unref'd, hidden on Windows; no boot
+   * resurrect — same degraded shape the Run key would launch at logon).
+   * A daemon that is already answering is left alone. Returns a short
+   * status note (starting with "\n") for the install message.
    */
   private async bringUpWindowsDaemon(
-    daemonCmd: string[],
+    launcherCmd: string[],
     verifyTimeoutMs: number | undefined,
     viaTask: boolean
   ): Promise<string> {
@@ -625,6 +642,12 @@ ${plist}`;
       if (alive) {
         return `\nDaemon: already running (pid ${alive.pid}) — processes stay up.`;
       }
+
+      // The launcher path (wscript → VBS) delivers daemon + boot resurrect
+      // — the normal case. The raw-command path is the degraded fallback
+      // (VBS write failed): daemon only, no auto-resurrect, matching what
+      // the task/Run key would launch at logon in that degraded install.
+      const viaLauncher = launcherCmd[0]?.toLowerCase() === "wscript.exe";
 
       if (viaTask) {
         const proc = Bun.spawn(["schtasks", "/run", "/tn", "PBOSS_Daemon"], {
@@ -635,20 +658,38 @@ ${plist}`;
         if ((await proc.exited) !== 0) {
           return "\nDaemon: could not be started from here — it starts at your next logon.";
         }
+      } else if (viaLauncher) {
+        // wscript is a windowless GUI binary; the VBS's own cmd.exe
+        // children redirect daemon output to the daemon log files and run
+        // the boot resurrect into the resurrect log files — no stdio
+        // plumbing here, and no log file is opened from this process
+        // (nothing to EBUSY-collide with the running launcher's handles).
+        // detached: the boot sequence must outlive this CLI invocation;
+        // windowsHide: a console child of a console-less parent gets a new
+        // visible console otherwise.
+        const proc = Bun.spawn(launcherCmd, {
+          stdout: "ignore",
+          stderr: "ignore",
+          stdin: "ignore",
+          detached: true,
+          windowsHide: true,
+          env: { ...(process.env as Record<string, string>) },
+        });
+        proc.unref();
       } else {
-        // Same spawn shape as api.launchDaemon: daemon output goes to the
-        // daemon log files, not to this shell — including `detached: true`
-        // (issue #36: the daemon must outlive this CLI process; without it
-        // the Run-key daemon died the moment `startup install` returned)
-        // and `windowsHide: true` (a detached console child would otherwise
-        // get its own visible cmd.exe window).
+        // Degraded (launcher unavailable): raw daemon command — same spawn
+        // shape as api.launchDaemon, including detached: true (issue #36:
+        // the daemon must outlive this CLI process; without it the Run-key
+        // daemon died the moment `startup install` returned) and
+        // windowsHide: true (a detached console child would otherwise get
+        // its own visible cmd.exe window).
         const outLog = Bun.file(DAEMON_OUT_LOG_FILE);
         const errLog = Bun.file(DAEMON_ERR_LOG_FILE);
         if (!(await outLog.exists())) await Bun.write(outLog, "");
         if (!(await errLog.exists())) await Bun.write(errLog, "");
         let proc;
         try {
-          proc = Bun.spawn(daemonCmd, {
+          proc = Bun.spawn(launcherCmd, {
             stdout: outLog,
             stderr: errLog,
             stdin: "ignore",
@@ -663,7 +704,7 @@ ${plist}`;
           // without these files; spawn silently instead of failing the
           // install (best-effort contract, see method doc).
           ignore("spawn Run-key daemon with log files (retrying with silent stdio)", err);
-          proc = Bun.spawn(daemonCmd, {
+          proc = Bun.spawn(launcherCmd, {
             stdout: "ignore",
             stderr: "ignore",
             stdin: "ignore",
@@ -680,7 +721,12 @@ ${plist}`;
         await Bun.sleep(300);
         const probe = await probeDaemon(DAEMON_SOCKET);
         if (probe) {
-          return `\nDaemon: started (pid ${probe.pid}) — saved processes are back.`;
+          // The resurrect rides along iff the wscript launcher is what
+          // actually runs (task action or direct spawn); the degraded raw
+          // command starts the daemon only.
+          return viaLauncher
+            ? `\nDaemon: started (pid ${probe.pid}) — saved processes are back.`
+            : `\nDaemon: started (pid ${probe.pid}) — launcher unavailable, run \`pboss resurrect\` for saved processes.`;
         }
       }
       return "\nDaemon: did not answer in time — it starts at your next logon.";
@@ -696,12 +742,26 @@ ${plist}`;
    * install() BEFORE registration so the launcher exists before anything
    * can fire it. Throws on write failure; the caller degrades to
    * registering the raw daemon command (visible, but persistence works).
+   *
+   * The launcher is TWO commands, mirroring the systemd unit's ExecStart +
+   * ExecStartPost: the hidden daemon, then the hidden boot resurrect
+   * (`resurrect --wait 15` — polls for the daemon above, never spawns a
+   * competing one, best-effort, logs to resurrect.out/err.log). Re-running
+   * `pboss startup install` regenerates this file, so an upgrade that
+   * changes the boot sequence just needs the reinstall.
    */
   private async writeWindowsDaemonLauncher(daemonCmd: string[]): Promise<void> {
     await mkdir(PBOSS_HOME, { recursive: true });
     await Bun.write(
       windowsDaemonLauncherPath(),
-      buildWindowsDaemonLauncherVbs(daemonCmd, DAEMON_OUT_LOG_FILE, DAEMON_ERR_LOG_FILE)
+      buildWindowsDaemonLauncherVbs(
+        daemonCmd,
+        cliSpawnCommand("resurrect", "--wait", "15"),
+        DAEMON_OUT_LOG_FILE,
+        DAEMON_ERR_LOG_FILE,
+        RESURRECT_OUT_LOG_FILE,
+        RESURRECT_ERR_LOG_FILE
+      )
     );
   }
 
@@ -903,7 +963,9 @@ ${plist}`;
       );
       lines.push(
         installed
-          ? "  Installed:  yes — the daemon starts at your logon"
+          ? existsSync(windowsDaemonLauncherPath())
+            ? "  Installed:  yes — the daemon starts at your logon and resurrects saved processes"
+            : "  Installed:  yes — the daemon starts at your logon (launcher missing: no hidden boot, no auto-resurrect)"
           : "  Installed:  no"
       );
       if (runValue) {
@@ -1418,9 +1480,13 @@ export function windowsDaemonLauncherPath(): string {
  * pinned off-Windows — this is the exact script Task Scheduler and the Run
  * key execute at logon.
  *
- * The generated script runs, hidden (window style 0, no waiting):
+ * The generated script runs, hidden (window style 0, no waiting), TWO
+ * commands — the Windows twin of the systemd unit's ExecStart +
+ * ExecStartPost pair:
  *
- *   %ComSpec% /c "<exe> <args> 1>> "<daemon.out.log>" 2>> "<daemon.err.log>""
+ *   1. the daemon:   %ComSpec% /c "<exe> <args> 1>> "<daemon.out.log>" 2>> "<daemon.err.log>""
+ *   2. the boot
+ *      resurrect:   %ComSpec% /c "<cli> resurrect --wait 15 1>> "<resurrect.out.log>" 2>> "<resurrect.err.log>""
  *
  * Redirection: cmd owns the file handles while the daemon runs, so daemon
  * stdout/stderr land in the SAME log files the direct CLI spawn path
@@ -1434,31 +1500,68 @@ export function windowsDaemonLauncherPath(): string {
  * quotes, so doubling is the only escaping needed. %ComSpec% is resolved
  * through WshShell.ExpandEnvironmentStrings because WshShell.Run does not
  * expand environment variables itself.
+ *
+ * The resurrect step (owner report 2026-09-15, issue #36 fifth follow-up:
+ * "app processes doesnt persist after reboot on windows even after pboss
+ * startup install and pboss save"): the daemon WAS coming back at logon,
+ * but nothing ever restored the saved list — on Linux the unit's
+ * ExecStartPost does it, Windows only launched the daemon. The resurrect
+ * command MUST carry `--wait` (its poller NEVER spawns a competing daemon —
+ * a spawn here would race the daemon command above for the socket and,
+ * on Windows, EBUSY-collide with its launcher's log handles), and it writes
+ * to its OWN log files for the same handle-collision reason. Best-effort
+ * by contract, exactly like the unit's `-ExecStartPost`: a timeout or a
+ * failed restore is logged to resurrect.out/err.log and changes nothing
+ * else at logon; entries the user stopped stay stopped (resurrect's
+ * `stopped` flag semantics).
  */
 export function buildWindowsDaemonLauncherVbs(
   daemonCmd: string[],
+  resurrectCmd: string[],
   outLog: string,
-  errLog: string
+  errLog: string,
+  resurrectOutLog: string,
+  resurrectErrLog: string
 ): string {
   const exeToken = daemonCmd[0];
   if (!exeToken) throw new Error("daemon command must start with an executable path");
+  const resurrectToken = resurrectCmd[0];
+  if (!resurrectToken) throw new Error("resurrect command must start with an executable path");
   const line =
     daemonCmd.map(quoteWindowsToken).join(" ") + ` 1>> "${outLog}" 2>> "${errLog}"`;
+  const resurrectLine =
+    resurrectCmd.map(quoteWindowsToken).join(" ") +
+    ` 1>> "${resurrectOutLog}" 2>> "${resurrectErrLog}"`;
   const vbsLine = line.replace(/"/g, '""');
+  const vbsResurrectLine = resurrectLine.replace(/"/g, '""');
   return `' PBOSS daemon hidden launcher — auto-generated by \`pboss startup install\`.
 ' Regenerate:  pboss startup install        Remove:  pboss startup uninstall
 '
 ' Boot persistence (the PBOSS_Daemon task and the Run key fallback) starts
-' the daemon THROUGH this script so it never shows a console window.
-' Daemon output is appended to the daemon log files in this directory.
+' the daemon THROUGH this script so it never shows a console window, then
+' restores the saved process list (the Windows twin of the systemd unit's
+' ExecStartPost). Daemon output appends to daemon.out/err.log; the boot
+' resurrect writes resurrect.out/err.log — check those after a reboot if
+' saved processes did not come back.
 Option Explicit
 Dim sh, q, comspec, line
 Set sh = CreateObject("WScript.Shell")
 q = Chr(34)
 comspec = sh.ExpandEnvironmentStrings("%ComSpec%")
+
+' 1) The daemon — hidden (window style 0), fire-and-forget (False). cmd
+' owns the redirect handles, so daemon stdout/stderr land in the daemon
+' log files.
 line = "${vbsLine}"
-' Window style 0 = hidden; False = do not wait for the daemon. The outer
-' quotes around the /c line survive cmd's quote stripping (cmd /? rule).
+' The outer quotes around the /c line survive cmd's quote stripping
+' (cmd /? rule).
+sh.Run q & comspec & q & " /c " & q & line & q, 0, False
+
+' 2) The boot resurrect — waits for the daemon above (never spawns a
+' competing one) and brings the saved process list back. Best-effort: a
+' timeout or a failed restore is logged to the resurrect log files and
+' changes nothing else at logon.
+line = "${vbsResurrectLine}"
 sh.Run q & comspec & q & " /c " & q & line & q, 0, False
 Set sh = Nothing
 `;
