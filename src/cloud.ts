@@ -415,7 +415,14 @@ export type CloudServerFrame =
   | { type: "log.unwatch"; process: string }
   | { type: "ping"; now: number }
   /** Ingested-event receipt: the agent may drop these ids from its outbox. */
-  | { type: "event-ack"; ids: string[] };
+  | { type: "event-ack"; ids: string[] }
+  /**
+   * Tier heartbeat: the owner's plan report cadence, in seconds. Sent on
+   * change (plan upgrade/downgrade lands on the next state report) — the
+   * agent re-arms its report timer without a relink. Ignored when the
+   * interval was pinned via PBOSS_CLOUD_REPORT_MS or constructor params.
+   */
+  | { type: "report-interval"; sec: number };
 
 /** Frames the agent sends up. */
 export type CloudAgentFrame =
@@ -725,6 +732,10 @@ export class CloudAgent {
   private ws: WebSocket | null = null;
   private reportTimer: ReturnType<typeof setInterval> | null = null;
   private backoffMs = 1000;
+  /** True when reportIntervalMs came from params or PBOSS_CLOUD_REPORT_MS —
+   *  an explicit operator pin. The cloud's tier directives are then
+   *  ignored (the pin is the local override, e.g. self-hosted tests). */
+  private reportIntervalPinned = false;
   private reconnects = 0;
   /** When the next dial fires while in backoff (status display). */
   private nextRetryAt: number | null = null;
@@ -773,6 +784,8 @@ export class CloudAgent {
       params.inboundWatchdogMs ??
       (Number.isFinite(envMs) && envMs > 0 ? envMs : CLOUD_INBOUND_WATCHDOG_MS);
     const envReport = Number.parseInt(process.env.PBOSS_CLOUD_REPORT_MS ?? "", 10);
+    this.reportIntervalPinned =
+      params.reportIntervalMs != null || (Number.isFinite(envReport) && envReport > 0);
     this.reportIntervalMs =
       params.reportIntervalMs ??
       (Number.isFinite(envReport) && envReport > 0 ? envReport : CLOUD_REPORT_INTERVAL_MS);
@@ -788,6 +801,34 @@ export class CloudAgent {
 
   get config(): CloudConfig | null {
     return this.cfg;
+  }
+
+  /**
+   * Adopt a cloud-directed report cadence (the `report-interval` frame —
+   * the owner's plan tier). Re-arms the running timer in place; a no-op
+   * when the interval is pinned locally (constructor params or
+   * PBOSS_CLOUD_REPORT_MS), unchanged, or out of bounds [1s, 1h].
+   *
+   * Returns whether the interval changed.
+   */
+  setReportInterval(ms: number, opts: { force?: boolean } = {}): boolean {
+    if (!Number.isFinite(ms) || ms < 1_000 || ms > 3_600_000) return false;
+    if (this.reportIntervalPinned && !opts.force) return false;
+    if (ms === this.reportIntervalMs) return false;
+    const prev = this.reportIntervalMs;
+    this.reportIntervalMs = ms;
+    if (this.reportTimer) {
+      // swap the timer in place — the reportNow closure survives
+      clearInterval(this.reportTimer);
+      this.reportTimer = setInterval(() => this.reportNow?.(), this.reportIntervalMs);
+    }
+    console.log(
+      colorize(
+        `☁  cloud: report interval ${Math.round(prev / 1000)}s → ${Math.round(ms / 1000)}s (plan tier)`,
+        "cyan"
+      )
+    );
+    return true;
   }
 
   status(): CloudAgentStatus {
@@ -833,6 +874,8 @@ export class CloudAgent {
       serverId?: string;
       serverSecret?: string;
       serverName?: string;
+      /** The plan tier's report cadence — adopted on link-up. */
+      reportIntervalSec?: number;
       error?: string;
     };
     if (!res.ok || !body.serverId || !body.serverSecret) {
@@ -846,6 +889,12 @@ export class CloudAgent {
     };
     saveCloudConfig(cfg);
     this.cfg = cfg;
+    // the tier's report cadence rides the enrollment response — adopt it
+    // from link-up (unless the operator pinned a local interval)
+    const tierIntervalSec = body.reportIntervalSec;
+    if (typeof tierIntervalSec === "number" && Number.isFinite(tierIntervalSec) && tierIntervalSec > 0) {
+      this.setReportInterval(tierIntervalSec * 1000);
+    }
     return { serverId: cfg.serverId, serverName: cfg.serverName ?? cfg.serverId };
   }
 
@@ -1164,6 +1213,13 @@ export class CloudAgent {
         break;
       case "event-ack":
         if (Array.isArray(frame.ids)) this.handleEventAck(frame.ids);
+        break;
+      case "report-interval":
+        // tier heartbeat — the owner's plan cadence, relayed on change.
+        // A no-op when the interval was pinned locally (env / params).
+        if (Number.isFinite(frame.sec) && frame.sec > 0) {
+          this.setReportInterval(frame.sec * 1000);
+        }
         break;
       default:
         break;

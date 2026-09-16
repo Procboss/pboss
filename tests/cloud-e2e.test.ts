@@ -144,7 +144,8 @@ describe(
           //    → daemon takes over (cloud.json + outbound connection)
           const { out, err, code } = await runDeviceFlowCli(
             ["cloud", "connect", "--url", mini.url],
-            home
+            home,
+            { PBOSS_CLOUD_REPORT_MS: "1000" } // 1.5 default is 60s (plan-tier) — tests need the fast lane
           );
           expect(code).toBe(0);
           expect(out).toContain("ProcBoss Cloud — connect this server");
@@ -250,7 +251,11 @@ describe(
         const home = freshHome("logwatch");
         try {
           // link first (auto-approved device flow)
-          const { code } = await runDeviceFlowCli(["cloud", "connect", "--url", mini.url], home);
+          const { code } = await runDeviceFlowCli(
+            ["cloud", "connect", "--url", mini.url],
+            home,
+            { PBOSS_CLOUD_REPORT_MS: "1000" } // 1.5 default is 60s (plan-tier) — tests need the fast lane
+          );
           expect(code).toBe(0);
           const cred = readCloudJson(home);
           await pollFleet(cred, (list) =>
@@ -307,7 +312,11 @@ describe("cloud e2e — the link survives incidents (reboot / network blackout)"
       const home = freshHome("rebootsim");
       try {
         // link the machine
-        const { code } = await runDeviceFlowCli(["cloud", "connect", "--url", mini.url], home);
+        const { code } = await runDeviceFlowCli(
+            ["cloud", "connect", "--url", mini.url],
+            home,
+            { PBOSS_CLOUD_REPORT_MS: "1000" } // 1.5 default is 60s (plan-tier) — tests need the fast lane
+          );
         expect(code).toBe(0);
         const cred = readCloudJson(home);
         await pollFleet(cred, (list) =>

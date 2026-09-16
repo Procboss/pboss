@@ -58,8 +58,11 @@ export const ALERT_THRESHOLDS_FILE = join(PBOSS_HOME, "alert-thresholds.json");
 export const CLOUD_USER_FILE = join(PBOSS_HOME, "cloud-user.json");
 /** Default ProcBoss Cloud endpoint; override with --url or PBOSS_CLOUD_URL. */
 export const CLOUD_DEFAULT_URL = "https://procboss.com";
-/** How often the cloud agent posts a full state report. */
-export const CLOUD_REPORT_INTERVAL_MS = 10_000;
+/** How often the cloud agent posts a full state report. The 1.5 default:
+ *  60s — but the cloud overrides it per account (the `report-interval`
+ *  frame carries the owner's plan tier: Free 5min, Basic/Growth 60s,
+ *  Pro 30s, Business 15s). PBOSS_CLOUD_REPORT_MS pins it locally. */
+export const CLOUD_REPORT_INTERVAL_MS = 60_000;
 
 export const ALL_DIRS = [PBOSS_HOME, LOG_DIR, PID_DIR, METRICS_DIR, MODULE_DIR, CRON_LOG_DIR];
 
