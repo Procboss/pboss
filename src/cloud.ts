@@ -26,6 +26,7 @@ import { VERSION, CLOUD_FILE, CLOUD_DEFAULT_URL, CLOUD_REPORT_INTERVAL_MS } from
 import { getSystemInfo, colorize } from "./utils";
 import { ignore } from "./error-handling";
 import type { ProcessManager } from "./process-manager";
+import type { PbossProcessEvent } from "./events";
 import type { ProcessState, StartOptions, LogItem, CronJob } from "./types";
 import { runDeployJob, cancelDeployJob, deployJobRunning, gitInfoForProcess } from "./deploy-job";
 import {
@@ -566,6 +567,36 @@ export function classifyCrash(
   return undefined;
 }
 
+/**
+ * A `process:crashed` container event → the cloud crash event, pushed into
+ * the outbox the MOMENT the exit happens (not at the next snapshot diff).
+ * The diff only "sees" a crash when a report happens to land while the
+ * process reads "errored" — a crash that ends "stopped" (autorestart off)
+ * or one auto-restarted inside the report interval was INVISIBLE to the
+ * cloud, so the dashboard never heard it and no alert fired. Clean
+ * self-exits (exit 0, no signal) are NOT crashes — they stay a local
+ * lifecycle fact; the next snapshot reports the process "stopped".
+ */
+export function directCrashEvent(ev: PbossProcessEvent): CloudEventReport | null {
+  if (ev.exitCode === 0 && !ev.exitSignal) return null;
+  // the cause rides the detail — it becomes the AlertEvent body, whose
+  // "exit 1" the cloud's occurrenceDetail() extracts for the expander's
+  // per-reading line ("2m ago · exit 1")
+  const cause =
+    typeof ev.exitCode === "number"
+      ? `exit ${ev.exitCode}`
+      : (ev.exitSignal ?? "no exit facts");
+  return {
+    kind: "crash",
+    process: ev.process.name,
+    at: ev.at,
+    detail: `process crashed (${cause})${ev.willRestart ? " — auto-restart scheduled" : ""}`,
+    exitCode: ev.exitCode ?? null,
+    signal: ev.exitSignal ?? null,
+    reason: classifyCrash(ev.exitCode, ev.exitSignal),
+  };
+}
+
 /** Derive human-meaningful events from two consecutive snapshots. */
 export function diffEvents(
   prev: Map<string, CloudProcessReport>,
@@ -760,8 +791,10 @@ export class CloudAgent {
   private reportIntervalMs: number;
   /**
    * Event outbox — crash/restart/online/stopped events, each stamped with a
-   * delivery id, held until the cloud acks ingestion (`event-ack`). The
-   * pm2 agent's offline queue made reliable: state is re-sent whole every
+   * delivery id, held until the cloud acks ingestion (`event-ack`). Crashes
+   * land here the MOMENT they happen (the process:crashed listener in
+   * attachCrashListener); the rest are derived at snapshot time. The pm2
+   * agent's offline queue made reliable: state is re-sent whole every
    * cycle, but EVENTS are transitions — miss one and the dashboard never
    * sees the crash. At-least-once delivery + cloud-side id dedup.
    */
@@ -774,6 +807,13 @@ export class CloudAgent {
   private envManager = new EnvManager();
   /** Per-link guard: the backfill frame goes out ONCE per reconnect. */
   private backfillSent = false;
+  /** The live "process:crashed" listener (null while not attached). */
+  private crashListener: ((ev: PbossProcessEvent) => void) | null = null;
+  /** process name → epoch ms of the last DIRECT crash report — the
+   *  diff-derived "errored" crash for the same exit is a duplicate. */
+  private directCrashAt = new Map<string, number>();
+  /** When the previous snapshot was taken (the diffEvents window start). */
+  private lastSnapshotAt = 0;
 
   constructor(pm: ProcessManager, params: CloudAgentParams = {}) {
     this.pm = pm;
@@ -931,6 +971,7 @@ export class CloudAgent {
       colorize(`☁  cloud: connecting to ${cfg.cloudUrl} (${cfg.serverName ?? cfg.serverId})`, "cyan")
     );
     void this.runStream();
+    this.attachCrashListener();
     this.reportTimer = setInterval(() => this.reportNow?.(), this.reportIntervalMs);
     this.reportNow = () => void this.reportState().catch((err: unknown) => ignore("cloud state report (interval)", err));
     void this.reportState().catch((err: unknown) => ignore("cloud state report (initial)", err));
@@ -964,6 +1005,7 @@ export class CloudAgent {
     if (this.reportTimer) clearInterval(this.reportTimer);
     this.reportTimer = null;
     this.reportNow = null;
+    this.detachCrashListener();
     this.stopWatchdog();
     this.closeSocket(1000, "agent stopped");
     this.streamState = "stopped";
@@ -1338,7 +1380,15 @@ export class CloudAgent {
     // before the watchdog notices the dead socket — is therefore re-sent
     // after reconnect and still reaches the dashboard (the cloud dedups
     // by id, so at-least-once never becomes double-alerting).
-    const events = diffEvents(this.lastSnapshot, report.processes);
+    const events = diffEvents(this.lastSnapshot, report.processes).filter(
+      // the diff-derived crash is the SNAPSHOT's angle on an exit the
+      // process:crashed listener already reported directly (with fresher
+      // facts). Without the drop, a crash-loop that exhausts the
+      // unstable-restart budget double-reports its final crash and
+      // inflates the ×N occurrence counter.
+      (ev) =>
+        !(ev.kind === "crash" && (this.directCrashAt.get(ev.process) ?? 0) >= this.lastSnapshotAt),
+    );
     // Resource threshold alerts ride the SAME pipeline: pure evaluation on
     // data this report already computed — ids, outbox, ack/dedup/TTL/cap
     // all inherited, zero new delivery-reliability code.
@@ -1354,9 +1404,15 @@ export class CloudAgent {
       ignore("threshold evaluation", err);
     }
     this.lastSnapshot = new Map(report.processes.map((p) => [p.name, p]));
-    // crash events carry the log tail for the cloud's crash reports
-    for (const ev of events) {
-      if (ev.kind !== "crash") continue;
+    this.lastSnapshotAt = Date.now();
+    // crash events carry the log tail for the cloud's crash reports.
+    // DIFF events get it here (report time). DIRECT events (pushed at
+    // exit time by the process:crashed listener) were pushed WITHOUT one
+    // on purpose: the exit races the last stderr chunks into the log
+    // files, so their tail is read on the first report cycle after,
+    // when the files have the full story (stack included).
+    for (const ev of [...events, ...this.outbox]) {
+      if (ev.kind !== "crash" || ev.logTail) continue;
       try {
         const logs = await this.pm.getLogs(ev.process, 30);
         ev.logTail = crashLogTail(logs);
@@ -1374,6 +1430,16 @@ export class CloudAgent {
       this.outbox = this.outbox.filter((ev) => ev.at >= cutoff);
       if (this.outbox.length > CLOUD_EVENT_OUTBOX_MAX) {
         this.outbox.splice(0, this.outbox.length - CLOUD_EVENT_OUTBOX_MAX);
+      }
+    }
+    // the direct-crash ledger prunes on the SAME TTL as the outbox, so
+    // the suppression window never outlives the direct event itself: if
+    // the direct crash expired undelivered, the diff-derived one becomes
+    // the fallback report again.
+    {
+      const cutoff = Date.now() - CLOUD_EVENT_TTL_MS;
+      for (const [name, at] of this.directCrashAt) {
+        if (at < cutoff) this.directCrashAt.delete(name);
       }
     }
     report.events = this.outbox.slice(0, 50);
@@ -1407,6 +1473,45 @@ export class CloudAgent {
       // last held event just retired — clear the stale error
       if (this.lastError?.includes("queued")) this.lastError = null;
     }
+  }
+
+  /* ── crash forwarding — the direct path the owner's repro lacked ────── */
+
+  /**
+   * The container emits `process:crashed` the moment a process dies
+   * (issue #32's uniform contract — raw exit facts attached), but the
+   * cloud only learned about crashes the SNAPSHOT diff happened to catch
+   * reading "errored". Attach the direct path: every real crash lands in
+   * the outbox immediately; delivery rides the next state report with the
+   * same ack/dedup/TTL/cap guarantees as every other event.
+   */
+  private attachCrashListener(): void {
+    this.detachCrashListener();
+    // duck-typed pm stubs (tests) may carry no emitter — forwarding is a
+    // daemon privilege, never worth crashing the agent over
+    if (typeof this.pm.on !== "function") return;
+    this.crashListener = (ev) => this.forwardCrash(ev);
+    this.pm.on("process:crashed", this.crashListener);
+  }
+
+  private detachCrashListener(): void {
+    if (!this.crashListener) return;
+    if (typeof this.pm.off === "function") {
+      this.pm.off("process:crashed", this.crashListener);
+    }
+    this.crashListener = null;
+  }
+
+  /** One live crash → the outbox. Fire-and-forget: the exit path never
+   *  waits — the log tail is attached at the next report cycle
+   *  (reportState), after the last stderr chunks have flushed. */
+  private forwardCrash(ev: PbossProcessEvent): void {
+    if (!this.running || !this.cfg) return; // unlinked — nothing to report to
+    const crash = directCrashEvent(ev);
+    if (!crash) return; // clean self-exit — a local lifecycle fact only
+    this.directCrashAt.set(crash.process, crash.at);
+    crash.id = randomUUID();
+    this.outbox.push(crash);
   }
 
   /* ── report inputs: health facts + threshold extras ──────────────────── */
