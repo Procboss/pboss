@@ -299,6 +299,21 @@ export interface CloudProcessReport {
   healthStatus?: "healthy" | "unhealthy" | "unknown";
   /** Consecutive health-check failures at the moment of the report. */
   healthFails?: number;
+  /* ── per-process resource facts (pboss 1.4.7) — the extras the
+   * threshold-monitor already computes, now riding every state report so
+   * the cloud can COLLECT per-process usage history and feed its AI
+   * optimization advice. Optional on purpose: older clouds ignore them,
+   * older agents simply never set them. */
+  /** Event-loop lag in ms (the threshold monitor's latency probe). */
+  eventLoopMs?: number;
+  /** Open file descriptors / handles. */
+  handles?: number;
+  /** maxMemoryRestart in MB — the process's own memory ceiling, when
+   * configured. The cloud's per-process memory alerts key off it. */
+  memLimitMB?: number;
+  /** Ecosystem `alertDisabled` — the operator silenced this process's
+   * resource alerts; the cloud's per-process sweeps must respect it. */
+  alertsDisabled?: boolean;
 }
 
 export interface CloudEventReport {
@@ -515,6 +530,18 @@ export function mapProcessState(
     signal: env?.last_exit_signal ?? undefined,
     healthStatus: health?.status,
     healthFails: health?.consecutiveFails,
+    // resource facts (1.4.7) — undefined stays undefined when unknown, so
+    // the wire carries only what the box actually measured
+    eventLoopMs:
+      typeof p.monit?.eventLoopLatency === "number" && Number.isFinite(p.monit.eventLoopLatency)
+        ? Math.max(0, Math.round(p.monit.eventLoopLatency))
+        : undefined,
+    handles: typeof p.monit?.handles === "number" ? Math.max(0, p.monit.handles) : undefined,
+    memLimitMB:
+      env?.maxMemoryRestart && env.maxMemoryRestart > 0
+        ? Math.round(env.maxMemoryRestart / (1024 * 1024))
+        : undefined,
+    alertsDisabled: env?.alertDisabled === true ? true : undefined,
   };
 }
 
