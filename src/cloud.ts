@@ -469,7 +469,8 @@ export type CloudAgentFrame =
 
 /** The deploy.run payload — one (batch × target) deployment job, end to
  * end. `strategy` picks WHERE the code lands (§4): "release" = the
- * pboss-managed deploys/ tree (created processes), "inplace" = the
+ * ~/apps/<process>/ tree next to the agent's pboss home (created
+ * processes — /home/{username}/apps on a Linux server), "inplace" = the
  * adopted process's own working directory. `startCmd` is null for both
  * paths — the agent resolves the live definition (adopted) or evaluates
  * configFile/configApp (created). */
@@ -523,8 +524,8 @@ export interface DeployRestorePayload {
 }
 
 /** deploy.purge — "Also delete stored backups and files" (§5 Remove).
- * Created processes also lose their deploys/ tree and stop; adopted
- * processes keep their own directory. */
+ * Created processes also lose their ~/apps/<process>/ tree and stop;
+ * adopted processes keep their own directory. */
 export interface DeployPurgePayload {
   targetId: string;
   processName: string;

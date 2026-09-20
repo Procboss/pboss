@@ -60,12 +60,20 @@ function makeFakePm() {
 }
 
 async function importJob() {
-  // Pin PBOSS_HOME before the job RUNS: the deploys root resolves per job
+  // Pin PBOSS_HOME before the job RUNS: the apps root resolves per job
   // (runDeployJob reads the env at job start), so this holds even when
   // bun's single-process runner cached src/constants with a different
   // home (full-suite runs — the api.test.ts import binds ~/.pboss first).
   process.env.PBOSS_HOME = HOME;
   return import("../src/deploy-job");
+}
+
+/** The apps root for the pinned HOME: appsRoot() sits NEXT to PBOSS_HOME
+ * (dirname), so pinning HOME = <ROOT>/home lands deploys in <ROOT>/apps —
+ * the same "next to the pboss home, not inside it" rule that puts prod
+ * deploys at /home/{username}/apps. */
+function appsDir(): string {
+  return join(dirname(HOME), "apps");
 }
 
 beforeAll(async () => {
@@ -141,7 +149,7 @@ describe("deploy-job — real clone/archive/build/swap pipeline", () => {
     expect(done?.progress?.commit).toBe(SHA1);
     expect(done?.progress?.durationMs).toBeGreaterThanOrEqual(0);
 
-    const deploys = join(HOME, "deploys", "testapp");
+    const deploys = join(appsDir(), "testapp");
     const releases = join(deploys, "releases");
     const releaseNames = readdirSync(releases);
     expect(releaseNames.length).toBe(1);
@@ -159,7 +167,7 @@ describe("deploy-job — real clone/archive/build/swap pipeline", () => {
 
   test("second commit → second release, symlink flips forward", async () => {
     const { runDeployJob } = await importJob();
-    const deploys = join(HOME, "deploys", "testapp");
+    const deploys = join(appsDir(), "testapp");
     const before = resolve(deploys, readlinkSync(join(deploys, "current")));
     const fake = makeFakePm();
     await runDeployJob(
@@ -184,14 +192,14 @@ describe("deploy-job — real clone/archive/build/swap pipeline", () => {
     expect(steps).not.toContain("building");
     expect(frames.find((f) => f.progress?.step === "done")?.progress?.success).toBe(true);
     // still exactly 2 releases — nothing new was built
-    expect(readdirSync(join(HOME, "deploys", "testapp", "releases")).length).toBe(2);
-    const current = resolve(join(HOME, "deploys", "testapp"), readlinkSync(join(HOME, "deploys", "testapp", "current")));
+    expect(readdirSync(join(appsDir(), "testapp", "releases")).length).toBe(2);
+    const current = resolve(join(appsDir(), "testapp"), readlinkSync(join(appsDir(), "testapp", "current")));
     expect(current.includes(SHA1.slice(0, 8))).toBe(true);
   });
 
   test("failing start after the swap → previous release restored", async () => {
     const { runDeployJob } = await importJob();
-    const deploys = join(HOME, "deploys", "testapp");
+    const deploys = join(appsDir(), "testapp");
     const before = resolve(deploys, readlinkSync(join(deploys, "current")));
 
     const fake = makeFakePm();
@@ -212,5 +220,28 @@ describe("deploy-job — real clone/archive/build/swap pipeline", () => {
   test("cancelDeployJob for an unknown id → clean false", async () => {
     const { cancelDeployJob } = await importJob();
     expect(cancelDeployJob("never-started")).toBe(false);
+  });
+
+  test("the owner's default: a .pboss-shaped home puts deploys at <home>/apps, not inside .pboss", async () => {
+    // /home/{username}/apps for real servers: PBOSS_HOME=<h>/.pboss means
+    // dirname(<h>/.pboss)/apps = <h>/apps — the visible-code default
+    const { runDeployJob } = await importJob();
+    const userHome = join(ROOT, "fakeuser");
+    mkdirSync(userHome, { recursive: true });
+    process.env.PBOSS_HOME = join(userHome, ".pboss");
+    const fake = makeFakePm();
+    await runDeployJob(
+      { sendFrame: () => true, pm: fake.pm },
+      payload({ deploymentId: "dep_home_layout", processName: "hometest" }),
+    );
+    process.env.PBOSS_HOME = HOME; // restore for any later imports
+
+    const apps = join(userHome, "apps", "hometest");
+    expect(existsSync(join(apps, "source"))).toBe(true);
+    expect(existsSync(join(apps, "current"))).toBe(true);
+    expect(fake.starts[0]!.cwd).toBe(join(apps, "current"));
+    // and NOTHING inside .pboss itself
+    expect(existsSync(join(userHome, ".pboss", "deploys"))).toBe(false);
+    expect(existsSync(join(userHome, ".pboss", "apps"))).toBe(false);
   });
 });

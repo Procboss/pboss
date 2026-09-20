@@ -7,7 +7,8 @@
  * WebSocket. Two strategies (spec §4):
  *
  *   release (created processes) — per-target layout under
- *   ~/.pboss/deploys/<slug>/:
+ *   ~/apps/<slug>/ (the agent OS user's home — /home/{username}/apps on a
+ *   Linux server; visible code, not buried in a dotdir):
  *
  *     <slug>/source/                    the git clone (full history — any
  *                                        SHA that ever deployed stays
@@ -84,16 +85,23 @@ export function cancelDeployJob(deploymentId: string): boolean {
 const RELEASES_KEPT = 10;
 
 /**
+ * Where created-process deployments live: <home>/apps — /home/{username}/apps
+ * for the OS user running the agent (the owner's Task-143 default). Honors
+ * a pinned PBOSS_HOME (tests, chrooted setups) by sitting NEXT to it, and
+ * PBOSS_APPS_DIR wins outright for absolute control.
+ *
  * Roots resolve PER JOB, not at import time. PBOSS_HOME is an environment
  * contract, but bun's test runner (and any embedder) can import this
  * module long before the env is pinned — an import-time root then aimed
- * test deploys at the REAL ~/.pboss: wrong root, failing assertions, and
+ * test deploys at the REAL home: wrong root, failing assertions, and
  * home-dir pollution. Resolving at job start honors the env whenever it
  * was set, and falls back to the import-time PBOSS_HOME (same homedir
  * default) when it never was.
  */
-function deploysRoot(): string {
-  return join(process.env.PBOSS_HOME || PBOSS_HOME, "deploys");
+function appsRoot(): string {
+  if (process.env.PBOSS_APPS_DIR) return process.env.PBOSS_APPS_DIR;
+  const home = process.env.PBOSS_HOME || PBOSS_HOME;
+  return join(dirname(home), "apps");
 }
 
 function backupsRoot(): string {
@@ -335,7 +343,7 @@ async function runReleaseDeploy(
 ): Promise<void> {
   const { log, progress, finish } = prog;
 
-  const DEPLOYS_ROOT = deploysRoot();
+  const DEPLOYS_ROOT = appsRoot();
   const slug = payload.processName.replace(/[^a-zA-Z0-9._-]/g, "_");
   const root = join(DEPLOYS_ROOT, slug);
   const sourceDir = join(root, "source");
@@ -614,7 +622,7 @@ export async function runRestoreJob(
     if (payload.strategy === "release") {
       /* release: flip current to the backup (reusing a built release for
        * the same commit when one survives — seconds, not a copy) */
-      const DEPLOYS_ROOT = deploysRoot();
+      const DEPLOYS_ROOT = appsRoot();
       const slug = payload.processName.replace(/[^a-zA-Z0-9._-]/g, "_");
       const root = join(DEPLOYS_ROOT, slug);
       const releasesDir = join(root, "releases");
@@ -723,7 +731,7 @@ export async function runPurgeJob(
   if (payload.strategy === "release") {
     // the created process's whole deploy tree + the process itself
     const slug = payload.processName.replace(/[^a-zA-Z0-9._-]/g, "_");
-    const root = join(deploysRoot(), slug);
+    const root = join(appsRoot(), slug);
     try {
       await ctx.pm.stop(payload.processName);
     } catch { /* not running */ }
