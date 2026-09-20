@@ -14,10 +14,12 @@
  *   6. a failing build after a good deploy → the previous symlink is
  *      RESTORED (a failed deploy must not leave production broken)
  *   7. cancelDeployJob for an unknown id is a clean false
+ *   8. the owner's default: ~/apps is the OS user's HOME — a custom
+ *      PBOSS_HOME does not drag the apps tree next to itself
  */
 import { describe, test, expect, beforeAll, afterAll } from "bun:test";
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync, existsSync, readlinkSync, readdirSync, readFileSync } from "node:fs";
-import { join, resolve, dirname } from "node:path";
+import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 
 let ROOT: string;
@@ -60,26 +62,30 @@ function makeFakePm() {
 }
 
 async function importJob() {
-  // Pin PBOSS_HOME before the job RUNS: the apps root resolves per job
-  // (runDeployJob reads the env at job start), so this holds even when
-  // bun's single-process runner cached src/constants with a different
-  // home (full-suite runs — the api.test.ts import binds ~/.pboss first).
+  // Pin the roots before the job RUNS: both resolve per job (runDeployJob
+  // reads the env at job start), so this holds even when bun's
+  // single-process runner cached src/constants with a different home
+  // (full-suite runs — the api.test.ts import binds ~/.pboss first).
+  // PBOSS_HOME steers backups; PBOSS_APPS_DIR (pinned in beforeAll)
+  // steers the deploy tree.
   process.env.PBOSS_HOME = HOME;
   return import("../src/deploy-job");
 }
 
-/** The apps root for the pinned HOME: appsRoot() sits NEXT to PBOSS_HOME
- * (dirname), so pinning HOME = <ROOT>/home lands deploys in <ROOT>/apps —
- * the same "next to the pboss home, not inside it" rule that puts prod
- * deploys at /home/{username}/apps. */
+/** The suite's apps root: beforeAll pins PBOSS_APPS_DIR = ROOT/apps — the
+ * absolute-control override — so pipeline assertions read a stable root
+ * and never touch the runner's real home. */
 function appsDir(): string {
-  return join(dirname(HOME), "apps");
+  return join(ROOT, "apps");
 }
 
 beforeAll(async () => {
   ROOT = mkdtempSync(join(tmpdir(), "pboss-autodeploy-"));
   HOME = join(ROOT, "home");
   mkdirSync(HOME, { recursive: true });
+  // the suite's apps root — the absolute-control override (the default
+  // would be the runner's real HOME, which tests must never touch)
+  process.env.PBOSS_APPS_DIR = join(ROOT, "apps");
 
   // the fixture repo: two commits, build writes dist/marker.txt
   REPO = join(ROOT, "repo.git");
@@ -99,6 +105,7 @@ beforeAll(async () => {
 });
 
 afterAll(() => {
+  delete process.env.PBOSS_APPS_DIR; // leave the ambient env untouched
   rmSync(ROOT, { recursive: true, force: true });
 });
 
@@ -222,26 +229,38 @@ describe("deploy-job — real clone/archive/build/swap pipeline", () => {
     expect(cancelDeployJob("never-started")).toBe(false);
   });
 
-  test("the owner's default: a .pboss-shaped home puts deploys at <home>/apps, not inside .pboss", async () => {
-    // /home/{username}/apps for real servers: PBOSS_HOME=<h>/.pboss means
-    // dirname(<h>/.pboss)/apps = <h>/apps — the visible-code default
+  test("the owner's default: ~/apps is the OS user's home, wherever the pboss home lives", async () => {
+    // /home/{username}/apps for real servers: $HOME decides — a custom
+    // PBOSS_HOME must NOT drag the apps tree next to itself (the old
+    // dirname coupling)
     const { runDeployJob } = await importJob();
     const userHome = join(ROOT, "fakeuser");
+    const pbossHome = join(ROOT, "elsewhere", ".pboss"); // deliberately outside the user home
     mkdirSync(userHome, { recursive: true });
-    process.env.PBOSS_HOME = join(userHome, ".pboss");
+    const prevHome = process.env.HOME;
+    const prevPboss = process.env.PBOSS_HOME;
+    const prevAppsDir = process.env.PBOSS_APPS_DIR;
+    delete process.env.PBOSS_APPS_DIR; // exercise the DEFAULT, not the override
+    process.env.HOME = userHome;
+    process.env.PBOSS_HOME = pbossHome;
     const fake = makeFakePm();
     await runDeployJob(
       { sendFrame: () => true, pm: fake.pm },
       payload({ deploymentId: "dep_home_layout", processName: "hometest" }),
     );
-    process.env.PBOSS_HOME = HOME; // restore for any later imports
+    if (prevHome === undefined) delete process.env.HOME;
+    else process.env.HOME = prevHome;
+    process.env.PBOSS_HOME = prevPboss ?? HOME;
+    process.env.PBOSS_APPS_DIR = prevAppsDir ?? join(ROOT, "apps");
 
     const apps = join(userHome, "apps", "hometest");
     expect(existsSync(join(apps, "source"))).toBe(true);
     expect(existsSync(join(apps, "current"))).toBe(true);
     expect(fake.starts[0]!.cwd).toBe(join(apps, "current"));
-    // and NOTHING inside .pboss itself
-    expect(existsSync(join(userHome, ".pboss", "deploys"))).toBe(false);
-    expect(existsSync(join(userHome, ".pboss", "apps"))).toBe(false);
+    // nothing next to the pboss home (the dirname coupling is dead)…
+    expect(existsSync(join(ROOT, "elsewhere", "apps"))).toBe(false);
+    // …and nothing app-shaped inside .pboss itself
+    expect(existsSync(join(pbossHome, "apps"))).toBe(false);
+    expect(existsSync(join(pbossHome, "deploys"))).toBe(false);
   });
 });

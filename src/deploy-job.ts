@@ -7,8 +7,9 @@
  * WebSocket. Two strategies (spec §4):
  *
  *   release (created processes) — per-target layout under
- *   ~/apps/<slug>/ (the agent OS user's home — /home/{username}/apps on a
- *   Linux server; visible code, not buried in a dotdir):
+ *   ~/apps/<slug>/ (the OS user's HOME — /home/{username}/apps on a Linux
+ *   server, wherever the pboss home itself lives; visible code, not
+ *   buried in a dotdir):
  *
  *     <slug>/source/                    the git clone (full history — any
  *                                        SHA that ever deployed stays
@@ -41,6 +42,7 @@
  */
 import { spawn } from "node:child_process";
 import { cpSync, mkdirSync, existsSync, readlinkSync, symlinkSync, renameSync, rmSync, readdirSync } from "node:fs";
+import { homedir } from "node:os";
 import { join, dirname, resolve } from "node:path";
 import { PBOSS_HOME } from "./constants";
 import { ignore } from "./error-handling";
@@ -85,23 +87,24 @@ export function cancelDeployJob(deploymentId: string): boolean {
 const RELEASES_KEPT = 10;
 
 /**
- * Where created-process deployments live: <home>/apps — /home/{username}/apps
- * for the OS user running the agent (the owner's Task-143 default). Honors
- * a pinned PBOSS_HOME (tests, chrooted setups) by sitting NEXT to it, and
- * PBOSS_APPS_DIR wins outright for absolute control.
+ * Where created-process deployments live: ~/apps — /home/{username}/apps
+ * for the OS user running the agent (the owner's standing default). The
+ * USER's home, not the pboss home's neighborhood: a custom or pinned
+ * PBOSS_HOME (chrooted setups, embedders, a relocated pboss dir) no
+ * longer drags the apps tree along — ~/apps means HOME, period.
+ * PBOSS_APPS_DIR wins outright for absolute control (tests, exotic
+ * layouts).
  *
- * Roots resolve PER JOB, not at import time. PBOSS_HOME is an environment
- * contract, but bun's test runner (and any embedder) can import this
- * module long before the env is pinned — an import-time root then aimed
- * test deploys at the REAL home: wrong root, failing assertions, and
- * home-dir pollution. Resolving at job start honors the env whenever it
- * was set, and falls back to the import-time PBOSS_HOME (same homedir
- * default) when it never was.
+ * Roots resolve PER JOB, not at import time. $HOME is read at job start
+ * (os.homedir() caches at its first call, so the env var is the knob a
+ * pinned environment can actually move), falling back to homedir()
+ * when the environment carries no HOME (Windows, HOME-less daemons).
+ * An import-time root would aim test deploys at the REAL home: wrong
+ * root, failing assertions, and home-dir pollution.
  */
 function appsRoot(): string {
   if (process.env.PBOSS_APPS_DIR) return process.env.PBOSS_APPS_DIR;
-  const home = process.env.PBOSS_HOME || PBOSS_HOME;
-  return join(dirname(home), "apps");
+  return join(process.env.HOME || homedir(), "apps");
 }
 
 function backupsRoot(): string {
