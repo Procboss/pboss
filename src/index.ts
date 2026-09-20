@@ -1751,6 +1751,61 @@ Examples:
           break;
         }
 
+        case "deploy": {
+          // CLI/dashboard parity (spec §12.5): the same batch endpoint and
+          // the same tables the dashboard's "Update" rides — History stays
+          // one source of truth. Needs a USER login (pboss login).
+          const repo = rest[0];
+          if (!repo || !/^[\w.-]+\/[\w.-]+$/.test(repo)) {
+            console.log(colorize("Usage: pboss cloud deploy <owner/name> [--targets id1,id2]", "yellow"));
+            process.exit(1);
+          }
+          const cred = loadCloudUser();
+          if (!cred) {
+            console.log(colorize("Not logged in — run `pboss login` first (deploys are a user action).", "yellow"));
+            process.exit(1);
+          }
+          const targetIds = rest.includes("--targets")
+            ? (rest[rest.indexOf("--targets") + 1] ?? "").split(",").map((x) => x.trim()).filter(Boolean)
+            : undefined;
+          console.log(colorize(`☁  Deploying ${repo}…`, "cyan"));
+          const res = await fetch(`${cred.cloudUrl}/api/deploy/deployments`, {
+            method: "POST",
+            headers: {
+              "content-type": "application/json",
+              authorization: `Bearer ${cred.token}`,
+            },
+            body: JSON.stringify({ repo, ...(targetIds ? { targetIds } : {}) }),
+          });
+          const data = (await res.json().catch(() => ({}))) as {
+            error?: string;
+            message?: string;
+            batchId?: string;
+            targetCount?: number;
+            noTargets?: boolean;
+            commitSha?: string;
+            deduped?: boolean;
+          };
+          if (!res.ok) {
+            throw new Error(data.message ?? data.error ?? `the cloud answered ${res.status}`);
+          }
+          if (data.noTargets) {
+            console.log(colorize("That repo has no targets assigned yet — add servers in the dashboard.", "yellow"));
+            break;
+          }
+          if (data.deduped) {
+            console.log(colorize("Already deploying that commit — the running batch took it.", "dim"));
+            break;
+          }
+          console.log(colorize("✓ Deployment queued", "green"));
+          console.log(`  Batch:    ${data.batchId}`);
+          console.log(`  Targets:  ${data.targetCount}`);
+          console.log(`  Commit:   ${data.commitSha?.slice(0, 7) ?? "?"}`);
+          console.log("");
+          console.log(colorize("Follow it on the dashboard's Deployments page (live progress + history).", "dim"));
+          break;
+        }
+
         case "servers":
         case "fleet": {
           const { servers } = await this.pboss.cloudServers();

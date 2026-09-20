@@ -28,7 +28,14 @@ import { ignore } from "./error-handling";
 import type { ProcessManager } from "./process-manager";
 import type { PbossProcessEvent } from "./events";
 import type { ProcessState, StartOptions, LogItem, CronJob } from "./types";
-import { runDeployJob, cancelDeployJob, deployJobRunning, gitInfoForProcess } from "./deploy-job";
+import {
+  runDeployJob,
+  runRestoreJob,
+  runPurgeJob,
+  cancelDeployJob,
+  deployJobRunning,
+  gitInfoForProcess,
+} from "./deploy-job";
 import {
   ThresholdMonitor,
   DEFAULT_THRESHOLD_CONFIG,
@@ -387,6 +394,8 @@ export interface CloudCommand {
     | "process.gitinfo"
     | "deploy.run"
     | "deploy.cancel"
+    | "deploy.restore"
+    | "deploy.purge"
     /* resource threshold alerting (threshold-monitor.ts) */
     | "config.alerts.get"
     | "config.alerts.set"
@@ -458,7 +467,12 @@ export type CloudAgentFrame =
 
 /* ── auto-deploy wire shapes (mirror of the cloud's protocol.ts) ──────── */
 
-/** The deploy.run payload — one deployment job, end to end. */
+/** The deploy.run payload — one (batch × target) deployment job, end to
+ * end. `strategy` picks WHERE the code lands (§4): "release" = the
+ * pboss-managed deploys/ tree (created processes), "inplace" = the
+ * adopted process's own working directory. `startCmd` is null for both
+ * paths — the agent resolves the live definition (adopted) or evaluates
+ * configFile/configApp (created). */
 export interface DeployRunPayload {
   deploymentId: string;
   /** Tokenized clone URL (x-access-token form) — fetch auth ONLY. */
@@ -470,25 +484,80 @@ export interface DeployRunPayload {
   commitSha: string;
   installCmd: string | null;
   buildCmd: string | null;
-  startCmd: string;
+  startCmd: string | null;
   workdir: string | null;
   env: Record<string, string>;
   runtime: "bun" | "node";
   mode: "new" | "update" | "rollback";
   processName: string;
   buildTimeoutSec: number;
+  /* ── the redesign extensions ── */
+  strategy: "release" | "inplace";
+  /** Cloud DeployTarget.id — keys backups/{targetId}/ (§7). */
+  targetId: string | null;
+  /** The commit currently live (names the backup; guards retention). */
+  backupFromCommit: string | null;
+  /** Newest N backups per target (never prunes the live one). */
+  backupRetention: number;
+  /** For created targets: repo-relative config file + the picked app. */
+  configFile: string | null;
+  configApp: string | null;
 }
 
-/** deploy.progress frames — step matches the cloud's pipeline states,
- * "done" is terminal (success flag + agent-reported facts). */
+/** deploy.restore — restore one target from a recorded backup (manual
+ * "Revert to this" AND the auto-rollback ride the same job). */
+export interface DeployRestorePayload {
+  /** The batch-target row driving this restore (progress routing). */
+  deploymentId: string;
+  processName: string;
+  /** Absolute backup path as this agent recorded it. */
+  backupPath: string;
+  /** The commit the backup HOLDS. */
+  commitSha: string;
+  strategy: "release" | "inplace";
+  startCmd: string | null;
+  configFile: string | null;
+  configApp: string | null;
+  workdir: string | null;
+  env: Record<string, string>;
+}
+
+/** deploy.purge — "Also delete stored backups and files" (§5 Remove).
+ * Created processes also lose their deploys/ tree and stop; adopted
+ * processes keep their own directory. */
+export interface DeployPurgePayload {
+  targetId: string;
+  processName: string;
+  strategy: "release" | "inplace";
+}
+
+/** deploy.progress frames — the pipeline as the dashboard renders it
+ * (§8): backing up → pulling → installing → building → restarting →
+ * health check (the cloud's), plus terminal "done". The backup facts
+ * ride the backing_up frame; prunes ride any frame. */
 export interface DeployProgressPayload {
   deploymentId: string;
-  step: "cloning" | "installing" | "building" | "deploying" | "starting" | "done";
+  step:
+    | "backing_up"
+    | "cloning"
+    | "installing"
+    | "building"
+    | "deploying"
+    | "starting"
+    | "restoring"
+    | "done";
   logs?: string[];
   error?: string;
   success?: boolean;
+  /** Filled on the terminal frame: agent-reported facts. */
   commit?: string;
   durationMs?: number;
+  /** The backup folder this run created (backing_up frame). */
+  backupPath?: string;
+  /** The commit that backup HOLDS. */
+  backupCommit?: string;
+  /** Backup folders pruned this run — cloud registry maintenance (§7). */
+  prunedPaths?: string[];
 }
 
 /** The cloud closes the socket with this code when the credential is revoked. */
@@ -1860,6 +1929,41 @@ export class CloudAgent {
         const id = typeof cmd.payload?.deploymentId === "string" ? cmd.payload.deploymentId : "";
         if (!id) throw new Error("deploy.cancel requires deploymentId");
         return { cancelled: cancelDeployJob(id) };
+      }
+
+      case "deploy.restore": {
+        // FAST-ACK — same pattern as deploy.run: restore streams progress
+        // frames and ends with a terminal done frame.
+        const p = cmd.payload as unknown as DeployRestorePayload;
+        if (!p?.deploymentId || !p.processName || !p.backupPath || !p.commitSha) {
+          throw new Error("deploy.restore requires deploymentId, processName, backupPath, commitSha");
+        }
+        if (deployJobRunning(p.deploymentId)) {
+          return { accepted: true, alreadyRunning: true };
+        }
+        void runRestoreJob(
+          { sendFrame: (frame) => this.sendFrame(frame), pm: this.pm },
+          p,
+        ).catch((err: unknown) => {
+          this.sendFrame({
+            type: "deploy.progress",
+            progress: {
+              deploymentId: p.deploymentId,
+              step: "done",
+              success: false,
+              error: err instanceof Error ? err.message : String(err),
+            },
+          });
+        });
+        return { accepted: true };
+      }
+
+      case "deploy.purge": {
+        const p = cmd.payload as unknown as DeployPurgePayload;
+        if (!p?.targetId || !p.processName || !p.strategy) {
+          throw new Error("deploy.purge requires targetId, processName, strategy");
+        }
+        return await runPurgeJob({ sendFrame: () => true, pm: this.pm }, p);
       }
 
       /* ── resource threshold alerting (threshold-monitor.ts) ── */

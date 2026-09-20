@@ -110,6 +110,13 @@ function payload(overrides: Partial<import("../src/cloud").DeployRunPayload>): i
     mode: "new",
     processName: "testapp",
     buildTimeoutSec: 120,
+    // the redesign fields — release strategy, no backup registry by default
+    strategy: "release",
+    targetId: null,
+    backupFromCommit: null,
+    backupRetention: 5,
+    configFile: null,
+    configApp: null,
     ...overrides,
   };
 }
