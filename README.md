@@ -17,6 +17,10 @@ ProcBoss is free and open-source. If it saves you time, star it on [GitHub](http
 
 ---
 
+The full documentation lives at [docs.procboss.com](https://docs.procboss.com)
+
+---
+
 ## Highlights
 
 - **Universal runtimes** — auto-detected: Node.js, Bun, Go, Python, Rust, Ruby, PHP, Java JARs, shell scripts, compiled binaries.
