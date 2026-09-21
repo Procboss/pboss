@@ -50,10 +50,11 @@ import type {
   LogItem,
   DepsReport,
 } from "./types";
+import { pathToFileURL } from "bun";
 
-// 
+//
 // Bus event types emitted by PBoss
-// 
+//
 
 export interface PBossEvents {
   /** Daemon successfully connected */
@@ -102,9 +103,9 @@ export interface PBossOptions {
   noDaemon?: boolean;
 }
 
-// 
+//
 // Helpers: Config loader and direct process readers
-// 
+//
 
 /**
  * Load and parse an ecosystem configuration file (.json, .ts, or .js).
@@ -123,7 +124,8 @@ export async function loadEcosystemConfig(filePath: string): Promise<EcosystemCo
   if (ext === ".json") {
     config = (await file.json()) as EcosystemConfig;
   } else {
-    const mod = await import(abs);
+    //const mod = await import(abs);
+    const mod = await import(pathToFileURL(abs).href);
     config = (mod.default || mod) as EcosystemConfig;
   }
 
@@ -267,9 +269,9 @@ export async function getProcesses(): Promise<ProcessState[]> {
   return readSavedProcesses();
 }
 
-// 
+//
 // Main API class
-// 
+//
 
 /**
  * Wait for a daemon that someone ELSE is starting (a systemd unit's
@@ -362,7 +364,7 @@ export class PBoss extends EventEmitter<PBossEvents> {
     return this._daemonPid;
   }
 
-  //  lifecycle 
+  //  lifecycle
 
   /**
    * Connect to the pboss daemon.
@@ -428,7 +430,7 @@ export class PBoss extends EventEmitter<PBossEvents> {
     this.emit("daemon:disconnected");
   }
 
-  //  real events (issue #32)  
+  //  real events (issue #32)
 
   /**
    * Open the persistent daemon event stream and re-emit every real
@@ -557,7 +559,7 @@ export class PBoss extends EventEmitter<PBossEvents> {
     }
   }
 
-  //  process management 
+  //  process management
 
   /**
    * Start a new process (or ecosystem).
@@ -767,7 +769,7 @@ export class PBoss extends EventEmitter<PBossEvents> {
     return res.data;
   }
 
-  //  logs 
+  //  logs
 
   /**
    * Retrieve recent log lines.
@@ -873,7 +875,7 @@ export class PBoss extends EventEmitter<PBossEvents> {
     });
   }
 
-  //  cron jobs 
+  //  cron jobs
 
   /**
    * Schedule a standalone command.
@@ -1093,7 +1095,7 @@ export class PBoss extends EventEmitter<PBossEvents> {
     return res.data;
   }
 
-  //  monitoring 
+  //  monitoring
 
   /**
    * Take a single metrics snapshot.
@@ -1151,7 +1153,7 @@ export class PBoss extends EventEmitter<PBossEvents> {
     }
   }
 
-  //  persistence 
+  //  persistence
 
   /**
    * Persist the current process list to disk so it can be restored later.
@@ -1168,7 +1170,7 @@ export class PBoss extends EventEmitter<PBossEvents> {
     return res.data;
   }
 
-  //  dashboard 
+  //  dashboard
 
   /**
    * Start the web dashboard.
@@ -1191,7 +1193,7 @@ export class PBoss extends EventEmitter<PBossEvents> {
     await this.sendOrThrow({ type: "dashboardStop" });
   }
 
-  //  modules 
+  //  modules
 
   /**
    * Install a pboss module.
@@ -1222,7 +1224,7 @@ export class PBoss extends EventEmitter<PBossEvents> {
     return res.data;
   }
 
-  //  daemon lifecycle 
+  //  daemon lifecycle
 
   /**
    * Check synchronously if the daemon PID file exists and the process is alive.
@@ -1490,7 +1492,7 @@ export class PBoss extends EventEmitter<PBossEvents> {
     return res.data;
   }
 
-  //  internal transport 
+  //  internal transport
 
   /**
    * Low-level: send an arbitrary message to the daemon and return the
@@ -1532,7 +1534,7 @@ export class PBoss extends EventEmitter<PBossEvents> {
     return (await response.json()) as DaemonResponse;
   }
 
-  //  private helpers 
+  //  private helpers
 
   /** Send and throw a friendly error if `success` is false. */
   private async sendOrThrow(message: DaemonMessage): Promise<DaemonResponse> {
@@ -1546,7 +1548,7 @@ export class PBoss extends EventEmitter<PBossEvents> {
     }
     return res;
   }
-  //  static convenience methods 
+  //  static convenience methods
 
   private static _defaultInstance: PBoss | null = null;
 
@@ -1798,7 +1800,7 @@ export class PBoss extends EventEmitter<PBossEvents> {
   }
 }
 
-//  error class 
+//  error class
 
 export class PBossError extends Error {
   /** The daemon command type that failed. */
@@ -1814,7 +1816,7 @@ export class PBossError extends Error {
   }
 }
 
-//  standalone function exports 
+//  standalone function exports
 
 export const pboss = PBoss.getDefaultInstance();
 
