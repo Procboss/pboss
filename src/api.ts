@@ -50,7 +50,6 @@ import type {
   LogItem,
   DepsReport,
 } from "./types";
-import { pathToFileURL } from "bun";
 
 //
 // Bus event types emitted by PBoss
@@ -124,8 +123,7 @@ export async function loadEcosystemConfig(filePath: string): Promise<EcosystemCo
   if (ext === ".json") {
     config = (await file.json()) as EcosystemConfig;
   } else {
-    //const mod = await import(abs);
-    const mod = await import(pathToFileURL(abs).href);
+    const mod = await import(abs);
     config = (mod.default || mod) as EcosystemConfig;
   }
 
