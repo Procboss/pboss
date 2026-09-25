@@ -39,7 +39,6 @@ import type {
   StartOptions,
   ProcessState,
   LogItem,
-  CronJob,
   DependencySpec,
   DependencyPolicy,
   DepsReport,

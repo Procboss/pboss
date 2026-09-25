@@ -41,7 +41,6 @@ function spawnCli(args: string[], home: string) {
 
 async function runCli(args: string[], home: string) {
   const proc = spawnCli(args, home);
-  const dec = new TextDecoder();
   const [out, err] = await Promise.all([
     new Response(proc.stdout).text(),
     new Response(proc.stderr).text(),

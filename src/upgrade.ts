@@ -20,10 +20,9 @@
  *      node_modules path is a package-manager install.
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
+import { mkdirSync, readFileSync, writeFileSync } from "fs";
 import { join, dirname } from "path";
-import { VERSION, PBOSS_HOME } from "./constants";
-import { colorize } from "./utils";
+import { PBOSS_HOME } from "./constants";
 
 /** Where the install channel is recorded (written by installers). */
 export const CHANNEL_FILE = join(PBOSS_HOME, "channel.json");
@@ -195,12 +194,6 @@ export type UpgradePlan = {
   /** Extra honest note printed after the upgrade command runs. */
   note?: string;
 };
-
-const UNIVERSAL_URLS = {
-  linux: "https://procboss.com/install.sh",
-  darwin: "https://procboss.com/install.sh",
-  win32: "https://procboss.com/install.ps1",
-} as const;
 
 /**
  * The channel-fidelity table: each channel upgrades THROUGH ITSELF. Pure —

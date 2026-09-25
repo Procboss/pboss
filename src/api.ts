@@ -21,7 +21,6 @@ import path, { join, resolve, extname, isAbsolute } from "path";
 import {
   DAEMON_SOCKET,
   DAEMON_PID_FILE,
-  PBOSS_HOME,
   DUMP_FILE,
   DASHBOARD_PORT,
   METRICS_PORT,

@@ -722,8 +722,6 @@ export async function runPurgeJob(
   ctx: JobCtx,
   payload: DeployPurgePayload,
 ): Promise<{ purged: true }> {
-  const log = (line: string) => `[purge ${payload.processName}] ${line}`;
-
   // backups always go
   const safeTarget = payload.targetId.replace(/[^a-zA-Z0-9._-]/g, "_");
   const backupPath = join(backupsRoot(), safeTarget);

@@ -1,6 +1,6 @@
 // tests/api.test.ts
 
-import { describe, test, expect, beforeEach, afterEach, mock, spyOn, jest } from "bun:test";
+import { describe, test, expect, beforeEach, afterEach, spyOn } from "bun:test";
 import {
   PBoss,
   PBossError,
@@ -748,7 +748,7 @@ describe("PBoss API", () => {
     test("starts dashboard with custom ports", async () => {
       sendMock.mockResolvedValue(okResponse({ port: 3000, metricsPort: 3001 }, "dashboard"));
 
-      const result = await pboss.dashboard(3000, 3001);
+      await pboss.dashboard(3000, 3001);
 
       expect(sendMock).toHaveBeenCalledWith(
         expect.objectContaining({

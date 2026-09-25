@@ -35,7 +35,7 @@ import { probeDaemon } from "./daemon-probe";
 import { enrichPathWithBun } from "./install-mode";
 import { ensureDirs, tightenPbossHomeMode } from "./utils";
 import type { DaemonMessage, DaemonResponse } from "./types";
-import type { ReadableStreamController, Server } from "bun";
+import type { Server } from "bun";
 import { existsSync, unlinkSync, readFileSync } from "node:fs";
 
 

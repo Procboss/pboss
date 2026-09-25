@@ -14,7 +14,7 @@
  */
 
 import { describe, test, expect, afterEach, beforeAll, afterAll } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, statSync, chmodSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 

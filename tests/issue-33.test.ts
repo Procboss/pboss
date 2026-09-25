@@ -103,16 +103,6 @@ function stayAliveScript(dir: string, name: string): string {
   return p;
 }
 
-/** Poll until `predicate` holds, or fail after `ms`. */
-async function until(predicate: () => boolean, ms = 10000): Promise<boolean> {
-  const deadline = Date.now() + ms;
-  while (Date.now() < deadline) {
-    if (predicate()) return true;
-    await Bun.sleep(60);
-  }
-  return predicate();
-}
-
 /**
  * The injected fake system-service provider: deterministic unit states
  * plus a call log, so tests can assert ProcBoss-priority (the provider

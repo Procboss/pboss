@@ -72,7 +72,7 @@ describe("bunSearchCandidates: the discovery order", () => {
       const key = c;
       dirCounts.set(key, (dirCounts.get(key) ?? 0) + 1);
     }
-    for (const [path, count] of dirCounts) {
+    for (const [, count] of dirCounts) {
       expect(count).toBe(1);
     }
     // /h/.bun/bin/bun appears exactly once (BUN_INSTALL and HOME agree).

@@ -19,7 +19,6 @@
    StartOptions,
    EcosystemConfig,
    MetricSnapshot,
-   LogEntry,
    LogItem,
  } from "./types";
  import { ProcessContainer } from "./process-container";
@@ -60,7 +59,6 @@
    DEFAULT_LOG_RETAIN,
  } from "./constants";
 import path from "path";
-import type { ReadableStreamController } from "bun";
  
  /**
  * The canonical source of pboss's internal events (issue #32).

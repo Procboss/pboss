@@ -56,7 +56,10 @@ export const CLOUD_FILE = join(PBOSS_HOME, "cloud.json");
 export const ALERT_THRESHOLDS_FILE = join(PBOSS_HOME, "alert-thresholds.json");
 /** User login state (`pboss login`), 0600 — separate from the machine credential. */
 export const CLOUD_USER_FILE = join(PBOSS_HOME, "cloud-user.json");
-/** Default ProcBoss Cloud endpoint; override with --url or PBOSS_CLOUD_URL. */
+/** Default ProcBoss Cloud endpoint — the production cloud at
+ *  https://procboss.com. Override with --url (a bare host is accepted:
+ *  "procboss.com" means https://procboss.com, loopback means http) or
+ *  PBOSS_CLOUD_URL for the whole machine. */
 export const CLOUD_DEFAULT_URL = "https://procboss.com";
 /** How often the cloud agent posts a full state report. The 1.5 default:
  *  60s — but the cloud overrides it per account (the `report-interval`

@@ -10,7 +10,7 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -21,7 +21,6 @@ import {
   patchThresholdConfig,
   effectiveProcessThresholds,
   SYSTEM_PROCESS_NAME,
-  type ThresholdConfig,
 } from "../src/threshold-monitor";
 import type { CloudProcessReport } from "../src/cloud";
 
@@ -45,10 +44,6 @@ const T0 = 1_700_000_000_000; // arbitrary fixed epoch
 
 function sys(over: { cpu?: number; memUsed?: number; memTotal?: number } = {}) {
   return { cpu: 10, memUsed: 2_000, memTotal: 8_000, ...over };
-}
-
-function kinds(evs: { kind: string }[]): string[] {
-  return evs.map((e) => e.kind);
 }
 
 /* ── level metrics: the state machine ────────────────────────────────── */

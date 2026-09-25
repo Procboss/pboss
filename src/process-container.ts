@@ -19,7 +19,6 @@ import type {
   ProcessState,
   ProcessStatus,
   LogRotateOptions,
-  ProcessEnvMeta,
 } from "./types";
 import { LogManager } from "./log-manager";
 import { ClusterManager } from "./cluster-manager";

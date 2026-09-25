@@ -16,11 +16,9 @@
 
 import { join, dirname, basename } from "path";
 import { appendFile, rename, unlink, readdir } from "fs/promises";
-import { LOG_DIR, DEFAULT_LOG_MAX_SIZE, DEFAULT_LOG_RETAIN } from "./constants";
+import { LOG_DIR } from "./constants";
 import { ignore, warn } from "./error-handling";
 import type {  LogEntry, LogRotateOptions } from "./types";
-import { watch } from "fs";
-import type { ReadableStreamController } from "bun";
 import { EOL } from 'node:os';
 
 const isoRegex: RegExp = /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?/;

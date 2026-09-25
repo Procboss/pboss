@@ -1691,7 +1691,7 @@ pboss cloud connect
 
 The CLI requests a device code (`POST /api/device/code`, carrying hostname/OS/arch/agent version — the approval card shows exactly these facts), prints the URL plus the code, and polls. You open the URL anywhere, sign in with GitHub or Google, and approve or deny the card. On approval, the CLI's next poll claims the per-server credential — minted at that moment, handed over **exactly once** — and passes it to the daemon, which writes `~/.pboss/cloud.json` (0600) and owns the connection from there on. Denials, expiries (10 minutes), and double claims are all honest errors at the terminal.
 
-Flags: `--url <cloud>` overrides the endpoint (else `PBOSS_CLOUD_URL`, else `https://procboss.com`); `--no-browser` (or `PBOSS_NO_BROWSER=1`) skips the auto-open attempt. On a machine with a desktop session the CLI tries to open the tab for you — over SSH without `DISPLAY` it stays print-only, which is exactly right for servers.
+Flags: `--url <cloud>` overrides the endpoint (else `PBOSS_CLOUD_URL`, else `https://procboss.com`). A bare host is accepted: `--url procboss.com` means `https://procboss.com`, and a bare loopback (`localhost:3000`) means `http` — the one plaintext form the CLI will dial. `--no-browser` (or `PBOSS_NO_BROWSER=1`) skips the auto-open attempt. On a machine with a desktop session the CLI tries to open the tab for you — over SSH without `DISPLAY` it stays print-only, which is exactly right for servers.
 
 The legacy pasted-token flow still works: mint a single-use token in the dashboard and run `pboss cloud connect pbc_…` — useful when the terminal can't reach the approval URL interactively.
 
@@ -1772,7 +1772,7 @@ If the credential is revoked from the dashboard, the cloud closes the WebSocket 
 
 ### Self-hosting / custom cloud endpoint
 
-Everything cloud-related resolves through one knob: `--url` on `connect`/`login`, else the `PBOSS_CLOUD_URL` environment variable, else `https://procboss.com`. The full HTTP contract the agent and CLI speak (device flow, agent stream, state, commands) is documented at [docs.procboss.com/cloud](https://docs.procboss.com/cloud) — point `PBOSS_CLOUD_URL` at a compatible implementation and pboss won't know the difference.
+Everything cloud-related resolves through one knob: `--url` on `connect`/`login`, else the `PBOSS_CLOUD_URL` environment variable, else `https://procboss.com`. The value may be a bare host — `PBOSS_CLOUD_URL=cloud.internal:8443` means `https://cloud.internal:8443` (loopback hosts resolve to `http`). The full HTTP contract the agent and CLI speak (device flow, agent stream, state, commands) is documented at [docs.procboss.com/cloud](https://docs.procboss.com/cloud) — point `PBOSS_CLOUD_URL` at a compatible implementation and pboss won't know the difference.
 
 ---
 

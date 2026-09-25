@@ -39,7 +39,6 @@ import {
 import {
   ThresholdMonitor,
   DEFAULT_THRESHOLD_CONFIG,
-  loadThresholdConfig,
   saveThresholdConfig,
   patchThresholdConfig,
   type ProcessExtra,
@@ -141,7 +140,9 @@ export function loadCloudConfig(): CloudConfig | null {
     const raw = JSON.parse(readFileSync(CLOUD_FILE, "utf-8") as string) as Partial<CloudConfig>;
     if (!raw.cloudUrl || !raw.serverId || !raw.serverSecret) return null;
     return {
-      cloudUrl: String(raw.cloudUrl).replace(/\/+$/, ""),
+      // scheme-healed on read: a legacy cloud.json written before bare
+      // hosts were accepted still connects (same rule as resolveCloudUrl)
+      cloudUrl: withTransportScheme(String(raw.cloudUrl)).replace(/\/+$/, ""),
       serverId: String(raw.serverId),
       serverSecret: String(raw.serverSecret),
       serverName: raw.serverName ? String(raw.serverName) : undefined,
@@ -180,9 +181,33 @@ export function clearCloudConfig(): void {
   }
 }
 
+/**
+ * Give a scheme-less cloud address its honest transport: `procboss.com`
+ * → `https://procboss.com`; a bare loopback host (`localhost:3000`,
+ * `127.0.0.1:8080`) → plain http — the one plaintext class
+ * assertSecureCloudUrl already tolerates (dev boxes, test clouds).
+ * Scheme-full values (`https://…`, `http://…`, `wss://…`) pass through
+ * untouched, and so does anything the URL parser rejects —
+ * assertSecureCloudUrl later says "not a valid cloud URL" (the honest
+ * error, on the value the operator actually typed). One function feeds
+ * every entry point: --url flags, PBOSS_CLOUD_URL, and cloud.json reads.
+ */
+function withTransportScheme(raw: string): string {
+  const v = raw.trim();
+  if (/^[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(v)) return v; // http(s)://, ws(s):// — as-is
+  const host = v.startsWith("//") ? v.slice(2) : v; // protocol-relative "//host" → bare
+  try {
+    const u = new URL(`https://${host}`);
+    if (u.hostname && isLoopbackHost(u.hostname)) return `http://${host}`;
+  } catch {
+    // not host[:port]-shaped — pass through; the honest error comes later
+  }
+  return `https://${host}`;
+}
+
 export function resolveCloudUrl(explicit?: string): string {
   const url = (explicit || process.env.PBOSS_CLOUD_URL || CLOUD_DEFAULT_URL).trim();
-  return url.replace(/\/+$/, "");
+  return withTransportScheme(url).replace(/\/+$/, "");
 }
 
 /* ── transport security (pm2's posture: never silent plaintext) ───────── */

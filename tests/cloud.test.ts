@@ -4,7 +4,7 @@
  * is covered by the end-to-end flow against a live daemon.
  */
 
-import { describe, test, expect, beforeEach, afterEach } from "bun:test";
+import { describe, test, expect, afterEach } from "bun:test";
 import {
   mapProcessState,
   buildStateReport,
@@ -18,9 +18,6 @@ import {
   assertSecureCloudUrl,
   isLoopbackHost,
 } from "../src/cloud";
-import { CLOUD_FILE } from "../src/constants";
-import { rmSync, mkdirSync } from "node:fs";
-import { join, dirname } from "path";
 import type { ProcessState } from "../src/types";
 
 function fakeState(overrides: Partial<ProcessState> = {}): ProcessState {
@@ -234,6 +231,80 @@ describe("cloud config file", () => {
     const { resolveCloudUrl } = await import("../src/cloud");
     expect(resolveCloudUrl("https://procboss.com///")).toBe("https://procboss.com");
     expect(resolveCloudUrl(undefined)).toBe("https://procboss.com");
+  });
+});
+
+/* ── bare-host --url values (Task 156: the dashboard's copy-paste
+ * command ships `--url procboss.com`; the CLI must accept it) ──────── */
+
+describe("resolveCloudUrl — bare hosts get a scheme", () => {
+  const savedEnv = process.env.PBOSS_CLOUD_URL;
+  afterEach(() => {
+    if (savedEnv === undefined) delete process.env.PBOSS_CLOUD_URL;
+    else process.env.PBOSS_CLOUD_URL = savedEnv;
+  });
+
+  test("bare public host means https", async () => {
+    const { resolveCloudUrl } = await import("../src/cloud");
+    expect(resolveCloudUrl("procboss.com")).toBe("https://procboss.com");
+    expect(resolveCloudUrl("cloud.internal.example:8443/")).toBe(
+      "https://cloud.internal.example:8443"
+    );
+    // protocol-relative spelling normalizes too
+    expect(resolveCloudUrl("//procboss.com")).toBe("https://procboss.com");
+  });
+
+  test("bare loopback host means http (the tolerated plaintext class)", async () => {
+    const { resolveCloudUrl } = await import("../src/cloud");
+    expect(resolveCloudUrl("localhost:3000")).toBe("http://localhost:3000");
+    expect(resolveCloudUrl("localhost")).toBe("http://localhost");
+    expect(resolveCloudUrl("127.0.0.1:8080")).toBe("http://127.0.0.1:8080");
+    expect(resolveCloudUrl("[::1]:3000")).toBe("http://[::1]:3000");
+  });
+
+  test("a bare host flows through the whole security chain", async () => {
+    const { resolveCloudUrl, assertSecureCloudUrl, wsUrlOf } = await import("../src/cloud");
+    // bare public host → https → passes the gate, ws derives correctly
+    const url = resolveCloudUrl("procboss.com");
+    expect(() => assertSecureCloudUrl(url)).not.toThrow();
+    expect(wsUrlOf(url)).toBe("wss://procboss.com/ws/agent");
+    // bare loopback → http → still passes (loopback is the exception)
+    expect(() => assertSecureCloudUrl(resolveCloudUrl("localhost:3000"))).not.toThrow();
+  });
+
+  test("scheme-full values pass through untouched — no silent rewriting", async () => {
+    const { resolveCloudUrl, assertSecureCloudUrl } = await import("../src/cloud");
+    // an explicit http:// to a REAL host is preserved so the gate refuses it
+    expect(resolveCloudUrl("http://procboss.com")).toBe("http://procboss.com");
+    expect(() => assertSecureCloudUrl(resolveCloudUrl("http://procboss.com"))).toThrow(/plaintext/);
+  });
+
+  test("unparseable values keep their shape for the honest error", async () => {
+    const { resolveCloudUrl, assertSecureCloudUrl } = await import("../src/cloud");
+    const resolved = resolveCloudUrl("not a url");
+    expect(() => assertSecureCloudUrl(resolved)).toThrow(/not a valid cloud URL/);
+  });
+
+  test("PBOSS_CLOUD_URL bare host is normalized too", async () => {
+    const { resolveCloudUrl } = await import("../src/cloud");
+    process.env.PBOSS_CLOUD_URL = "procboss.com";
+    expect(resolveCloudUrl(undefined)).toBe("https://procboss.com");
+    // an explicit --url still wins over the env
+    expect(resolveCloudUrl("localhost:3000")).toBe("http://localhost:3000");
+  });
+
+  test("loadCloudConfig heals a legacy scheme-less cloudUrl", () => {
+    saveCloudConfig({
+      cloudUrl: "procboss.com",
+      serverId: "srv_legacy",
+      serverSecret: "pbs_legacy",
+    });
+    const loaded = loadCloudConfig();
+    expect(loaded).not.toBeNull();
+    expect(loaded!.cloudUrl).toBe("https://procboss.com");
+    expect(loaded!.serverId).toBe("srv_legacy");
+    clearCloudConfig();
+    expect(loadCloudConfig()).toBeNull();
   });
 });
 
