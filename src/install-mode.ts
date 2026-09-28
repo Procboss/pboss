@@ -3,10 +3,11 @@
  *
  * pboss ships in these flavors and this module tells them apart at runtime:
  *
- *   1. Compiled standalone executable (`bun build --compile`, produced by
- *      `build:bin` / `build:all`). The Bun runtime is embedded inside the
- *      binary — no system runtime is required. The daemon is started by
- *      re-executing the binary itself: `<pboss> __daemon`.
+ *   1. Compiled standalone executable (`bun build --compile`, e.g.
+ *      `bun build --compile --minify --bytecode ./src/index.ts --outfile
+ *      dist/pboss`). The Bun runtime is embedded inside the binary — no
+ *      system runtime is required. The daemon is started by re-executing
+ *      the binary itself: `<pboss> __daemon`.
  *
  *   2. Package install (npm/bun/deno global installs, `bun add -g pboss`,
  *      a git checkout). pboss runs on whatever runtime executes it — Bun,

@@ -8,10 +8,10 @@
  * they reference absolute executables resolved at generation time. What they
  * reference depends on how pboss was installed:
  *
- *  - Compiled standalone binary (one-line installer, `build:bin`): the daemon
- *    is started by re-executing the binary itself
- *    (`ExecStart=<pboss> __daemon`). Bun is embedded in the binary and is NOT
- *    required on the system.
+ *  - Compiled standalone binary (one-line installer, built with
+ *    `bun build --compile`): the daemon is started by re-executing the
+ *    binary itself (`ExecStart=<pboss> __daemon`). Bun is embedded in the
+ *    binary and is NOT required on the system.
  *
  *  - Script install (npm / `bun add -g pboss`, git checkout): the daemon runs
  *    on the system Bun runtime (`ExecStart=<bun> run <daemon.ts>`), which is

@@ -104,8 +104,9 @@ describe("bunSearchCandidates: the discovery order", () => {
  *  2. Script install (npm / bun add -g) — system Bun required.
  *
  * These tests run under `bun test`, i.e. the script-install flavor: the host
- * process is the system Bun runtime. The compiled flavor is exercised by the
- * standalone smoke test (build:bin + run with a Bun-less PATH).
+ * process is the system Bun runtime. (The compiled flavor was exercised by
+ * the standalone smoke test — removed 2026-09-29 along with the build:bin /
+ * build:all package scripts.)
  */
 describe("Installation mode detection", () => {
   test("detects script mode when hosted by the system Bun runtime", () => {

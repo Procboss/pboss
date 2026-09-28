@@ -1481,7 +1481,7 @@ The generated service runs as the invoking user and uses the same `~/.pboss` dat
 pboss startup install
 ```
 
-The generated file adapts to how pboss was installed: a **compiled standalone install** (one-line installer, `build:bin`) re-executes the pboss binary itself (`ExecStart=/home/you/.local/bin/pboss __daemon` — Bun is embedded, not required on the system); a **script install** (`bun add -g pboss`, npm) runs the source on the system Bun (`ExecStart=/home/you/.bun/bin/bun run .../daemon.ts`). The header comment states which mode was detected.
+The generated file adapts to how pboss was installed: a **compiled standalone install** (one-line installer, built with `bun build --compile`) re-executes the pboss binary itself (`ExecStart=/home/you/.local/bin/pboss __daemon` — Bun is embedded, not required on the system); a **script install** (`bun add -g pboss`, npm) runs the source on the system Bun (`ExecStart=/home/you/.bun/bin/bun run .../daemon.ts`). The header comment states which mode was detected.
 
 The unit/agent `PATH` includes the target user's `~/.bun/bin` whenever it exists (workers that shell out to `bun` by name must resolve it), and the daemon self-heals its own `PATH` at startup — daemons started by **older** unit files also find Bun after an upgrade. See [Runtime discovery](#multi-language--runtime-support) for the full chain.
 
