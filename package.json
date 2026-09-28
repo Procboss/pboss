@@ -34,10 +34,6 @@
                 "dev": "bun run --watch src/main.ts",
                 "test": "bun test --timeout=60000",
                 "lint": "bun x tsc --noEmit --noUnusedLocals",
-                "build:dist": "bun run ./scripts/build-dist.ts",
-                "build:bin": "bun build --compile --minify --bytecode ./src/index.ts --outfile dist/pboss",
-                "build:all": "bun run ./scripts/build-binaries.ts",
-                "postinstall": "node dist/postinstall.js || bun src/postinstall.ts || exit 0",
                 "prepublishOnly": "bun run build:dist && bun test --timeout=60000"
         },
         "keywords": [
@@ -89,6 +85,7 @@
                 "chalk": "^5.6.2",
                 "cli-table3": "^0.6.5",
                 "cron-parser": "^5",
+                "pboss": "^1.5.0",
                 "pidusage": "^4.0.1",
                 "ws": "^8.18.0"
         },
