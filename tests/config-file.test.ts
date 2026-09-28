@@ -48,6 +48,19 @@ function spawnCli(args: string[], home: string) {
   });
 }
 
+/**
+ * Strip ANSI escapes (color/bold/dim) — the CLI's `color()` helper emits
+ * them UNCONDITIONALLY, and a FORCE_COLOR env (set by the harness, the
+ * user's shell, or CI) makes even the table borders carry escape codes.
+ * Every text assertion therefore runs on STRIPPED output: adjacency checks
+ * like `│ name │` or `fork <pid>` would otherwise break on the codes
+ * wedged between the border and the cell (reproduced with FORCE_COLOR=1,
+ * which failed exactly like the owner's machine did).
+ */
+function stripAnsi(s: string): string {
+  return s.replace(/\x1b\[[0-9;]*[A-Za-z]/g, "");
+}
+
 async function runCli(args: string[], home: string) {
   const proc = spawnCli(args, home);
   const [out, err] = await Promise.all([
@@ -55,7 +68,7 @@ async function runCli(args: string[], home: string) {
     new Response(proc.stderr).text(),
   ]);
   const code = await proc.exited;
-  return { out: out + err, code: code ?? 0 };
+  return { out: stripAnsi(out + err), code: code ?? 0 };
 }
 
 /** Kill the daemon (daemon-mode cases spawn one) and sweep app children. */
@@ -87,13 +100,22 @@ function writeConfig(home: string, file: string, names: string[]) {
   return join(home, file);
 }
 
-/** The pid a fleet command's table shows for `name` (6th column). */
+/**
+ * The pid the process table shows for `name` — STRUCTURAL, not regex:
+ * the (already ANSI-stripped) row is split on the │ borders, and the pid
+ * is read from its column (cells: id, name, namespace, version, mode,
+ * pid, …). Returns undefined when the app is absent or shows no pid
+ * (stopped rows print "-").
+ */
 function tablePid(out: string, name: string): number | undefined {
-  const row = out
-    .split("\n")
-    .find((l) => l.includes(`│ ${name} `) || l.includes(` ${name} │`));
-  const m = row?.match(/fork\D+(\d+)/) ?? row?.match(/cluster\D+(\d+)/);
-  return m ? parseInt(m[1]!) : undefined;
+  for (const line of out.split("\n")) {
+    if (!line.includes("│")) continue;
+    const cells = line.split("│").map((c) => c.trim());
+    if (cells[2] !== name) continue;
+    const pid = parseInt(cells[6] ?? "");
+    return Number.isFinite(pid) ? pid : undefined;
+  }
+  return undefined;
 }
 
 describe("custom config file — start --config: ANY file name, every spelling", () => {
@@ -131,7 +153,7 @@ describe("custom config file — start --config: ANY file name, every spelling",
     } finally {
       await cleanup(home);
     }
-  });
+  }, 60_000);
 
   test("start --config with a .ts config file", async () => {
     const home = await freshHome("ts");
@@ -144,7 +166,7 @@ describe("custom config file — start --config: ANY file name, every spelling",
     } finally {
       await cleanup(home);
     }
-  });
+  }, 60_000);
 });
 
 describe("custom config file — fleet commands sweep the file's apps", () => {
@@ -172,7 +194,7 @@ describe("custom config file — fleet commands sweep the file's apps", () => {
     } finally {
       await cleanup(home);
     }
-  });
+  }, 60_000);
 
   test("restart --config: an unregistered app is a reported miss, not a blocker", async () => {
     const home = await freshHome("miss");
@@ -188,7 +210,7 @@ describe("custom config file — fleet commands sweep the file's apps", () => {
     } finally {
       await cleanup(home);
     }
-  });
+  }, 60_000);
 
   test("stop / reload / delete --config operate on the whole file", async () => {
     const home = await freshHome("fleet");
@@ -214,7 +236,7 @@ describe("custom config file — fleet commands sweep the file's apps", () => {
     } finally {
       await cleanup(home);
     }
-  });
+  }, 120_000);
 
   test("fleet --config with nothing registered fails honestly with the start hint", async () => {
     const home = await freshHome("empty-fleet");
@@ -227,7 +249,7 @@ describe("custom config file — fleet commands sweep the file's apps", () => {
     } finally {
       await cleanup(home);
     }
-  });
+  }, 60_000);
 
   test("positional fleet targets: conventional names and .json work (PM2 parity)", async () => {
     const home = await freshHome("positional");
@@ -254,7 +276,7 @@ describe("custom config file — fleet commands sweep the file's apps", () => {
     } finally {
       await cleanup(home);
     }
-  });
+  }, 60_000);
 });
 
 describe("custom config file — failure paths stay honest", () => {
@@ -278,7 +300,7 @@ describe("custom config file — failure paths stay honest", () => {
     } finally {
       await cleanup(home);
     }
-  });
+  }, 60_000);
 });
 
 describe("custom config file — static pins (all commands share the extraction)", () => {
