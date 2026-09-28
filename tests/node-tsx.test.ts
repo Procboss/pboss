@@ -23,6 +23,13 @@
  * machine's view. The pure decision runs in-process — no environment can
  * hide a fixed system location from a live probe, which is exactly why it
  * was separated out.
+ *
+ * The node binary itself is never hardcoded: findNode() resolves the
+ * machine's REAL node (nvm/fnm/volta/homebrew machines keep it outside
+ * /usr/bin, where a hardcoded path made every probe die with ENOENT and
+ * the in-process findTsx — which validates the node path — return null).
+ * Machines with no node at all have nothing under test: the probes skip
+ * instead of failing.
  */
 import { describe, test, expect, afterAll } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync, chmodSync } from "node:fs";
@@ -33,12 +40,21 @@ import {
   isTypeScriptFile,
   decideScriptInterpreter,
   findTsx,
+  findNode,
   resolveScriptInterpreter,
 } from "../src/install-mode";
 import { ClusterManager } from "../src/cluster-manager";
 import type { ProcessDescription } from "../src/types";
 
 const ROOT = join(import.meta.dir, "..");
+
+// The node on THIS machine, resolved exactly the way production resolves
+// it (findNode: the runtime's which() + the /usr/local/bin fallback) — the
+// tests used to hardcode /usr/bin/node, which silently assumed a
+// distro-packaged install. Null on node-less machines: the probe tests
+// skip (nothing to test), the pure ones run regardless.
+const NODE_BIN = await findNode();
+const nodeTest = NODE_BIN ? test : test.skip;
 
 function makeConfig(
   script: string,
@@ -160,16 +176,16 @@ function fixtureTsxIn(dir: string, version = "9.9.9"): string {
 }
 
 describe("findTsx: app-local devDependency wins over pboss's own copy", () => {
-  test("resolves the app's node_modules/tsx and its bin entry", async () => {
+  nodeTest("resolves the app's node_modules/tsx and its bin entry", async () => {
     const appDir = scratch("app");
     const cli = fixtureTsxIn(appDir);
-    const res = await findTsx("/usr/bin/node", join(appDir, "server.ts"));
+    const res = await findTsx(NODE_BIN!, join(appDir, "server.ts"));
     expect(res).not.toBeNull();
     expect(res!.source).toBe("app");
-    expect(res!.cmd).toEqual(["/usr/bin/node", cli]);
+    expect(res!.cmd).toEqual([NODE_BIN!, cli]);
   });
 
-  test("a broken bin field is a miss, not an error (node probe)", () => {
+  nodeTest("a broken bin field is a miss, not an error (node probe)", () => {
     const appDir = scratch("appbroken");
     const pkgDir = join(appDir, "node_modules", "tsx");
     mkdirSync(pkgDir, { recursive: true });
@@ -178,7 +194,7 @@ describe("findTsx: app-local devDependency wins over pboss's own copy", () => {
     // route (the repo's own copy) — never throwing.
     writeFileSync(join(pkgDir, "package.json"), JSON.stringify({ name: "tsx" }));
     const { code, out } = runNodeProbe(
-      `const r = await findTsx("/usr/bin/node", ${JSON.stringify(join(appDir, "server.ts"))});\nconsole.log("__JSON__" + JSON.stringify(r));`,
+      `const r = await findTsx(${JSON.stringify(NODE_BIN!)}, ${JSON.stringify(join(appDir, "server.ts"))});\nconsole.log("__JSON__" + JSON.stringify(r));`,
       { PATH: "/usr/bin:/bin", HOME: scratch("brokenHome") }
     );
     expect(code).toBe(0);
@@ -198,6 +214,7 @@ describe("findTsx: app-local devDependency wins over pboss's own copy", () => {
  * route order untestable; node gives the strict climb the real machine sees.
  */
 function runNodeProbe(body: string, env: Record<string, string>): { code: number; out: string } {
+  if (!NODE_BIN) throw new Error("runNodeProbe reached on a node-less machine (the test should have skipped)");
   const dir = scratch("probe");
   // "type": "module" — the probe uses top-level await; without it tsx
   // transpiles .ts to CJS and refuses TLA.
@@ -208,14 +225,14 @@ function runNodeProbe(body: string, env: Record<string, string>): { code: number
     `import { findTsx } from ${JSON.stringify(join(ROOT, "src", "install-mode"))};\n${body}\n`
   );
   const proc = Bun.spawnSync(
-    ["/usr/bin/node", join(ROOT, "node_modules", "tsx", "dist", "cli.mjs"), script],
+    [NODE_BIN, join(ROOT, "node_modules", "tsx", "dist", "cli.mjs"), script],
     { env, stdout: "pipe", stderr: "pipe" }
   );
   return { code: proc.exitCode, out: proc.stdout.toString() };
 }
 
 describe("findTsx: PATH route (probe subprocess)", () => {
-  test("a real tsx executable on PATH is used directly (POSIX shebang script)", () => {
+  nodeTest("a real tsx executable on PATH is used directly (POSIX shebang script)", () => {
     const home = scratch("pathhome");
     const tsxDir = join(home, "bin");
     mkdirSync(tsxDir, { recursive: true });
@@ -225,7 +242,7 @@ describe("findTsx: PATH route (probe subprocess)", () => {
 
     const appDir = scratch("pathapp"); // no app-local tsx
     const { code, out } = runNodeProbe(
-      `const r = await findTsx("/usr/bin/node", ${JSON.stringify(join(appDir, "server.ts"))});\nconsole.log("__JSON__" + JSON.stringify(r));`,
+      `const r = await findTsx(${JSON.stringify(NODE_BIN!)}, ${JSON.stringify(join(appDir, "server.ts"))});\nconsole.log("__JSON__" + JSON.stringify(r));`,
       { PATH: `${tsxDir}:/usr/bin:/bin`, HOME: home }
     );
     expect(code).toBe(0);
@@ -234,7 +251,7 @@ describe("findTsx: PATH route (probe subprocess)", () => {
     expect(parsed.cmd).toEqual([tsxPath]);
   });
 
-  test("app-local beats a tsx that is also on PATH", () => {
+  nodeTest("app-local beats a tsx that is also on PATH", () => {
     const home = scratch("prioHome");
     const tsxDir = join(home, "bin");
     mkdirSync(tsxDir, { recursive: true });
@@ -245,13 +262,13 @@ describe("findTsx: PATH route (probe subprocess)", () => {
     const appDir = scratch("prioApp");
     const cli = fixtureTsxIn(appDir);
     const { code, out } = runNodeProbe(
-      `const r = await findTsx("/usr/bin/node", ${JSON.stringify(join(appDir, "server.ts"))});\nconsole.log("__JSON__" + JSON.stringify(r));`,
+      `const r = await findTsx(${JSON.stringify(NODE_BIN!)}, ${JSON.stringify(join(appDir, "server.ts"))});\nconsole.log("__JSON__" + JSON.stringify(r));`,
       { PATH: `${tsxDir}:/usr/bin:/bin`, HOME: home }
     );
     expect(code).toBe(0);
     const parsed = JSON.parse(out.slice(out.indexOf("__JSON__") + 8).trim());
     expect(parsed.source).toBe("app");
-    expect(parsed.cmd).toEqual(["/usr/bin/node", cli]);
+    expect(parsed.cmd).toEqual([NODE_BIN!, cli]);
   });
 });
 
@@ -267,23 +284,23 @@ describe("pboss's own tsx (optionalDependencies)", () => {
     expect(pkg.optionalDependencies?.tsx).toMatch(/^\^4\./);
   });
 
-  test("the graph route resolves the shipped copy from the repo (probe subprocess)", () => {
+  nodeTest("the graph route resolves the shipped copy from the repo (probe subprocess)", () => {
     // No app-local tsx, nothing on PATH — the pboss route must find the
     // copy bun install placed in the repo's node_modules.
     const appDir = scratch("graphApp");
     const { code, out } = runNodeProbe(
-      `const r = await findTsx("/usr/bin/node", ${JSON.stringify(join(appDir, "server.ts"))});\nconsole.log("__JSON__" + JSON.stringify(r));`,
+      `const r = await findTsx(${JSON.stringify(NODE_BIN!)}, ${JSON.stringify(join(appDir, "server.ts"))});\nconsole.log("__JSON__" + JSON.stringify(r));`,
       { PATH: "/usr/bin:/bin", HOME: scratch("graphHome") }
     );
     expect(code).toBe(0);
     const parsed = JSON.parse(out.slice(out.indexOf("__JSON__") + 8).trim());
     expect(parsed.source).toBe("pboss");
-    expect(parsed.cmd[0]).toBe("/usr/bin/node");
+    expect(parsed.cmd[0]).toBe(NODE_BIN!);
     expect(parsed.cmd[1]).toContain(join("node_modules", "tsx"));
     expect(parsed.cmd[1]).toMatch(/cli\.mjs$/);
   });
 
-  test("the shipped cli actually runs TypeScript under node (enum — non-erasable syntax)", async () => {
+  nodeTest("the shipped cli actually runs TypeScript under node (enum — non-erasable syntax)", async () => {
     // Prove the exact command pboss would spawn works: node <tsx cli> app.ts
     // with syntax --experimental-strip-types REJECTS.
     const pkgJson = JSON.parse(await Bun.file(join(ROOT, "package.json")).text()) as {
@@ -309,7 +326,7 @@ describe("pboss's own tsx (optionalDependencies)", () => {
       app,
       "enum Color { Red, Green }\nconst c: Color = Color.Green;\nconsole.log(\"ENUM_OK\", c);\n"
     );
-    const proc = Bun.spawnSync(["/usr/bin/node", cli, app], {
+    const proc = Bun.spawnSync([NODE_BIN!, cli, app], {
       stdout: "pipe",
       stderr: "pipe",
     });
