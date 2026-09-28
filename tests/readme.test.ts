@@ -35,6 +35,19 @@ describe("README.md: removed-at-the-owner's-request sections stay removed", () =
     expect(readme).not.toContain("Server authorized and connected");
     expect(readme).not.toContain("Open the URL anywhere");
   });
+
+  test("no One-Line Universal Install (removed 2026-09-29 — package managers only for now)", () => {
+    expect(readme).not.toContain("One-Line Universal Install");
+    expect(readme).not.toContain("curl -fsSL https://procboss.com/install.sh | bash");
+    expect(readme).not.toContain("install.ps1");
+    expect(readme).not.toContain("install.cmd");
+  });
+
+  test("no Runtime-Agnostic Architecture section (moved to the main docs, 2026-09-29)", () => {
+    expect(readme).not.toContain("## Runtime-Agnostic Architecture");
+    expect(readme).not.toContain("Runtime Adapter"); // the ASCII diagram's node
+    expect(readme).not.toContain("### Which runtime is executing pboss?");
+  });
 });
 
 describe("README.md: the untouched core contract survives removals", () => {
@@ -52,7 +65,12 @@ describe("README.md: the untouched core contract survives removals", () => {
   });
 
   test("install / quick-start / updating sections intact", () => {
-    expect(readme).toContain("curl -fsSL https://procboss.com/install.sh | bash");
+    // 2026-09-29: the universal installer one-liner was replaced by the
+    // package-manager block (bun / npm / deno) at the owner's request.
+    expect(readme).toContain("### Package-Manager Installs");
+    expect(readme).toContain("bun install -g pboss");
+    expect(readme).toContain("npm install -g pboss");
+    expect(readme).toContain("deno install -g npm:pboss");
     expect(readme).toContain("## Quick Start");
     expect(readme).toContain("pboss start"); // the issue-#29 auto-detection story
     expect(readme).toContain("pboss upgrade --check");

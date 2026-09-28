@@ -175,7 +175,7 @@ Deno is deny-by-default — `-A` grants what a process manager needs. The explic
 git clone https://github.com/procboss/pboss.git
 cd pboss
 bun install
-bun run build:bin
+bun build --compile --minify --bytecode ./src/index.ts --outfile dist/pboss
 ```
 
 ---

@@ -34,7 +34,7 @@
                 "dev": "bun run --watch src/main.ts",
                 "test": "bun test --timeout=60000",
                 "lint": "bun x tsc --noEmit --noUnusedLocals",
-                "prepublishOnly": "bun run build:dist && bun test --timeout=60000"
+                "prepublishOnly": "bun run ./scripts/build-dist.ts && bun test --timeout=60000"
         },
         "keywords": [
                 "process-manager",

@@ -512,6 +512,10 @@ describe("Windows Support & Cross-Platform Compatibility", () => {
       // `|| exit 0`, which parses everywhere (bun shell, sh, cmd).
       const pkg = JSON.parse(readFileSync(join(import.meta.dir, "..", "package.json"), "utf8"));
       const postinstall = pkg.scripts.postinstall;
+      // Removed by the owner on 2026-09-28 (8c597b5): with no postinstall
+      // hook there is nothing to validate — nothing runs at install time.
+      // If the hook ever returns, the redirect ban below applies again.
+      if (postinstall === undefined) return;
       // The multi-runtime chain: the built hook runs under node when
       // present, falls back to bun for bun-managed installs, and never
       // fails the package install. No shell redirect tokens (cmd.exe).
