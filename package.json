@@ -59,7 +59,12 @@
                 "log-management",
                 "health-check",
                 "pboss",
-                "procboss"
+                "procboss",
+                "cron",
+                "cron-job",
+                "cron-job-manager",
+                "deployer",
+                "node-deployer"
         ],
         "author": "procboss.com",
         "license": "GPL-3.0",
@@ -94,6 +99,7 @@
                 "@types/bun": "^1.4.2",
                 "@types/node": "22.20.2",
                 "@types/pidusage": "^2.0.5",
+                "@types/ws": "^8.18.1",
                 "bun-types": "^1.4.2",
                 "typescript": "^5.9.3"
         }
