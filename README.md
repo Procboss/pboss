@@ -142,12 +142,23 @@ npm install -g pboss      # runs under Node
 deno install -g npm:pboss # runs under Deno
 ```
 
+Deno is deny-by-default — grant what a process manager needs at install
+(`deno install -g -A npm:pboss`, or the explicit
+`--allow-run --allow-read --allow-write --allow-net --allow-env --allow-sys`
+set). The full permission table lives in the
+[installation docs](https://docs.procboss.com/installation#denos-permission-system).
+
 ### Verify Installation
 
 ```bash
 pboss --version
 pboss --runtime    # which runtime is executing pboss right now
 ```
+
+The `pboss` command lands in the package manager's bin directory
+(`~/.bun/bin`, the npm prefix, or `~/.deno/bin`); when that directory is not
+on your PATH, the installer adds it to your shell profile automatically —
+open a new terminal and `pboss` is found.
 
 ---
 
