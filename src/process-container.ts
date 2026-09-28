@@ -13,7 +13,10 @@
  * https://github.com/procboss/pboss
  * License: GPL-3.0-only
  */
-import type { Subprocess } from "bun";
+import type { PBChild } from "./runtime";
+import { getRuntime } from "./runtime";
+
+const R = getRuntime();
 import type {
   ProcessDescription,
   ProcessState,
@@ -43,7 +46,7 @@ export class ProcessContainer {
   public name: string;
   public config: ProcessDescription;
   public status: ProcessStatus = "stopped";
-  public process: Subprocess | null = null;
+  public process: PBChild | null = null;
   public pid: number | undefined;
   public restartCount: number = 0;
   public unstableRestarts: number = 0;
@@ -147,8 +150,7 @@ export class ProcessContainer {
     try {
       // Ensure log files exist
       for (const f of [logPaths.outFile, logPaths.errFile]) {
-        const file = Bun.file(f);
-        if (!(await file.exists())) await Bun.write(f, "");
+        if (!(await R.filesystem.exists(f))) await R.filesystem.write(f, "");
       }
 
       if (this.config.execMode === "cluster" && this.config.instances > 1) {
@@ -162,7 +164,7 @@ export class ProcessContainer {
 
       // Write PID file
       if (this.pid) {
-        await Bun.write(
+        await R.filesystem.write(
           join(PID_DIR, `${this.name}-${this.id}.pid`),
           String(this.pid)
         );
@@ -245,7 +247,7 @@ export class ProcessContainer {
       BM2_EXEC_MODE: "fork",
     };
 
-    this.process = Bun.spawn(cmd, {
+    this.process = R.process.spawn(cmd, {
       cwd: this.config.cwd || process.cwd(),
       env,
       stdout: "pipe",
@@ -614,7 +616,7 @@ export class ProcessContainer {
         const timeout = this.config.killTimeout || 5000;
         const exited = await Promise.race([
           this?.process?.exited.then(() => true),
-          Bun.sleep(timeout).then(() => false),
+          R.misc.sleep(timeout).then(() => false),
         ]);
 
         if (!exited && this.process) {
@@ -695,7 +697,7 @@ export class ProcessContainer {
     await this.start();
 
     // Wait for new process to be stable
-    await Bun.sleep(2000);
+    await R.misc.sleep(2000);
 
     // Kill old process
     if (oldProcess && oldPid) {

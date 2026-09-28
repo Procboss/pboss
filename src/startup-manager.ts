@@ -28,7 +28,6 @@
 import { join, dirname } from "path";
 import { readFileSync, rmSync, existsSync } from "fs";
 import { mkdir } from "fs/promises";
-import { $ } from "bun";
 import { ignore } from "./error-handling";
 import { colorize } from "./utils";
 import { stopDaemonIfRunning } from "./api";
@@ -48,6 +47,8 @@ import {
   cliSpawnCommand,
   installModeDescription,
 } from "./install-mode";
+import { getRuntime } from "./runtime";
+const R = getRuntime();
 
 /**
  * The user the generated service should run as.
@@ -82,16 +83,14 @@ function homeForUser(user: string): string | null {
     ignore(`resolve home for ${user} via /etc/passwd`, err);
   }
   try {
-    const r = Bun.spawnSync(["dscl", ".", "-read", `/Users/${user}`, "NFSHomeDirectory"]);
-    const out = new TextDecoder().decode(r.stdout ?? new Uint8Array()).trim();
+    const out = R.process.spawnSync(["dscl", ".", "-read", `/Users/${user}`, "NFSHomeDirectory"]).stdout.trim();
     const m = out.match(/NFSHomeDirectory:\s*(.+)/);
     if (m?.[1]) return m[1].trim();
   } catch (err) {
     ignore(`resolve home for ${user} via dscl`, err);
   }
   try {
-    const r = Bun.spawnSync(["getent", "passwd", user]);
-    const out = new TextDecoder().decode(r.stdout ?? new Uint8Array()).trim();
+    const out = R.process.spawnSync(["getent", "passwd", user]).stdout.trim();
     const home = out.split(":")[5];
     if (home) return home;
   } catch (err) {
@@ -149,13 +148,8 @@ async function enableLinger(user: string): Promise<boolean> {
     // through the PATH of the env passed at spawn time (same as
     // runSystemctl), so tests can substitute a loginctl shim by
     // mutating PATH in-process.
-    const proc = Bun.spawn(["loginctl", "enable-linger", user], {
-      stdout: "ignore",
-      stderr: "ignore",
-      stdin: "ignore",
-      env: process.env,
-    });
-    return (await proc.exited) === 0;
+    const { exitCode } = await R.process.capture(["loginctl", "enable-linger", user]);
+    return exitCode === 0;
   } catch (err) {
     ignore(`loginctl enable-linger ${user}`, err);
     return false;
@@ -169,13 +163,9 @@ async function enableLinger(user: string): Promise<boolean> {
  */
 async function lingerEnabled(user: string): Promise<boolean | null> {
   try {
-    const proc = Bun.spawn(
-      ["loginctl", "show-user", user, "--property=Linger", "--value"],
-      // env: process.env (the LIVE object) — see enableLinger.
-      { stdout: "pipe", stderr: "ignore", stdin: "ignore", env: process.env }
+    const { stdout: out, exitCode: code } = await R.process.capture(
+      ["loginctl", "show-user", user, "--property=Linger", "--value"]
     );
-    const out = (await new Response(proc.stdout).text()).trim();
-    const code = await proc.exited;
     if (code !== 0) return null;
     return out === "yes" || out === "true" || out === "1";
   } catch (err) {
@@ -471,7 +461,7 @@ ${plist}`;
 
       try {
         await mkdir(userUnitDir(target.home), { recursive: true });
-        await Bun.write(servicePath, unitContent);
+        await R.filesystem.write(servicePath, unitContent);
       } catch (err) {
         throw new Error(
           `Failed to write ${servicePath} (${err instanceof Error ? err.message : String(err)}).`
@@ -495,7 +485,7 @@ ${plist}`;
       const plistStart = content.indexOf("<?xml");
       const plistContent = content.substring(plistStart);
       await mkdir(join(target.home, "Library", "LaunchAgents"), { recursive: true });
-      await Bun.write(plistPath, plistContent);
+      await R.filesystem.write(plistPath, plistContent);
 
       // launchd opens StandardOut/StandardErrorPath BEFORE starting the
       // program: if the target user's ~/.pboss/logs does not exist yet, the
@@ -505,12 +495,12 @@ ${plist}`;
       await mkdir(join(target.home, ".pboss", "logs"), { recursive: true });
 
       try {
-        await $`launchctl unload ${plistPath}`; // reload if it was already loaded
+        await R.process.capture(["launchctl", "unload", plistPath]); // reload if it was already loaded
       } catch (err) {
         ignore(`launchctl unload ${plistPath} (first install)`, err);
       }
       try {
-        await $`launchctl load -w ${plistPath}`;
+        await R.process.capture(["launchctl", "load", "-w", plistPath]);
         return `Plist installed and loaded: ${plistPath}`;
       } catch (err) {
         ignore(`launchctl load -w ${plistPath}`, err);
@@ -558,17 +548,9 @@ ${plist}`;
       let taskFailure: string | null = null;
       try {
         const script = buildWindowsTaskRegistrationScript(launcherCmd, taskName);
-        const proc = Bun.spawn(
-          ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
-          { stdout: "pipe", stderr: "pipe" }
+        const { exitCode: code, stderr: errText } = await R.process.capture(
+          ["powershell", "-NoProfile", "-NonInteractive", "-Command", script]
         );
-        const [code, errText] = await Promise.all([
-          proc.exited,
-          new Response(proc.stderr).text().catch((err: unknown) => {
-            ignore("read powershell stderr (task registration)", err);
-            return "";
-          }),
-        ]);
         if (code !== 0) {
           taskFailure = `powershell exit code ${code}` + (errText.trim() ? `\n${errText.trim()}` : "");
         }
@@ -650,12 +632,8 @@ ${plist}`;
       const viaLauncher = launcherCmd[0]?.toLowerCase() === "wscript.exe";
 
       if (viaTask) {
-        const proc = Bun.spawn(["schtasks", "/run", "/tn", "PBOSS_Daemon"], {
-          stdout: "ignore",
-          stderr: "ignore",
-          stdin: "ignore",
-        });
-        if ((await proc.exited) !== 0) {
+        const { exitCode } = await R.process.capture(["schtasks", "/run", "/tn", "PBOSS_Daemon"]);
+        if (exitCode !== 0) {
           return "\nDaemon: could not be started from here — it starts at your next logon.";
         }
       } else if (viaLauncher) {
@@ -667,7 +645,7 @@ ${plist}`;
         // detached: the boot sequence must outlive this CLI invocation;
         // windowsHide: a console child of a console-less parent gets a new
         // visible console otherwise.
-        const proc = Bun.spawn(launcherCmd, {
+        const proc = R.process.spawn(launcherCmd, {
           stdout: "ignore",
           stderr: "ignore",
           stdin: "ignore",
@@ -683,13 +661,13 @@ ${plist}`;
         // daemon died the moment `startup install` returned) and
         // windowsHide: true (a detached console child would otherwise get
         // its own visible cmd.exe window).
-        const outLog = Bun.file(DAEMON_OUT_LOG_FILE);
-        const errLog = Bun.file(DAEMON_ERR_LOG_FILE);
-        if (!(await outLog.exists())) await Bun.write(outLog, "");
-        if (!(await errLog.exists())) await Bun.write(errLog, "");
+        // The append sinks are the adapter's native file redirection
+        // (Bun: fd, Node: stream, Deno: pump) — same EBUSY-retry contract.
+        const outLog = R.filesystem.sink(DAEMON_OUT_LOG_FILE);
+        const errLog = R.filesystem.sink(DAEMON_ERR_LOG_FILE);
         let proc;
         try {
-          proc = Bun.spawn(launcherCmd, {
+          proc = R.process.spawn(launcherCmd, {
             stdout: outLog,
             stderr: errLog,
             stdin: "ignore",
@@ -704,7 +682,7 @@ ${plist}`;
           // without these files; spawn silently instead of failing the
           // install (best-effort contract, see method doc).
           ignore("spawn Run-key daemon with log files (retrying with silent stdio)", err);
-          proc = Bun.spawn(launcherCmd, {
+          proc = R.process.spawn(launcherCmd, {
             stdout: "ignore",
             stderr: "ignore",
             stdin: "ignore",
@@ -718,7 +696,7 @@ ${plist}`;
 
       const deadline = Date.now() + (verifyTimeoutMs ?? 10_000);
       while (Date.now() < deadline) {
-        await Bun.sleep(300);
+        await R.misc.sleep(300);
         const probe = await probeDaemon(DAEMON_SOCKET);
         if (probe) {
           // The resurrect rides along iff the wscript launcher is what
@@ -752,7 +730,7 @@ ${plist}`;
    */
   private async writeWindowsDaemonLauncher(daemonCmd: string[]): Promise<void> {
     await mkdir(PBOSS_HOME, { recursive: true });
-    await Bun.write(
+    await R.filesystem.write(
       windowsDaemonLauncherPath(),
       buildWindowsDaemonLauncherVbs(
         daemonCmd,
@@ -784,7 +762,7 @@ ${plist}`;
         while (Date.now() < deadline) {
           const state = (await runSystemctl(["is-active", "pboss"], { user: true })).out;
           if (state === "inactive" || state === "failed" || state === "") break;
-          await Bun.sleep(300);
+          await R.misc.sleep(300);
         }
       } else {
         ignore("systemctl --user --no-block stop pboss (uninstall)", stop.err);
@@ -805,23 +783,19 @@ ${plist}`;
       const target = targetUserContext();
       const plistPath = join(target.home, "Library", "LaunchAgents", "com.pboss.daemon.plist");
 
-      try { await $`launchctl unload ${plistPath}`; } catch (err) { ignore(`launchctl unload ${plistPath} (uninstall)`, err); }
-      try { await $`rm -f ${plistPath}`; } catch (err) { ignore(`rm ${plistPath} (uninstall)`, err); }
+      try { await R.process.capture(["launchctl", "unload", plistPath]); } catch (err) { ignore(`launchctl unload ${plistPath} (uninstall)`, err); }
+      try { await R.process.capture(["rm", "-f", plistPath]); } catch (err) { ignore(`rm ${plistPath} (uninstall)`, err); }
       return "PBOSS launch agent removed";
     } else if (os === "win32") {
       const taskName = "PBOSS_Daemon";
       const lines: string[] = [];
       try {
-        const proc = Bun.spawn(["schtasks", "/delete", "/tn", taskName, "/f"], {
-          stdout: "pipe",
-          stderr: "pipe",
-        });
-        const [code, errText] = await Promise.all([
-          proc.exited,
-          new Response(proc.stderr).text().catch((err: unknown) => {
-            ignore("read schtasks stderr (task delete)", err);
-            return "";
-          }),
+        const { exitCode: code, stderr: errText } = await R.process.capture([
+          "schtasks",
+          "/delete",
+          "/tn",
+          taskName,
+          "/f",
         ]);
         if (code === 0) {
           lines.push(`Windows Scheduled Task "${taskName}" removed.`);
@@ -938,12 +912,8 @@ ${plist}`;
       // Run-key machine "not installed".
       let taskInstalled = false;
       try {
-        const proc = Bun.spawn(["schtasks", "/query", "/tn", "PBOSS_Daemon"], {
-          stdout: "ignore",
-          stderr: "ignore",
-          stdin: "ignore",
-        });
-        taskInstalled = (await proc.exited) === 0;
+        const { exitCode } = await R.process.capture(["schtasks", "/query", "/tn", "PBOSS_Daemon"]);
+        taskInstalled = exitCode === 0;
       } catch (err) {
         ignore("schtasks /query (startup status)", err);
       }
@@ -1045,17 +1015,8 @@ export async function runSystemctl(
     // env: process.env (the LIVE object) — Bun resolves the executable
     // through the PATH of the env passed at spawn time, so tests can
     // substitute a systemctl shim by mutating PATH in-process.
-    const proc = Bun.spawn(["systemctl", ...fullArgs], {
-      stdout: "pipe",
-      stderr: "pipe",
-      env: process.env,
-    });
-    const [code, out, err] = await Promise.all([
-      proc.exited,
-      new Response(proc.stdout).text(),
-      new Response(proc.stderr).text(),
-    ]);
-    return { code: code ?? 127, out: out.trim(), err: err.trim() };
+    const { exitCode, stdout, stderr } = await R.process.capture(["systemctl", ...fullArgs]);
+    return { code: exitCode ?? 127, out: stdout.trim(), err: stderr.trim() };
   } catch (err) {
     ignore(`systemctl ${fullArgs.join(" ")}`, err);
     return { code: 127, out: "", err: err instanceof Error ? err.message : String(err) };
@@ -1065,14 +1026,8 @@ export async function runSystemctl(
 /** journalctl text (best-effort): trimmed output, "" when unavailable. */
 export async function journalctlText(args: string[]): Promise<string> {
   try {
-    const proc = Bun.spawn(["journalctl", ...args], {
-      stdout: "pipe",
-      stderr: "pipe",
-      env: process.env,
-    });
-    const out = await new Response(proc.stdout).text();
-    await proc.exited;
-    return out.trim();
+    const { stdout } = await R.process.capture(["journalctl", ...args]);
+    return stdout.trim();
   } catch (err) {
     ignore(`journalctl ${args.join(" ")}`, err);
     return "";
@@ -1181,7 +1136,7 @@ export async function bringUpSystemdUnit(opts: BringUpOptions): Promise<string> 
     // The unit gave up (start-rate limited / permanent failure) — polling
     // longer cannot change the verdict.
     if (state === "failed") break;
-    await Bun.sleep(500);
+    await R.misc.sleep(500);
   }
 
   // Linger (user units): with it the daemon runs from BOOT; without, from
@@ -1305,12 +1260,8 @@ export async function bootServiceInstalled(
   if (os === "win32") {
     let installed = false;
     try {
-      const proc = Bun.spawn(["schtasks", "/query", "/tn", "PBOSS_Daemon"], {
-        stdout: "ignore",
-        stderr: "ignore",
-        stdin: "ignore",
-      });
-      installed = (await proc.exited) === 0;
+      const { exitCode } = await R.process.capture(["schtasks", "/query", "/tn", "PBOSS_Daemon"]);
+      installed = exitCode === 0;
     } catch (err) {
       ignore("schtasks /query (boot presence check)", err);
     }
@@ -1580,25 +1531,12 @@ async function runReg(
   keepStdout = false
 ): Promise<[number, string, string]> {
   try {
-    const proc = Bun.spawn(["reg", ...args], {
-      stdout: "pipe",
-      stderr: "pipe",
-      stdin: "ignore",
-    });
-    const [code, errText, outText] = await Promise.all([
-      proc.exited,
-      new Response(proc.stderr).text().catch((err: unknown) => {
-        ignore("read reg stderr (Run key)", err);
-        return "";
-      }),
-      keepStdout
-        ? new Response(proc.stdout).text().catch((err: unknown) => {
-            ignore("read reg stdout (Run key status)", err);
-            return "";
-          })
-        : Promise.resolve(""),
+    const { exitCode: code, stderr: errText, stdout: outText } = await R.process.capture([
+      "reg",
+      ...args,
     ]);
-    return [code, errText, keepStdout ? outText : ""];
+    const codeNum = code ?? 127;
+    return [codeNum, errText, keepStdout ? outText : ""];
   } catch (err) {
     ignore(`reg ${args[0]} (Run key)`, err);
     // 127 = command effectively unavailable — callers treat nonzero as

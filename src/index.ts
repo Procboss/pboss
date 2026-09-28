@@ -16,6 +16,10 @@
  */
 
 import path, { resolve, extname } from "path";
+import { getRuntime, runtimeDescription, runtimeDisplayName } from "./runtime";
+import { installModeDescription } from "./install-mode";
+
+const R = getRuntime();
 import readline from "node:readline";
 import {
   APP_NAME,
@@ -231,7 +235,7 @@ function looksLikeEcosystemTarget(target: string): boolean {
   return ECOSYSTEM_NAME_HINTS.some((hint) => target.includes(hint));
 }
 
-class PBossCLI {
+export class PBossCLI {
   public pboss: PBoss;
   public noDaemon: boolean = false;
 
@@ -574,7 +578,7 @@ class PBossCLI {
         // always wins, so `pboss start ./index.ts` behaves exactly as
         // before.
         const scriptAbs = resolve(target);
-        if (!(await Bun.file(scriptAbs).exists())) {
+        if (!(await R.filesystem.exists(scriptAbs))) {
           try {
             const states = await this.pboss.startTarget(target);
             this.printNamespaceSummary("Started", states, target);
@@ -2732,6 +2736,9 @@ ${colorize("Notes:", "dim")}
     daemon reload                 Reloads the daemon
     
     ${colorize("Other:", "cyan")}
+    --runtime                     Print the runtime executing pboss
+                                  (Bun, Node.js or Deno — detected at
+                                  execution time, never configured)
     ping                          Check if daemon is alive
     kill                          Kill the daemon and all processes
     sendSignal <sig> <id|name>    Send OS signal to process
@@ -2930,6 +2937,15 @@ ${colorize("Notes:", "dim")}
       case "--version":
         console.log(`${APP_NAME} v${VERSION}`);
         break;
+      case "--runtime":
+        // The ACTUAL executing runtime — not what the installer detected.
+        console.log(`Runtime: ${runtimeDescription()}`);
+        break;
+      case "runtime":
+        console.log(`Runtime: ${runtimeDisplayName(R.name)}`);
+        console.log(`Version: ${R.misc.runtimeVersion()}`);
+        console.log(`Install: ${installModeDescription()}`);
+        break;
       case "__daemon":
       case "daemon-server": {
         // The systemd unit's ExecStart (and the CLI daemonizer) run this.
@@ -2986,7 +3002,13 @@ async function main() {
   await cli.run(process.argv.slice(2));
 }
 
-main().catch((err) => {
-  console.error(err);
-  process.exit(1);
-});
+// Runs when this file is the EXECUTED SCRIPT (bun run src/index.ts). The
+// dist bundle enters through src/main.ts, and the bundler's static
+// import.meta.main handling differs per module — pin the decision to the
+// actually-executed entry so the bundled CLI can never run main() twice.
+if (import.meta.main === true && /(?:^|[/\\])index\.ts$/.test(process.argv[1] ?? "")) {
+  main().catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });
+}

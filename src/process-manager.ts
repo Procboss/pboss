@@ -59,6 +59,8 @@
    DEFAULT_LOG_RETAIN,
  } from "./constants";
 import path from "path";
+import { getRuntime } from "./runtime";
+const R = getRuntime();
  
  /**
  * The canonical source of pboss's internal events (issue #32).
@@ -626,7 +628,7 @@ import path from "path";
       : path.join(options.cwd || process.cwd(), options.script);
 
 
-    if (!(await Bun.file(options.script).exists())) {
+    if (!(await R.filesystem.exists(options.script))) {
       throw new Error(`Script not found: ${options.script}`);
     }
 
@@ -1297,7 +1299,7 @@ import path from "path";
     // ensureDirs() has run (a bare ProcessManager in tests, or the first
     // command of a fresh install) — never let a missing directory fail a save.
     await mkdir(path.dirname(DUMP_FILE), { recursive: true });
-    await Bun.write(DUMP_FILE, JSON.stringify(data, null, 2));
+    await R.filesystem.write(DUMP_FILE, JSON.stringify(data, null, 2));
   }
 
   /**
@@ -1322,9 +1324,13 @@ import path from "path";
 
   async resurrect(): Promise<ProcessState[]> {
     try {
-      const file = Bun.file(DUMP_FILE);
-      if (!(await file.exists())) return [];
-      const data = await file.json();
+      if (!(await R.filesystem.exists(DUMP_FILE))) return [];
+            const data = (await R.filesystem.readJSON(DUMP_FILE)) as Array<{
+        config: ProcessDescription;
+        restartCount?: number;
+        unstableRestarts?: number;
+        stopped?: boolean;
+      }>
       const states: ProcessState[] = [];
       // Issue #33 (boot): create every container first, then bring the
       // ones that were running up in DEPENDENCY order — a dump saved in
@@ -1337,7 +1343,7 @@ import path from "path";
         const savedConfig: ProcessDescription = item.config;
         if (!savedConfig || !savedConfig.script) continue;
 
-        if (!(await Bun.file(savedConfig.script).exists())) {
+        if (!(await R.filesystem.exists(savedConfig.script))) {
           console.warn(`[pboss] Cannot resurrect ${savedConfig.name}: script not found at ${savedConfig.script}`);
           continue;
         }

@@ -1,32 +1,44 @@
 {
         "name": "pboss",
-        "version": "1.4.10",
-        "description": "A blazing-fast, universal production process manager built on Bun native APIs. Run, cluster, and supervise Node.js, Bun, Go, Python, Rust, Ruby, PHP, Java, and any software with zero overhead.",
-        "main": "src/api.ts",
-        "module": "src/api.ts",
+        "version": "1.5.0",
+        "description": "A blazing-fast, universal, runtime-agnostic production process manager. Run, cluster, and supervise Node.js, Bun, Deno, Go, Python, Rust, Ruby, PHP, Java, and any software with zero overhead — under Bun it uses Bun-native APIs, under Node node-native APIs, under Deno Deno-native APIs.",
+        "type": "module",
+        "main": "dist/api.mjs",
+        "module": "dist/api.mjs",
         "types": "src/api.ts",
         "exports": {
-                ".": "./src/api.ts",
-                "./cli": "./src/index.ts",
-                "./types": "./src/types.ts"
+                ".": {
+                        "types": "./src/api.ts",
+                        "bun": "./src/api.ts",
+                        "default": "./dist/api.mjs"
+                },
+                "./cli": {
+                        "types": "./src/index.ts",
+                        "bun": "./src/index.ts",
+                        "default": "./dist/cli.js"
+                },
+                "./types": "./src/types.ts",
+                "./dist/cli.js": "./dist/cli.js"
         },
         "bin": {
-                "pboss": "./src/index.ts"
+                "pboss": "dist/cli.js"
         },
         "files": [
+                "dist/",
                 "src/",
                 "README.md",
                 "LICENSE"
         ],
         "scripts": {
-                "start": "bun run src/index.ts",
-                "dev": "bun run --watch src/index.ts",
+                "start": "bun run src/main.ts",
+                "dev": "bun run --watch src/main.ts",
                 "test": "bun test --timeout=60000",
                 "lint": "bun x tsc --noEmit --noUnusedLocals",
+                "build:dist": "bun run ./scripts/build-dist.ts",
                 "build:bin": "bun build --compile --minify --bytecode ./src/index.ts --outfile dist/pboss",
                 "build:all": "bun run ./scripts/build-binaries.ts",
-                "postinstall": "bun src/postinstall.ts || exit 0",
-                "prepublishOnly": "bun test --timeout=60000"
+                "postinstall": "node dist/postinstall.js || bun src/postinstall.ts || exit 0",
+                "prepublishOnly": "bun run build:dist && bun test --timeout=60000"
         },
         "keywords": [
                 "process-manager",
@@ -60,7 +72,8 @@
         },
         "homepage": "https://procboss.com",
         "engines": {
-                "bun": ">=1.0.0"
+                "bun": ">=1.0.0",
+                "node": ">=20.19.0"
         },
         "os": [
                 "linux",
@@ -71,7 +84,8 @@
                 "chalk": "^5.6.2",
                 "cli-table3": "^0.6.5",
                 "cron-parser": "^5",
-                "pidusage": "^4.0.1"
+                "pidusage": "^4.0.1",
+                "ws": "^8.18.0"
         },
         "devDependencies": {
                 "@types/bun": "^1.4.2",

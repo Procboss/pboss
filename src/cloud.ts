@@ -47,6 +47,8 @@ import {
 } from "./threshold-monitor";
 import type { CronJobManager } from "./cron-jobs";
 import { EnvManager } from "./env-manager";
+import { getRuntime } from "./runtime";
+const R = getRuntime();
 
 /**
  * Inbound-silence watchdog. The cloud pings the agent (app-level `ping`
@@ -662,7 +664,7 @@ export function buildStateReport(
     hostname: hostname(),
     os: platform(),
     arch: arch(),
-    bunVersion: Bun.version,
+    bunVersion: R.misc.runtimeVersion(),
     agentVersion: `pboss/${VERSION}`,
     cpu: sys.cpu,
     memUsed: sys.memUsed,
@@ -1026,7 +1028,7 @@ export class CloudAgent {
         hostname: hostname(),
         platform: platform(),
         arch: arch(),
-        bunVersion: Bun.version,
+        bunVersion: R.misc.runtimeVersion(),
         pbossVersion: VERSION,
       }),
     });
@@ -1907,7 +1909,7 @@ export class CloudAgent {
           freeMemory: sys.freeMemory,
           loadAvg: sys.loadAvg,
           uptime: sys.uptime,
-          bunVersion: Bun.version,
+          bunVersion: R.misc.runtimeVersion(),
           pbossVersion: VERSION,
           processes: this.pm.list().length,
           cloud: { serverId: this.cfg!.serverId, url: this.cfg!.cloudUrl },
@@ -2192,9 +2194,11 @@ export async function execOneOff(
   const t0 = Date.now();
   const isWin = process.platform === "win32";
   const argv = isWin ? ["cmd", "/d", "/s", "/c", command] : ["/bin/sh", "-c", command];
-  const proc = Bun.spawn(argv, {
+  const proc = R.process.spawn(argv, {
     cwd: opts.cwd,
-    env: opts.env ? { ...process.env, ...opts.env } : process.env,
+    env: opts.env
+      ? ({ ...process.env, ...opts.env } as Record<string, string>)
+      : ({ ...process.env } as Record<string, string>),
     stdout: "pipe",
     stderr: "pipe",
     stdin: "ignore",
@@ -2253,7 +2257,7 @@ export async function execOneOff(
   // the pending reads would hang forever. Wait a short grace for natural
   // close, then cancel both readers so the reads resolve with whatever was
   // collected.
-  await Promise.race([Promise.all([out.text, err.text]), Bun.sleep(250)]);
+  await Promise.race([Promise.all([out.text, err.text]), R.misc.sleep(250)]);
   await Promise.all([out.cancel(), err.cancel()]);
   const [stdout, stderr] = await Promise.all([out.text, err.text]);
 
@@ -2305,16 +2309,7 @@ export async function gitPull(
 }> {
   if (!cwd) throw new Error("no working directory for this process");
   const git = async (...args: string[]) => {
-    const proc = Bun.spawn(["git", "-C", cwd, ...args], {
-      stdout: "pipe",
-      stderr: "pipe",
-      // windowsHide (issue #36 follow-up): cloud deploys run from the
-      // console-less daemon — each git call would pop a VISIBLE console.
-      windowsHide: true,
-    });
-    const stdout = await new Response(proc.stdout).text();
-    const stderr = await new Response(proc.stderr).text();
-    const exitCode = await proc.exited;
+    const { stdout, stderr, exitCode } = await R.process.capture(["git", "-C", cwd, ...args]);
     if (exitCode !== 0) {
       throw new Error(
         `git ${args[0]} failed in ${cwd}: ${(stderr || stdout).trim().split("\n")[0]?.slice(0, 160)}`
@@ -2324,13 +2319,8 @@ export async function gitPull(
   };
 
   // a .git dir (or worktree file) must exist — honest error otherwise
-  const check = await Bun.spawn(["git", "-C", cwd, "rev-parse", "--is-inside-work-tree"], {
-    stdout: "pipe",
-    stderr: "pipe",
-    // windowsHide: same console-less-daemon rule as the git() calls above.
-    windowsHide: true,
-  });
-  if ((await check.exited) !== 0) {
+  const check = await R.process.capture(["git", "-C", cwd, "rev-parse", "--is-inside-work-tree"]);
+  if (check.exitCode !== 0) {
     throw new Error(
       `${cwd} is not a git repository — the cloud can only deploy git checkouts`
     );

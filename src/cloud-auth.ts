@@ -21,6 +21,8 @@ import { dirname } from "node:path";
 import { CLOUD_USER_FILE, VERSION } from "./constants";
 import { resolveCloudUrl } from "./cloud";
 import { ignore } from "./error-handling";
+import { getRuntime } from "./runtime";
+const R = getRuntime();
 
 /* ── wire shapes (the cloud's /api/device responses) ──────────────────── */
 
@@ -181,7 +183,7 @@ export async function openBrowser(url: string): Promise<boolean> {
           : [["xdg-open", url]];
   for (const cmd of cmds) {
     try {
-      const proc = Bun.spawn(cmd, { stdout: "ignore", stderr: "ignore", stdin: "ignore" });
+      const proc = R.process.spawn(cmd, { stdout: "ignore", stderr: "ignore", stdin: "ignore" });
       // Don't block the CLI on the opener; a hung xdg-open must not hang login.
       void proc.exited.catch((err: unknown) => ignore(`browser opener ${cmd[0]}`, err));
       return true;

@@ -17,14 +17,16 @@
 import { join } from "path";
 import { PBOSS_HOME } from "./constants";
 import { warn } from "./error-handling";
+import { getRuntime } from "./runtime";
+const R = getRuntime();
 
 export class EnvManager {
   private envFile = join(PBOSS_HOME, "env-registry.json");
 
   async getEnvs(): Promise<Record<string, Record<string, string>>> {
     try {
-      const file = Bun.file(this.envFile);
-      if (await file.exists()) return await file.json();
+      if (await R.filesystem.exists(this.envFile))
+        return (await R.filesystem.readJSON(this.envFile)) as Record<string, Record<string, string>>;
     } catch (err) {
       // A present-but-unreadable registry is a real problem (corrupt JSON,
       // permissions) — the user should see it, not silently lose all envs.
@@ -37,7 +39,7 @@ export class EnvManager {
     const envs = await this.getEnvs();
     if (!envs[name]) envs[name] = {};
     envs[name][key] = value;
-    await Bun.write(this.envFile, JSON.stringify(envs, null, 2));
+    await R.filesystem.write(this.envFile, JSON.stringify(envs, null, 2));
   }
 
   async getEnv(name: string): Promise<Record<string, string>> {
@@ -52,14 +54,13 @@ export class EnvManager {
     } else {
       delete envs[name];
     }
-    await Bun.write(this.envFile, JSON.stringify(envs, null, 2));
+    await R.filesystem.write(this.envFile, JSON.stringify(envs, null, 2));
   }
 
   async loadDotEnv(filePath: string): Promise<Record<string, string>> {
-    const file = Bun.file(filePath);
-    if (!(await file.exists())) return {};
+    if (!(await R.filesystem.exists(filePath))) return {};
 
-    const content = await file.text();
+    const content = await R.filesystem.readText(filePath);
     const env: Record<string, string> = {};
 
     for (const line of content.split("\n")) {

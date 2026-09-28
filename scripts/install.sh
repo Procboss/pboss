@@ -3,31 +3,38 @@
 # https://procboss.com
 # Usage: curl -fsSL https://procboss.com/install.sh | bash
 #
-# No root required, ever: the binary goes to ~/.local/bin (a user-writable
-# dir), and when that dir is not on PATH the installer ADDS it to the user's
-# shell profile (~/.bashrc / ~/.zshrc) instead of printing a manual note.
-# The boot service is a per-user systemd unit. Running the installer AS root
-# (the legacy sudo pipe) still works and installs system-wide to
-# /usr/local/bin for all users of the machine — but sudo is never required.
+# ProcBoss is runtime-agnostic: it runs under Bun, Node.js or Deno, using
+# each runtime's native APIs. This installer has exactly ONE
+# runtime-related responsibility:
+#
+#   Ensure at least one supported runtime exists on the machine.
+#     - Bun OR Node OR Deno present  ->  do nothing, install nothing
+#     - none present                 ->  install Bun
+#
+# It NEVER selects a runtime, NEVER persists a runtime preference (no
+# PBOSS_RUNTIME, no config), and NEVER compiles anything — pboss is
+# installed from the PUBLISHED npm package, globally. The runtime executing
+# `pboss` is decided at execution time (the bin shim the package manager
+# installs; `bunx pboss` / `npx pboss` / `deno run -A npm:pboss` override).
+#
+# No root required, ever. The boot service is per-user.
 
 set -e
 
-RESET="\033[0m"
-BOLD="\033[1m"
-GREEN="\033[32m"
-CYAN="\033[36m"
-YELLOW="\033[33m"
-RED="\033[31m"
+RESET="\033"
+BOLD="\033"
+GREEN="\033"
+CYAN="\033"
+YELLOW="\033"
+RED="\033"
 
 echo -e "${CYAN}${BOLD}"
 echo "  ⚡ ProcBoss (pboss) Installer"
 echo "  https://procboss.com"
 echo -e "${RESET}"
 
-# 1. Install target — no root required, no sudo ever invoked.
-#    Default: ~/.local/bin (per-user, writable; step 5 adds it to PATH in
-#    the shell profile when missing). Legacy/explicit system install: run
-#    AS root → /usr/local/bin.
+# 1. Install context — the invoking user (root via sudo still works; the
+#    service install drops back to the real user).
 INVOKE_USER="${SUDO_USER:-}"
 INVOKE_HOME="$HOME"
 if [ -n "$INVOKE_USER" ]; then
@@ -36,138 +43,134 @@ if [ -n "$INVOKE_USER" ]; then
     INVOKE_HOME="$CANDIDATE_HOME"
   fi
 fi
-
+IS_ROOT=0
 if [ "$(id -u)" -eq 0 ]; then
-  INSTALL_DIR="/usr/local/bin"
-  echo -e "${GREEN}✓ Running as root — installing system-wide to ${INSTALL_DIR}${RESET}"
-  echo -e "${YELLOW}Note: sudo is NOT needed. A plain user install goes to ~/.local/bin${RESET}"
-else
-  INSTALL_DIR="$HOME/.local/bin"
-  echo -e "${GREEN}✓ Installing as $(id -un) — no root required (${INSTALL_DIR})${RESET}"
+  IS_ROOT=1
 fi
-mkdir -p "$INSTALL_DIR"
 
-# 2. Bun build toolchain.
-#    Bun is only needed to COMPILE pboss — the final executable embeds the Bun
-#    runtime, so the system does not need Bun installed once pboss is built.
+# 2. Runtime presence — ANY ONE of Bun / Node / Deno is enough.
+#    Multiple runtimes are NOT a conflict; nothing is chosen here.
+detect_bun()   { command -v bun   >/dev/null 2>&1 && echo "$(command -v bun)";   }
+detect_node()  { command -v node  >/dev/null 2>&1 && echo "$(command -v node)";  }
+detect_deno()  { command -v deno  >/dev/null 2>&1 && echo "$(command -v deno)";  }
 
-# Look for an existing Bun: on PATH, in the invoking user's home, or root's.
-BUN_PATH=""
+HAS_BUN=""
+HAS_NODE=""
+HAS_DENO=""
 for candidate in "$(command -v bun 2>/dev/null || true)" \
-                 "$INVOKE_HOME/.bun/bin/bun" \
-                 "$HOME/.bun/bin/bun" \
-                 "/usr/local/bin/bun"; do
-  if [ -n "$candidate" ] && [ -x "$candidate" ]; then
-    BUN_PATH="$candidate"
-    break
-  fi
+                 "$INVOKE_HOME/.bun/bin/bun"; do
+  if [ -n "$candidate" ] && [ -x "$candidate" ]; then HAS_BUN="$candidate"; break; fi
 done
+HAS_NODE=$(detect_node)
+HAS_DENO=$(detect_deno)
 
-BUN_VERSION="0.0.0"
-if [ -n "$BUN_PATH" ]; then
-  BUN_VERSION=$("$BUN_PATH" --version 2>/dev/null || echo "0.0.0")
-fi
+echo -e "${CYAN}Runtime check — pboss runs under Bun, Node.js or Deno:${RESET}"
+[ -n "$HAS_BUN" ]  && echo -e "  ${GREEN}✓ Bun found${RESET}    ($HAS_BUN)"      || echo -e "  ${YELLOW}· Bun not found${RESET}"
+[ -n "$HAS_NODE" ] && echo -e "  ${GREEN}✓ Node found${RESET}   ($HAS_NODE, $(node --version 2>/dev/null || echo '?'))" || echo -e "  ${YELLOW}· Node not found${RESET}"
+[ -n "$HAS_DENO" ] && echo -e "  ${GREEN}✓ Deno found${RESET}   ($HAS_DENO)"     || echo -e "  ${YELLOW}· Deno not found${RESET}"
 
-# Bun >= 1.1.30 is required for standalone compilation with bytecode.
-BUN_OK=$(awk -v v="$BUN_VERSION" 'BEGIN {
-  split(v, a, ".")
-  if (a[1]+0 > 1 || (a[1]+0 == 1 && a[2]+0 > 1) || (a[1]+0 == 1 && a[2]+0 == 1 && a[3]+0 >= 30)) print "yes"
-  else print "no"
-}')
-
-if [ -z "$BUN_PATH" ] || [ "$BUN_OK" != "yes" ]; then
-  if [ -z "$BUN_PATH" ]; then
-    echo -e "${YELLOW}Bun was not found — installing the Bun build toolchain...${RESET}"
-  else
-    echo -e "${YELLOW}Bun v${BUN_VERSION} found, but v1.1.30+ is required to compile pboss. Upgrading Bun...${RESET}"
-  fi
+# None at all -> install Bun (the ONLY runtime-side effect this script has).
+if [ -z "$HAS_BUN" ] && [ -z "$HAS_NODE" ] && [ -z "$HAS_DENO" ]; then
+  echo -e "${YELLOW}No supported runtime found — installing Bun (https://bun.sh)…${RESET}"
   # The env assignment must sit on the *bash* side of the pipe: piping into
   # `BUN_INSTALL=… bash` sends the var to the installer, whereas prefixing
   # curl with it does nothing for the installer (classic pipe foot-gun).
   curl -fsSL https://bun.sh/install | BUN_INSTALL="$INVOKE_HOME/.bun" bash
-  # Bun was installed as root — hand it back to the invoking user.
   if [ -n "$INVOKE_USER" ]; then
     chown -R "${INVOKE_USER}:" "$INVOKE_HOME/.bun" 2>/dev/null \
       || chown -R "$INVOKE_USER" "$INVOKE_HOME/.bun" 2>/dev/null || true
   fi
-  BUN_PATH="$INVOKE_HOME/.bun/bin/bun"
-fi
-
-if [ ! -x "$BUN_PATH" ]; then
-  echo -e "${RED}✗ Failed to set up the Bun build toolchain.${RESET}"
-  echo -e "Install Bun 1.1.30+ manually from ${CYAN}https://bun.sh${RESET} and re-run this installer."
-  exit 1
-fi
-
-export PATH="$(dirname "$BUN_PATH"):$PATH"
-echo -e "${GREEN}✓ Build toolchain ready: Bun v$("$BUN_PATH" --version)${RESET}"
-
-# 3. Temporary build workspace
-#    (Install target was decided in step 1: root → /usr/local/bin, plain
-#     user → ~/.local/bin. Do NOT re-assign INSTALL_DIR here — a stale
-#     override here once sent non-root installs to /usr/local/bin and died
-#     on "cp: Permission denied". The test suite pins "no INSTALL_DIR
-#     assignment after the step-1 mkdir".)
-#
-#    Version-exact installs: `pboss upgrade` exports PBOSS_VERSION set to the
-#    release it announced, and THIS script then fetches that exact version's
-#    npm-registry tarball instead of cloning git main. The two can drift
-#    (registry ahead of, or behind, main) — an unpinned upgrade that
-#    recompiled an older-looking main is exactly how "pboss upgrade was a
-#    success but pboss -v still showed the old version" happened. A fresh
-#    `curl | bash` leaves PBOSS_VERSION unset and gets git main (dev edge).
-TMP_DIR=$(mktemp -d -t pboss-install-XXXXXX)
-cleanup() {
-  rm -rf "$TMP_DIR"
-}
-trap cleanup EXIT
-
-if [ -n "$PBOSS_VERSION" ]; then
-  echo -e "${CYAN}Fetching pboss v${PBOSS_VERSION} (npm registry tarball)...${RESET}"
-  if ! curl -fsSL "https://registry.npmjs.org/pboss/-/pboss-${PBOSS_VERSION}.tgz" \
-    | tar -xz -C "$TMP_DIR" --strip-components=1; then
-    echo -e "${RED}✗ Failed to download pboss v${PBOSS_VERSION} from the npm registry.${RESET}"
-    echo -e "  Re-run without the pin: curl -fsSL https://procboss.com/install.sh | bash"
+  export PATH="$INVOKE_HOME/.bun/bin:$PATH"
+  HAS_BUN="$INVOKE_HOME/.bun/bin/bun"
+  if [ ! -x "$HAS_BUN" ]; then
+    echo -e "${RED}✗ Failed to install Bun.${RESET}"
+    echo -e "Install any one runtime manually and re-run:"
+    echo -e "  ${CYAN}https://bun.sh${RESET}  ·  ${CYAN}https://nodejs.org${RESET}  ·  ${CYAN}https://deno.com${RESET}"
     exit 1
   fi
+  echo -e "${GREEN}✓ Bun installed — pboss will run under it until you choose otherwise.${RESET}"
 else
-  echo -e "${CYAN}Fetching latest pboss source...${RESET}"
-  git clone --depth 1 https://github.com/procboss/pboss.git "$TMP_DIR" >/dev/null 2>&1 || {
-    # Fallback to archive download if git is unavailable
-    curl -fsSL https://github.com/procboss/pboss/archive/refs/heads/main.tar.gz | tar -xz -C "$TMP_DIR" --strip-components=1
-  }
+  echo -e "${GREEN}✓ A supported runtime is present — nothing installed, nothing selected.${RESET}"
 fi
 
-cd "$TMP_DIR"
+# 3. Install the published pboss package, GLOBALLY.
+#    The package-manager choice below installs ONLY the npm package — it
+#    is not a runtime selection and nothing is persisted. Preference:
+#    bun (present machines, user-writable global) > npm > deno. Version
+#    pinning for `pboss upgrade`: PBOSS_VERSION selects the exact release.
+PKG_SPEC="pboss"
+[ -n "$PBOSS_VERSION" ] && PKG_SPEC="pboss@${PBOSS_VERSION}"
+PM_DIR=""        # the bin dir the package lands in (PATH-healed below)
+PM_CHOICE=""
 
-echo -e "${CYAN}Compiling standalone pboss executable for this device...${RESET}"
-# --ignore-scripts: source build, not a package install — the postinstall
-# hook only acts on global installs and is not needed to compile the binary.
-bun install --ignore-scripts >/dev/null 2>&1
-if ! bun build --compile --minify --bytecode ./src/index.ts --outfile "$TMP_DIR/pboss" >/dev/null 2>&1; then
-  echo -e "${RED}✗ Failed to compile pboss with Bun v$(bun --version).${RESET}"
-  echo "Ensure Bun 1.1.30+ is installed (https://bun.sh) and re-run the installer."
+if [ -n "$HAS_BUN" ] && [ "$IS_ROOT" -eq 0 ]; then
+  PM_CHOICE="bun"
+  echo -e "${CYAN}Installing the published pboss package globally (bun install -g ${PKG_SPEC})…${RESET}"
+  if ! "$HAS_BUN" install -g "$PKG_SPEC"; then
+    echo -e "${RED}✗ bun install -g failed.${RESET}"
+    exit 1
+  fi
+  PM_DIR="$(dirname "$HAS_BUN")"
+elif command -v npm >/dev/null 2>&1; then
+  PM_CHOICE="npm"
+  NPM_PREFIX="$(npm config get prefix 2>/dev/null || echo "")"
+  echo -e "${CYAN}Installing the published pboss package globally (npm install -g ${PKG_SPEC})…${RESET}"
+  if [ -n "$NPM_PREFIX" ] && [ ! -w "$NPM_PREFIX" ] && [ "$IS_ROOT" -eq 0 ]; then
+    # npm's prefix is root-owned and we are not root: fall back to the
+    # user's own prefix (the standard npm user-install layout).
+    export NPM_CONFIG_PREFIX="$INVOKE_HOME/.npm-global"
+    PM_DIR="$INVOKE_HOME/.npm-global/bin"
+    if ! npm install -g --prefix "$INVOKE_HOME/.npm-global" "$PKG_SPEC"; then
+      echo -e "${RED}✗ npm install -g failed.${RESET}"
+      exit 1
+    fi
+  else
+    if ! npm install -g "$PKG_SPEC"; then
+      echo -e "${RED}✗ npm install -g failed.${RESET}"
+      exit 1
+    fi
+    PM_DIR="$([ -n "$NPM_PREFIX" ] && echo "$NPM_PREFIX" || npm config get prefix)/bin"
+    [ -d "$PM_DIR" ] || PM_DIR="$(npm config get prefix)"
+  fi
+elif [ -n "$HAS_DENO" ]; then
+  PM_CHOICE="deno"
+  echo -e "${CYAN}Installing the published pboss package globally (deno install -g npm:${PKG_SPEC})…${RESET}"
+  if ! "$HAS_DENO" install -g "npm:${PKG_SPEC}"; then
+    echo -e "${RED}✗ deno install -g failed.${RESET}"
+    exit 1
+  fi
+  PM_DIR="$INVOKE_HOME/.deno/bin"
+else
+  echo -e "${RED}✗ No package manager available to install the pboss package (bun/npm/deno).${RESET}"
   exit 1
 fi
 
-# 4. Install the compiled binary.
-#     Unlink first: `cp` straight over a RUNNING executable dies with
-#     "Text file busy" (ETXTBSY) — the classic broken `pboss upgrade` while
-#     the daemon runs. rm drops the old inode (the running daemon keeps its
-#     mapping), then cp lands the new one; the boot-persistence step below
-#     restarts the daemon onto the new binary.
-echo -e "${CYAN}Installing pboss to ${INSTALL_DIR}...${RESET}"
-rm -f "$INSTALL_DIR/pboss"
-cp "$TMP_DIR/pboss" "$INSTALL_DIR/pboss"
-chmod 755 "$INSTALL_DIR/pboss"
+# Make this session see the new bin (rc-heal follows).
+if [ -n "$PM_DIR" ] && [ -d "$PM_DIR" ]; then
+  case ":$PATH:" in
+    *":$PM_DIR:"*) ;;
+    *) export PATH="$PM_DIR:$PATH" ;;
+  esac
+fi
+
+# 4. Verify — `pboss` must be on PATH and answer.
+PBOSS_BIN="$(command -v pboss 2>/dev/null || true)"
+if [ -z "$PBOSS_BIN" ] && [ -n "$PM_DIR" ] && [ -x "$PM_DIR/pboss" ]; then
+  PBOSS_BIN="$PM_DIR/pboss"
+fi
+if [ -z "$PBOSS_BIN" ]; then
+  echo -e "${RED}✗ pboss did not become available after the install.${RESET}"
+  echo -e "  Package manager: ${PM_CHOICE}; expected bin in: ${PM_DIR:-unknown}"
+  echo -e "  Open a NEW terminal (PATH heals below) and run:  pboss --version"
+  exit 1
+fi
+INSTALLED_V=$("$PBOSS_BIN" --version 2>/dev/null | awk '{print $NF}' | tr -d 'v')
+echo -e "${GREEN}✓ pboss is available: $PBOSS_BIN${RESET}"
 
 # 4b. Record the install channel — `pboss upgrade` re-runs THIS installer
-#     (never npm/brew/snap) so a machine keeps exactly one pboss. The stamp
-#     also carries the version the binary itself reports (the same value the
-#     success banner prints — read once, used twice).
+#     so a machine keeps exactly one pboss and one install method.
 STAMP_DIR="$INVOKE_HOME/.pboss"
 mkdir -p "$STAMP_DIR"
-INSTALLED_V=$("$INSTALL_DIR/pboss" --version 2>/dev/null | awk '{print $NF}' | tr -d 'v')
 printf '{"channel":"universal","by":"install.sh","stampedAt":%s,"version":"%s"}\n' \
   "$(date +%s)" "${INSTALLED_V:-unknown}" \
   > "$STAMP_DIR/channel.json"
@@ -176,22 +179,16 @@ if [ -n "$INVOKE_USER" ]; then
     || chown "$INVOKE_USER" "$STAMP_DIR" "$STAMP_DIR/channel.json" 2>/dev/null || true
 fi
 
-# 5. PATH sanity — /usr/local/bin (root installs) is on PATH essentially
-#    everywhere. The ~/.local/bin per-user install self-heals the shell
-#    profile instead of printing a manual note: ~/.bashrc (bash) or
-#    ~/.zshrc (zsh) is appended — and created when missing — plus the login
-#    profile (~/.profile / ~/.zprofile) when the user already has one, so
-#    FUTURE shells find pboss with zero manual edits. No child process can
-#    fix the CURRENT shell; the messages below say so honestly.
-if [[ ":$PATH:" != *":$INSTALL_DIR:"* ]]; then
+# 5. PATH sanity — heal the shell profile when the bin dir is missing, the
+#    same self-heal the old installer had, now for the package manager's
+#    bin dir (bun: ~/.bun/bin, npm user: ~/.npm-global/bin, deno: ~/.deno/bin).
+if [ -n "$PM_DIR" ] && [[ ":$PATH:" != *":$PM_DIR:"* ]]; then
   dir_in_rc() {
-    # Referenced by absolute path, its $HOME-relative spelling, or the ~
-    # shorthand (Ubuntu's stock ~/.profile snippet uses $HOME).
-    if grep -qF "$INSTALL_DIR" "$1" 2>/dev/null; then return 0; fi
-    case "$INSTALL_DIR" in
+    if grep -qF "$PM_DIR" "$1" 2>/dev/null; then return 0; fi
+    case "$PM_DIR" in
       "$INVOKE_HOME"/*)
-        grep -qF '$HOME'"${INSTALL_DIR#"$INVOKE_HOME"}" "$1" 2>/dev/null && return 0
-        grep -qF '~/.'"${INSTALL_DIR#"$INVOKE_HOME/."}" "$1" 2>/dev/null && return 0
+        grep -qF '$HOME'"${PM_DIR#"$INVOKE_HOME"}" "$1" 2>/dev/null && return 0
+        grep -qF '~/.'"${PM_DIR#"$INVOKE_HOME/."}" "$1" 2>/dev/null && return 0
         ;;
     esac
     return 1
@@ -202,10 +199,6 @@ if [[ ":$PATH:" != *":$INSTALL_DIR:"* ]]; then
     *)    rc_primary="$INVOKE_HOME/.bashrc"; rc_login="$INVOKE_HOME/.profile" ;;
   esac
   for rc in "$rc_primary" "$rc_login"; do
-    # The primary rc is CREATED when missing (the owner's ask: add the dir
-    # to ~/.bashrc, do not just note it); the login profile is only ever
-    # appended to when the user already has one — never invent a config
-    # they did not choose.
     if [ "$rc" = "$rc_login" ] && [ ! -f "$rc" ]; then
       continue
     fi
@@ -214,35 +207,25 @@ if [[ ":$PATH:" != *":$INSTALL_DIR:"* ]]; then
     fi
     {
       printf '\n# Added by the ProcBoss installer — keep pboss on PATH\n'
-      printf 'export PATH="%s:$PATH"\n' "$INSTALL_DIR"
+      printf 'export PATH="%s:$PATH"\n' "$PM_DIR"
     } >> "$rc"
     healed="$healed $(basename "$rc")"
   done
   if [ -n "$healed" ]; then
-    echo -e "${GREEN}✓ Added ${INSTALL_DIR} to PATH in${healed} — open a NEW terminal (or source the file) and 'pboss' will be found.${RESET}"
+    echo -e "${GREEN}✓ Added ${PM_DIR} to PATH in${healed} — open a NEW terminal (or source the file) and 'pboss' will be found.${RESET}"
   else
-    echo -e "${YELLOW}Note: ${INSTALL_DIR} is already in your shell profile but not in THIS shell — open a new terminal and 'pboss' will be found.${RESET}"
+    echo -e "${YELLOW}Note: ${PM_DIR} is already in your shell profile but not in THIS shell — open a new terminal and 'pboss' will be found.${RESET}"
   fi
 fi
 
-# 6. Boot persistence — installed automatically, WITHOUT sudo.
-#    The whole point of pboss: processes survive reboots by default. The boot
-#    service is PER-USER (systemd user unit / launchd agent), starts the
-#    daemon, and the daemon resurrects the saved process list (auto-saved
-#    after every pboss start/stop/delete). When the installer itself runs as
-#    root (legacy sudo pipe), the service install runs as the INVOKING user
-#    instead — root has no user systemd session. Best-effort: hosts without
-#    systemd (containers, WSL1) get a note instead of an error.
-echo -e "${CYAN}Enabling boot persistence...${RESET}"
+# 6. Boot persistence — per-user service, no sudo. Same contract as before.
+echo -e "${CYAN}Enabling boot persistence…${RESET}"
 if [ "$(uname -s)" = "Linux" ] && { ! command -v systemctl >/dev/null 2>&1 || [ ! -d /run/systemd/system ]; }; then
   echo -e "${YELLOW}⚠ systemd is not running on this host — skipping the boot service.${RESET}"
   echo -e "  (Containers and minimal VMs usually have no systemd. On a systemd host, run:)"
-  echo -e "  ${CYAN}${INSTALL_DIR}/pboss startup install${RESET}"
+  echo -e "  ${CYAN}pboss startup install${RESET}"
 else
-  PBOSS_BIN="$INSTALL_DIR/pboss"
   run_as_user() {
-    # Non-root: plain. Root via sudo: drop back to the invoking user — the
-    # service is per-user and `systemctl --user` needs THEIR session.
     if [ "$(id -u)" -eq 0 ] && [ -n "$INVOKE_USER" ]; then
       sudo -u "$INVOKE_USER" env PATH="$PATH" HOME="$INVOKE_HOME" "$@"
     else
@@ -253,26 +236,26 @@ else
     echo -e "${GREEN}✓ Boot persistence enabled — pboss starts at boot and resurrects saved processes.${RESET}"
   else
     echo -e "${YELLOW}⚠ Boot persistence could not be configured automatically.${RESET}"
-    echo -e "  Run it yourself:  ${CYAN}${PBOSS_BIN} startup install${RESET}"
+    echo -e "  Run it yourself:  ${CYAN}pboss startup install${RESET}"
   fi
 fi
 
 # 7. Existing cloud link — the machine credential in ~/.pboss/cloud.json is
-#    the permanent cache: it outlives the binary across deletes, reinstalls
-#    and upgrades. The boot-persistence step above (re)started the daemon,
-#    which resumes the link; the next CLI command does the same on hosts
-#    without a service. Say so instead of making a reinstalled machine look
-#    unlinked.
+#    the permanent cache across deletes, reinstalls and upgrades.
 if [ -f "$INVOKE_HOME/.pboss/cloud.json" ]; then
   echo -e "${GREEN}✓ Existing cloud link detected — the daemon will resume it automatically.${RESET}"
-  echo -e "  Check its state:  ${CYAN}${INSTALL_DIR}/pboss cloud status${RESET}"
+  echo -e "  Check its state:  ${CYAN}pboss cloud status${RESET}"
 fi
 
+# 8. Done — the version, and WHICH RUNTIME is actually executing pboss
+#    right now (detected at execution time, exactly as the architecture
+#    promises; this is a report, not a choice).
 echo -e "${GREEN}${BOLD}"
 if [ -n "$INSTALLED_V" ]; then
-  echo "✓ ProcBoss (pboss) v${INSTALLED_V} successfully installed to ${INSTALL_DIR}/pboss!"
+  echo "✓ ProcBoss (pboss) v${INSTALLED_V} successfully installed!"
 else
-  echo "✓ ProcBoss (pboss) successfully installed to ${INSTALL_DIR}/pboss!"
+  echo "✓ ProcBoss (pboss) successfully installed!"
 fi
 echo -e "${RESET}"
+echo -e "Executing runtime:  ${CYAN}$("$PBOSS_BIN" --runtime 2>/dev/null || echo 'detect at first run')${RESET}"
 echo -e "Run ${CYAN}pboss --version${RESET} to re-check, then ${CYAN}pboss --help${RESET} to get started."

@@ -23,6 +23,8 @@
 import { mkdirSync, readFileSync, writeFileSync } from "fs";
 import { join, dirname } from "path";
 import { PBOSS_HOME } from "./constants";
+import { getRuntime } from "./runtime";
+const R = getRuntime();
 
 /** Where the install channel is recorded (written by installers). */
 export const CHANNEL_FILE = join(PBOSS_HOME, "channel.json");
@@ -395,20 +397,20 @@ export async function verifyInstalledVersion(
     spawnFn?: (cmd: string[]) => Promise<{ code: number; stdout: string }> | { code: number; stdout: string };
   } = {},
 ): Promise<InstalledVersion | null> {
-  const which = opts.which ?? ((cmd: string) => Bun.which(cmd) ?? null);
+  const which = opts.which ?? ((cmd: string) => R.misc.which(cmd));
   const spawnFn =
     opts.spawnFn ??
     (async (cmd: string[]) => {
-      const proc = Bun.spawn(cmd, { stdout: "pipe", stderr: "pipe" });
+      const proc = R.process.spawn(cmd, { stdout: "pipe", stderr: "pipe" });
       // `pboss --version` is a pure print, but never trust a spawned CLI
       // forever: kill it and report "unverifiable" after 10s.
       const timer = setTimeout(() => proc.kill(), 10_000);
       try {
         const [code, stdout] = await Promise.all([
           proc.exited,
-          new Response(proc.stdout).text(),
+          new Response(proc.stdout as ReadableStream).text(),
         ]);
-        return { code, stdout };
+        return { code: code ?? -1, stdout };
       } finally {
         clearTimeout(timer);
       }
@@ -427,8 +429,8 @@ export async function verifyInstalledVersion(
 }
 
 async function defaultSpawn(cmd: string[]): Promise<number> {
-  const proc = Bun.spawn(cmd, { stdout: "inherit", stderr: "inherit" });
-  return proc.exited;
+  const proc = R.process.spawn(cmd, { stdout: "inherit", stderr: "inherit" });
+  return (await proc.exited) ?? -1;
 }
 
 /** One-line summary used by --check and the command output. */

@@ -364,7 +364,7 @@ describe("Windows Support & Cross-Platform Compatibility", () => {
         src.indexOf("private async writeWindowsDaemonLauncher(")
       );
       expect(bringUpSrc).toContain('launcherCmd[0]?.toLowerCase() === "wscript.exe"');
-      expect(bringUpSrc).toMatch(/Bun\.spawn\(launcherCmd, \{\s*\n\s*stdout: "ignore",/);
+      expect(bringUpSrc).toMatch(/R\.process\.spawn\(launcherCmd, \{\s*\n\s*stdout: "ignore",/);
       expect(bringUpSrc).toContain("detached: true");
       expect(bringUpSrc).toContain("windowsHide: true");
       // (5) The degraded path (VBS write failed) keeps the raw-command
@@ -494,9 +494,15 @@ describe("Windows Support & Cross-Platform Compatibility", () => {
       expect(ps1).toContain("pboss startup install");
     });
 
-    test("install.ps1 source build skips lifecycle scripts (no postinstall parse bomb)", () => {
+    test("install.ps1 installs the published package — no source build, no lifecycle parse bomb", () => {
+      // The old source-build installer ran `bun install --ignore-scripts`
+      // (the flag existed to dodge a lifecycle-script parse bomb); the
+      // published-package installer has NO source build at all, and the
+      // postinstall script itself now parses everywhere (pinned above).
       const ps1 = readFileSync(join(import.meta.dir, "..", "scripts", "install.ps1"), "utf8");
-      expect(ps1).toContain("bun install --ignore-scripts");
+      expect(ps1).toContain("npm install -g");
+      expect(ps1).not.toContain("--ignore-scripts");
+      expect(ps1).not.toContain("Expand-Archive");
     });
 
     test("package.json postinstall carries no shell redirect tokens", () => {
@@ -506,7 +512,12 @@ describe("Windows Support & Cross-Platform Compatibility", () => {
       // `|| exit 0`, which parses everywhere (bun shell, sh, cmd).
       const pkg = JSON.parse(readFileSync(join(import.meta.dir, "..", "package.json"), "utf8"));
       const postinstall = pkg.scripts.postinstall;
-      expect(postinstall).toBe("bun src/postinstall.ts || exit 0");
+      // The multi-runtime chain: the built hook runs under node when
+      // present, falls back to bun for bun-managed installs, and never
+      // fails the package install. No shell redirect tokens (cmd.exe).
+      expect(postinstall).toBe(
+        "node dist/postinstall.js || bun src/postinstall.ts || exit 0"
+      );
       expect(postinstall).not.toMatch(/\/dev\/null|2>&1|>/);
     });
   });
@@ -719,7 +730,7 @@ describe("Windows Support & Cross-Platform Compatibility", () => {
       await dm.initialize(false);
 
       expect(dm.initialized).toBe(true);
-      expect(dm.getServerOpts().unix).toBe(DAEMON_SOCKET);
+      expect(dm.getServerOpts().socketPath).toBe(DAEMON_SOCKET);
     });
   });
 
@@ -740,7 +751,7 @@ describe("Windows Support & Cross-Platform Compatibility", () => {
       for (const rel of ["src/api.ts", "src/startup-manager.ts"]) {
         const src = readFileSync(join(import.meta.dir, "..", rel), "utf8");
         const blocks = src
-          .split("Bun.spawn(")
+          .split(/(?:Bun|R\.process)\.spawn\(/)
           .slice(1)
           .map((rest) => rest.slice(0, rest.indexOf("});")));
         const daemonLaunches = blocks.filter((b) => b.includes("stdout: outLog"));
@@ -760,7 +771,7 @@ describe("Windows Support & Cross-Platform Compatibility", () => {
       for (const rel of ["src/api.ts", "src/startup-manager.ts"]) {
         const src = readFileSync(join(import.meta.dir, "..", rel), "utf8");
         const blocks = src
-          .split("Bun.spawn(")
+          .split(/(?:Bun|R\.process)\.spawn\(/)
           .slice(1)
           .map((rest) => rest.slice(0, rest.indexOf("});")));
         const detached = blocks.filter((b) => b.includes("detached: true"));
@@ -775,7 +786,7 @@ describe("Windows Support & Cross-Platform Compatibility", () => {
       for (const rel of ["src/api.ts", "src/startup-manager.ts"]) {
         const src = readFileSync(join(import.meta.dir, "..", rel), "utf8");
         const blocks = src
-          .split("Bun.spawn(")
+          .split(/(?:Bun|R\.process)\.spawn\(/)
           .slice(1)
           .map((rest) => rest.slice(0, rest.indexOf("});")));
         for (const block of blocks) {
@@ -816,7 +827,7 @@ describe("Windows Support & Cross-Platform Compatibility", () => {
       for (const rel of DAEMON_ONLY_SPAWN_FILES) {
         const src = readFileSync(join(import.meta.dir, "..", rel), "utf8");
         const blocks = src
-          .split("Bun.spawn(")
+          .split(/(?:Bun|R\.process)\.spawn\(/)
           .slice(1)
           .map((rest) => rest.slice(0, rest.indexOf("});")));
         expect(blocks.length).toBeGreaterThan(0);
@@ -829,7 +840,7 @@ describe("Windows Support & Cross-Platform Compatibility", () => {
     test("treeKill's taskkill runs hidden (daemon-side console tool)", () => {
       const src = readFileSync(join(import.meta.dir, "..", "src/utils.ts"), "utf8");
       const blocks = src
-        .split("Bun.spawn(")
+        .split(/(?:Bun|R\.process)\.spawn\(/)
         .slice(1)
         .map((rest) => rest.slice(0, rest.indexOf("});")));
       const taskkill = blocks.filter((b) => b.includes("taskkill"));
@@ -863,7 +874,7 @@ describe("Windows Support & Cross-Platform Compatibility", () => {
       for (const rel of ["src/process-container.ts", "src/cluster-manager.ts"]) {
         const src = readFileSync(join(import.meta.dir, "..", rel), "utf8");
         const blocks = src
-          .split("Bun.spawn(")
+          .split(/(?:Bun|R\.process)\.spawn\(/)
           .slice(1)
           .map((rest) => rest.slice(0, rest.indexOf("});")));
         for (const block of blocks) {
@@ -945,10 +956,10 @@ describe("Windows Support & Cross-Platform Compatibility", () => {
       for (const rel of ["src/api.ts", "src/startup-manager.ts"]) {
         const src = readFileSync(join(import.meta.dir, "..", rel), "utf8");
         // the log-redirecting spawn is wrapped in try { ... }
-        expect(src).toMatch(/try\s*\{\s*\n\s*proc = Bun\.spawn\((spawnArgs|launcherCmd),\s*\{\s*\n\s*stdout: outLog,/);
+        expect(src).toMatch(/try\s*\{\s*\n\s*proc = R\.process\.spawn\((spawnArgs|launcherCmd),\s*\{\s*\n\s*stdout: outLog,/);
         // and the catch re-spawns with silent stdio
         expect(src).toContain('retrying with silent stdio');
-        expect(src).toMatch(/proc = Bun\.spawn\((spawnArgs|launcherCmd),\s*\{\s*\n\s*stdout: "ignore",/);
+        expect(src).toMatch(/proc = R\.process\.spawn\((spawnArgs|launcherCmd),\s*\{\s*\n\s*stdout: "ignore",/);
       }
     });
   });

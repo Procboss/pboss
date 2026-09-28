@@ -18,14 +18,17 @@ import { ProcessManager } from "./process-manager";
 import { getDashboardHTML } from "./dashboard-ui";
 import { DASHBOARD_PORT, METRICS_PORT } from "./constants";
 import { ignore } from "./error-handling";
-import type { Server, ServerWebSocket } from "bun";
+import { getRuntime } from "./runtime";
+import type { PBServerHandle, PBWsSocket } from "./runtime";
+
+const R = getRuntime();
 
 export class Dashboard {
 
-  private server: Server<unknown> | null = null;
-  private metricsServer: Server<unknown> | null = null;
+  private server: PBServerHandle | null = null;
+  private metricsServer: PBServerHandle | null = null;
 
-  private clients: Set<ServerWebSocket<unknown>> = new Set();
+  private clients: Set<PBWsSocket> = new Set();
   private pm: ProcessManager;
   private updateInterval: ReturnType<typeof setInterval> | null = null;
 
@@ -34,14 +37,16 @@ export class Dashboard {
   }
 
   start(port: number = DASHBOARD_PORT, metricsPort: number = METRICS_PORT) {
-    // Dashboard + WebSocket server
-    this.server = Bun.serve<unknown>({
+    // Dashboard + WebSocket server — the runtime adapter's native serve
+    // (Bun.serve / node:http+ws / Deno.serve, with native WS upgrades).
+    this.server = R.network.serve({
       port,
-      fetch: (req, server) => {
+      fetch: (req, ctx) => {
         const url = new URL(req.url);
 
         if (url.pathname === "/ws") {
-          if (server.upgrade(req, { data: undefined })) return;
+          const upgraded = ctx.upgrade(req);
+          if (upgraded) return upgraded;
           return new Response("WebSocket upgrade failed", { status: 400 });
         }
 
@@ -101,7 +106,7 @@ export class Dashboard {
     });
 
     // Separate Prometheus metrics server
-    this.metricsServer = Bun.serve({
+    this.metricsServer = R.network.serve({
       port: metricsPort,
       fetch: (req) => {
         const url = new URL(req.url);
@@ -153,7 +158,7 @@ export class Dashboard {
     }
   }
 
-  private async handleWsMessage(ws: ServerWebSocket<unknown>, msg: any) {
+  private async handleWsMessage(ws: PBWsSocket, msg: any) {
     switch (msg.type) {
       case "getState": {
         const state = {
@@ -200,8 +205,8 @@ export class Dashboard {
 
   stop() {
     if (this.updateInterval) clearInterval(this.updateInterval);
-    if (this.server) this.server.stop();
-    if (this.metricsServer) this.metricsServer.stop();
+    if (this.server) void this.server.stop();
+    if (this.metricsServer) void this.metricsServer.stop();
     this.clients.clear();
   }
 }

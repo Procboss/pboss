@@ -152,7 +152,7 @@ describe("Installation mode detection", () => {
 
   test("installModeDescription names the flavor", () => {
     const desc = installModeDescription();
-    expect(desc).toContain("script install");
+    expect(desc).toContain("package install running on the system Bun runtime");
     expect(desc).toContain("Bun");
   });
 });

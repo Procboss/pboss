@@ -19,6 +19,8 @@ import { MODULE_DIR } from "./constants";
 import { existsSync, readdirSync, symlinkSync, cpSync, rmSync } from "fs";
 import { findBun, findNpm } from "./install-mode";
 import type { ProcessManager } from "./process-manager";
+import { getRuntime } from "./runtime";
+const R = getRuntime();
 
 export interface PBossModule {
   name: string;
@@ -40,13 +42,8 @@ export class ModuleManager {
 
     if (moduleNameOrPath.startsWith("http") || moduleNameOrPath.startsWith("git")) {
       // Clone from git
-      const proc = Bun.spawn(["git", "clone", moduleNameOrPath, targetDir], {
-        stdout: "pipe", stderr: "pipe",
-        // windowsHide (issue #36 follow-up): module installs run inside the
-        // console-less daemon — git/npm would pop VISIBLE consoles.
-        windowsHide: true,
-      });
-      await proc.exited;
+      const { exitCode } = await R.process.capture(["git", "clone", moduleNameOrPath, targetDir]);
+      void exitCode;
     } else if (path.isAbsolute(moduleNameOrPath) || moduleNameOrPath.startsWith(".")) {
       // Local path - symlink / junction / copy fallback
       try {
@@ -59,19 +56,13 @@ export class ModuleManager {
       // npm package — install with Bun when available, npm otherwise
       // (compiled standalone installs may not have a system Bun).
       const [installer, installVerb] = resolveModuleInstaller();
-      const proc = Bun.spawn([installer, installVerb, moduleNameOrPath], {
-        cwd: MODULE_DIR,
-        stdout: "pipe", stderr: "pipe",
-        // windowsHide: console-less-daemon rule (see git clone above).
-        windowsHide: true,
-      });
-      await proc.exited;
+      await R.process.capture([installer, installVerb, moduleNameOrPath], { cwd: MODULE_DIR });
     }
 
     // Install deps
     if (existsSync(join(targetDir, "package.json"))) {
       const [installer] = resolveModuleInstaller();
-      const proc = Bun.spawn([installer, "install"], {
+      const proc = R.process.spawn([installer, "install"], {
         cwd: targetDir,
         stdout: "pipe", stderr: "pipe",
         // windowsHide: console-less-daemon rule (see git clone above).
@@ -87,12 +78,12 @@ export class ModuleManager {
 
   async load(modulePath: string): Promise<void> {
     try {
-      const pkg = await Bun.file(join(modulePath, "package.json")).json();
+      const pkg = (await R.filesystem.readJSON(join(modulePath, "package.json"))) as { main?: string; module?: string; name?: string; version?: string };
       const main = pkg.main || pkg.module || "index.ts";
       const mod: PBossModule = (await import(join(modulePath, main))).default;
 
-      if (!mod.name) mod.name = pkg.name;
-      if (!mod.version) mod.version = pkg.version;
+      if (!mod.name) mod.name = pkg.name ?? "unknown";
+      if (!mod.version) mod.version = pkg.version ?? "0.0.0";
 
       await mod.init(this.pm);
       this.modules.set(mod.name, mod);

@@ -36,6 +36,10 @@ import {
   PROCESS_EVENT_KINDS,
   type PbossProcessEvent,
 } from "./events";
+import { getRuntime } from "./runtime";
+
+const R = getRuntime();
+
 import type {
   DaemonMessage,
   DaemonResponse,
@@ -110,9 +114,7 @@ export interface PBossOptions {
  */
 export async function loadEcosystemConfig(filePath: string): Promise<EcosystemConfig> {
   const abs = resolve(filePath);
-  const file = Bun.file(abs);
-
-  if (!(await file.exists())) {
+  if (!(await R.filesystem.exists(abs))) {
     throw new Error(`Ecosystem file not found: ${abs}`);
   }
 
@@ -120,7 +122,7 @@ export async function loadEcosystemConfig(filePath: string): Promise<EcosystemCo
   let config: EcosystemConfig;
 
   if (ext === ".json") {
-    config = (await file.json()) as EcosystemConfig;
+    config = (await R.filesystem.readJSON(abs)) as EcosystemConfig;
   } else {
     const mod = await import(abs);
     config = (mod.default || mod) as EcosystemConfig;
@@ -207,10 +209,9 @@ export async function findDefaultConfigFile(dir?: string): Promise<string | unde
  * without requiring the daemon to be running or initialized.
  */
 export async function readSavedProcesses(): Promise<ProcessState[]> {
-  const file = Bun.file(DUMP_FILE);
-  if (!(await file.exists())) return [];
+  if (!(await R.filesystem.exists(DUMP_FILE))) return [];
   try {
-    const data = await file.json();
+    const data = (await R.filesystem.readJSON(DUMP_FILE)) as any[];
     return data.map((item: any) => {
       const config = item.config || item;
       return {
@@ -283,7 +284,7 @@ export async function waitForDaemon(timeoutMs: number): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (await probeDaemon()) return true;
-    await Bun.sleep(200);
+    await R.misc.sleep(200);
   }
   return await probeDaemon() !== null;
 }
@@ -308,12 +309,11 @@ export async function stopDaemonIfRunning(
   if (!live) return false;
 
   try {
-    await fetch("http://localhost/", {
+    await R.network.socketFetch("http://localhost/", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ type: "kill", id: "startup-stop" }),
-      unix: socketPath,
-    });
+    }, socketPath);
     // The daemon may exit before responding — that IS the success path.
   } catch (err) {
     ignore("stopDaemonIfRunning: send kill", err);
@@ -323,7 +323,7 @@ export async function stopDaemonIfRunning(
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (!(await probeDaemon(socketPath))) return true;
-    await Bun.sleep(200);
+    await R.misc.sleep(200);
   }
   // Still alive after the grace period — leave it; the unit's daemon will
   // surface a clear DaemonConflictError (exit 81) instead of a restart loop.
@@ -480,13 +480,12 @@ export class PBoss extends EventEmitter<PBossEvents> {
 
     const controller = new AbortController();
 
-    const response = await fetch("http://localhost/command", {
-      unix: DAEMON_SOCKET,
+    const response = await R.network.socketFetch("http://localhost/command", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ type: "subscribeEvents", mode: "stream" }),
       signal: controller.signal,
-    });
+    }, DAEMON_SOCKET);
 
     if (!response.body) {
       throw new Error("No event stream received from daemon");
@@ -820,8 +819,7 @@ export class PBoss extends EventEmitter<PBossEvents> {
 
     await this.startDaemon();
 
-    const response = await fetch("http://localhost/command", {
-      unix: DAEMON_SOCKET,
+    const response = await R.network.socketFetch("http://localhost/command", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -830,7 +828,7 @@ export class PBoss extends EventEmitter<PBossEvents> {
         mode: "stream",
       }),
       signal,
-    });
+    }, DAEMON_SOCKET);
 
     if (!response.body) {
       throw new Error("No stream received from daemon");
@@ -1241,10 +1239,9 @@ export class PBoss extends EventEmitter<PBossEvents> {
    * Check whether the daemon is running and socket is responsive.
    */
   async isDaemonAlive(): Promise<boolean> {
-    const pidFile = Bun.file(DAEMON_PID_FILE);
-    if (await pidFile.exists()) {
+    if (await R.filesystem.exists(DAEMON_PID_FILE)) {
       try {
-        const pidText = await pidFile.text();
+        const pidText = await R.filesystem.readText(DAEMON_PID_FILE);
         const pid = parseInt(pidText.trim());
         process.kill(pid, 0); // throws if process doesn't exist
       } catch {
@@ -1268,12 +1265,11 @@ export class PBoss extends EventEmitter<PBossEvents> {
     if (!existsSync(DAEMON_SOCKET)) return false;
 
     try {
-      const response = await fetch("http://localhost/", {
+      const response = await R.network.socketFetch("http://localhost/", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ type: "ping", id: "ping-check" }),
-        unix: DAEMON_SOCKET,
-      });
+      }, DAEMON_SOCKET);
       if (!response.ok) return false;
       const res = (await response.json()) as DaemonResponse;
       return res.success;
@@ -1308,15 +1304,14 @@ export class PBoss extends EventEmitter<PBossEvents> {
     const spawnArgs = daemonSpawnCommand();
 
     // Open log files for daemon stdout/stderr
-    const outLog = Bun.file(DAEMON_OUT_LOG_FILE);
-    const errLog = Bun.file(DAEMON_ERR_LOG_FILE);
-
-    if (!(await outLog.exists())) await Bun.write(outLog, "");
-    if (!(await errLog.exists())) await Bun.write(errLog, "");
+    // Append sinks — the adapter's native file redirection (Bun: fd,
+    // Node: stream, Deno: pump). A fresh daemon's launch logs append.
+    const outLog = R.filesystem.sink(DAEMON_OUT_LOG_FILE);
+    const errLog = R.filesystem.sink(DAEMON_ERR_LOG_FILE);
 
     let proc;
     try {
-      proc = Bun.spawn(spawnArgs, {
+      proc = R.process.spawn(spawnArgs, {
         stdout: outLog,
         stderr: errLog,
         stdin: "ignore",
@@ -1347,7 +1342,7 @@ export class PBoss extends EventEmitter<PBossEvents> {
       // already made a true duplicate unlikely. Fall back to silent stdio
       // rather than failing the command.
       ignore("spawn daemon with log files (retrying with silent stdio)", err);
-      proc = Bun.spawn(spawnArgs, {
+      proc = R.process.spawn(spawnArgs, {
         stdout: "ignore",
         stderr: "ignore",
         stdin: "ignore",
@@ -1366,15 +1361,14 @@ export class PBoss extends EventEmitter<PBossEvents> {
     let alive = false;
 
     while (Date.now() < deadline) {
-      await Bun.sleep(200);
+      await R.misc.sleep(200);
       try {
         if (existsSync(DAEMON_SOCKET)) {
-          const rawRes = await fetch("http://localhost/", {
+          const rawRes = await R.network.socketFetch("http://localhost/", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ type: "ping", id: "daemon-launch-ping" }),
-            unix: DAEMON_SOCKET,
-          });
+          }, DAEMON_SOCKET);
           if (rawRes.ok) {
             const res = (await rawRes.json()) as DaemonResponse;
             if (res.success) {
@@ -1417,11 +1411,11 @@ export class PBoss extends EventEmitter<PBossEvents> {
     try {
       if (!this.isDaemonRunning()) return;
 
-      const pidText = await Bun.file(DAEMON_PID_FILE).text();
+      const pidText = await R.filesystem.readText(DAEMON_PID_FILE);
       const pid = Number(pidText);
 
       process.kill(pid, "SIGTERM");
-      await Bun.write(DAEMON_PID_FILE, "");
+      await R.filesystem.write(DAEMON_PID_FILE, "");
     } catch (err) {
       // Already stopped / PID vanished mid-stop — record, don't crash.
       ignore("stop daemon via SIGTERM (already stopped)", err);
@@ -1449,12 +1443,11 @@ export class PBoss extends EventEmitter<PBossEvents> {
     const live = await probeDaemon();
     if (live) {
       try {
-        await fetch("http://localhost/", {
+        await R.network.socketFetch("http://localhost/", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ type: "kill", id: "cli-kill" }),
-          unix: DAEMON_SOCKET,
-        });
+        }, DAEMON_SOCKET);
         // The daemon may exit before responding — that IS the success path.
       } catch (err) {
         ignore("send kill to daemon (exits before responding)", err);
@@ -1465,7 +1458,7 @@ export class PBoss extends EventEmitter<PBossEvents> {
       const deadline = Date.now() + 10_000;
       while (Date.now() < deadline) {
         if (!(await probeDaemon())) break;
-        await Bun.sleep(200);
+        await R.misc.sleep(200);
       }
     }
 
@@ -1515,13 +1508,13 @@ export class PBoss extends EventEmitter<PBossEvents> {
 
     const body = JSON.stringify(message);
 
-    // Bun supports fetching over Unix sockets with the `unix` option
-    const response = await fetch(`http://localhost/`, {
+    // The runtime adapter's native Unix-socket fetch (Bun: {unix}, Node:
+    // http.request socketPath, Deno: HTTP/1.1 over Deno.connect).
+    const response = await R.network.socketFetch(`http://localhost/`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body,
-      unix: DAEMON_SOCKET,
-    });
+    }, DAEMON_SOCKET);
 
     if (!response.ok) {
       const text = await response.text();

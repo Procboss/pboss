@@ -74,6 +74,11 @@ export function manualInstallHint(): string {
   }
 }
 
+/** The postinstall entry — exported for the built bundle wrapper. */
+export async function runPostinstall(): Promise<void> {
+  return main();
+}
+
 async function main(): Promise<void> {
   if (!isGlobalInstall()) return; // local/dev install — silent by rule 1
 
@@ -111,8 +116,10 @@ async function main(): Promise<void> {
 }
 
 // Only act when run as the package postinstall (module is the entry), not
-// when imported by tests.
-if (import.meta.main) {
+// when imported by tests. The bundled dist/postinstall.js runs through
+// runPostinstall() — the argv check keeps a bundler-inlined true from
+// double-running it.
+if (import.meta.main === true && /(?:^|[/\\])postinstall\.ts$/.test(process.argv[1] ?? "")) {
   main().catch(() => {
     // Rule 3: never fail the install — the hint path above already covered
     // the actionable cases.

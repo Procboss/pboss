@@ -52,6 +52,8 @@ import { DEPENDENCY_POLICIES } from "./types";
 import type { ProcessContainer } from "./process-container";
 import type { ProcessEventSource } from "./events";
 import { ignore } from "./error-handling";
+import { getRuntime } from "./runtime";
+const R = getRuntime();
 
 // ── Configuration parsing ─────────────────────────────────────────────────
 
@@ -244,14 +246,8 @@ async function runSystemctl(
   args: string[]
 ): Promise<{ ok: boolean; stdout: string }> {
   try {
-    const proc = Bun.spawn(["systemctl", ...args], {
-      stdout: "pipe",
-      stderr: "ignore",
-      stdin: "ignore",
-    });
-    const stdout = await new Response(proc.stdout).text();
-    await proc.exited;
-    return { ok: proc.exitCode === 0, stdout };
+    const { stdout, exitCode } = await R.process.capture(["systemctl", ...args]);
+    return { ok: exitCode === 0, stdout };
   } catch (err) {
     ignore(`systemctl ${args.join(" ")}`, err);
     return { ok: false, stdout: "" };

@@ -26,12 +26,14 @@
  * License: GPL-3.0-only
  */
 
-import { mkdirSync, appendFileSync, openSync, closeSync, existsSync } from "node:fs";
+import { mkdirSync, appendFileSync, existsSync } from "node:fs";
 import { join } from "path";
 import { CRON_FILE, CRON_LOG_DIR, CRON_LATE_WINDOW_MS, CRON_WATCHDOG_INTERVAL_MS } from "./constants";
 import { warn } from "./error-handling";
 import { parseSchedule, nextCronRun, nextCronRuns } from "./cron-expr";
 import type { CronJob, CronJobConfig } from "./types";
+import { getRuntime } from "./runtime";
+const R = getRuntime();
 
 const TWO_SP = "  ";
 
@@ -109,7 +111,7 @@ export class CronJobManager {
   async load(): Promise<void> {
     if (!existsSync(CRON_FILE)) return;
     try {
-      const data = JSON.parse(await Bun.file(CRON_FILE).text());
+      const data = JSON.parse(await R.filesystem.readText(CRON_FILE));
       if (!Array.isArray(data)) return;
       for (const raw of data) {
         const job = raw as CronJob;
@@ -124,7 +126,7 @@ export class CronJobManager {
 
   async save(): Promise<void> {
     const arr = Array.from(this.jobs.values()).sort((a, b) => a.id - b.id);
-    await Bun.write(CRON_FILE, JSON.stringify(arr, null, 2));
+    await R.filesystem.write(CRON_FILE, JSON.stringify(arr, null, 2));
   }
 
   // ── public API (used by the daemon RPC) ──────────────────────────────────
@@ -390,23 +392,22 @@ export class CronJobManager {
         ? ["cmd", "/d", "/s", "/c", job.command]
         : ["/bin/sh", "-c", job.command];
 
-      const fd = openSync(logFile, "a");
-      try {
-        const proc = Bun.spawn(argv, {
-          cwd: job.cwd,
-          stdout: fd,
-          stderr: fd,
-          stdin: "ignore",
-          // windowsHide (issue #36 follow-up): cron commands run from the
-          // console-less daemon; on Windows each run would otherwise pop a
-          // VISIBLE console window at every schedule tick.
-          windowsHide: true,
-          env: { ...process.env, PBOSS_CRON_JOB: job.name },
-        });
-        exitCode = await proc.exited;
-      } finally {
-        closeSync(fd);
-      }
+      // The append sink is the adapter's native redirection (Bun: append
+      // fd, Node: WriteStream, Deno: pump) — cron output lands in the log
+      // file on every runtime.
+      const sink = R.filesystem.sink(logFile);
+      const proc = R.process.spawn(argv, {
+        cwd: job.cwd,
+        stdout: sink,
+        stderr: sink,
+        stdin: "ignore",
+        // windowsHide (issue #36 follow-up): cron commands run from the
+        // console-less daemon; on Windows each run would otherwise pop a
+        // VISIBLE console window at every schedule tick.
+        windowsHide: true,
+        env: { ...process.env, PBOSS_CRON_JOB: job.name },
+      });
+      exitCode = await proc.exited;
 
       appendFileSync(
         logFile,

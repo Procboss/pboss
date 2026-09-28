@@ -20,6 +20,8 @@ import { mkdir } from "fs/promises";
 import { chmodSync, readFileSync } from "fs";
 import { ignore } from "./error-handling";
 import { totalmem, freemem, loadavg, platform, hostname, uptime } from "node:os";
+import { getRuntime } from "./runtime";
+const R = getRuntime();
 
 export const DUMP_FILE = join(PBOSS_HOME, "dump.json");
 
@@ -210,15 +212,18 @@ export function treeKill(pid: number, signal: string = "SIGTERM"): Promise<void>
       if (process.platform === "win32") {
         try {
           const forceFlag = signal === "SIGKILL" || signal === "SIGTERM" ? ["/F"] : [];
-          const proc = Bun.spawn(["taskkill", ...forceFlag, "/T", "/PID", String(pid)], {
-            stdout: "ignore",
-            stderr: "ignore",
-            // windowsHide (issue #36 follow-up): treeKill runs inside the
-            // console-less daemon — taskkill.exe is a console tool, and a
-            // console child of a console-less parent gets a VISIBLE console
-            // window. Without this, every process stop/restart popped one.
-            windowsHide: true,
-          });
+          const proc = R.process.spawn(
+            ["taskkill", ...forceFlag, "/T", "/PID", String(pid)],
+            {
+              stdout: "ignore",
+              stderr: "ignore",
+              // windowsHide (issue #36 follow-up): treeKill runs inside the
+              // console-less daemon — taskkill.exe is a console tool, and a
+              // console child of a console-less parent gets a VISIBLE console
+              // window. Without this, every process stop/restart popped one.
+              windowsHide: true,
+            }
+          );
           await proc.exited;
         } catch (err) {
           ignore(`taskkill ${pid} on Windows`, err);
@@ -234,8 +239,7 @@ export function treeKill(pid: number, signal: string = "SIGTERM"): Promise<void>
 
       // Unix: try pgrep -P to find and kill child processes recursively
       try {
-        const result = Bun.spawn(["pgrep", "-P", String(pid)], { stdout: "pipe" });
-        const output = await new Response(result.stdout).text();
+        const { stdout: output } = await R.process.capture(["pgrep", "-P", String(pid)]);
         const childPids = output.trim().split("\n").filter(Boolean).map(Number);
 
         for (const childPid of childPids) {

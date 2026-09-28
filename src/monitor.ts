@@ -21,6 +21,8 @@ import { ignore } from "./error-handling";
 import { join } from "path";
 import pidusage from "pidusage";
 import { readdirSync } from "node:fs";
+import { getRuntime } from "./runtime";
+const R = getRuntime();
 
 export class Monitor {
   private history: MetricSnapshot[] = [];
@@ -31,16 +33,16 @@ export class Monitor {
   ): Promise<{ memory: number; cpu: number; handles?: number }> {
     try {
       if (process.platform === "linux") {
-        const statusFile = Bun.file(`/proc/${pid}/status`);
-        const statFile = Bun.file(`/proc/${pid}/stat`);
 
         let memory = 0;
         let cpu = 0;
         let handles: number | undefined;
 
-        if (await statusFile.exists()) {
-          const content = await statusFile.text();
-          const vmRss = content.match(/VmRSS:\s+(\d+)\s+kB/);
+        const statusText = await R.filesystem
+          .readText(`/proc/${pid}/status`)
+          .catch((err: unknown) => (ignore(`read /proc/${pid}/status`, err), null));
+        if (statusText) {
+          const vmRss = statusText.match(/VmRSS:\s+(\d+)\s+kB/);
           
           if (vmRss) memory = parseInt(vmRss[1]!) * 1024;
          
@@ -53,9 +55,11 @@ export class Monitor {
           }
         }
 
-        if (await statFile.exists()) {
-          const stat = await statFile.text();
-          const parts = stat.split(" ");
+        const statText = await R.filesystem
+          .readText(`/proc/${pid}/stat`)
+          .catch((err: unknown) => (ignore(`read /proc/${pid}/stat`, err), null));
+        if (statText) {
+          const parts = statText.split(" ");
           
           const utime = parseInt(parts[13]!) || 0;
           const stime = parseInt(parts[14]!) || 0;
@@ -129,7 +133,7 @@ export class Monitor {
 
   async saveMetrics(): Promise<void> {
     const filePath = join(METRICS_DIR, `metrics-${Date.now()}.json`);
-    await Bun.write(filePath, JSON.stringify(this.history.slice(-300)));
+    await R.filesystem.write(filePath, JSON.stringify(this.history.slice(-300)));
   }
 
   generatePrometheusMetrics(processes: ProcessState[]): string {

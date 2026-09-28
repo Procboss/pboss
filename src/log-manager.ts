@@ -20,6 +20,8 @@ import { LOG_DIR } from "./constants";
 import { ignore, warn } from "./error-handling";
 import type {  LogEntry, LogRotateOptions } from "./types";
 import { EOL } from 'node:os';
+import { getRuntime } from "./runtime";
+const R = getRuntime();
 
 const isoRegex: RegExp = /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?/;
 
@@ -145,12 +147,11 @@ export class LogManager {
     
     const logs = (await Promise.all(Object.values(paths).map(async (fp) => {         
       
-      const f = Bun.file(fp);
-      if (!(await f.exists())) return [];
+      if (!(await R.filesystem.exists(fp))) return [];
 
       const level = (fp == paths.errFile) ? "err" : "out";
-      
-      const rawLog = await f.text();
+
+      const rawLog = await R.filesystem.readText(fp);
  
        return rawLog
          .split(/\r?\n/)
@@ -180,20 +181,18 @@ export class LogManager {
     const paths = this.getLogPaths(name, id);
 
     const state = {
-      out: Bun.file(paths.outFile).size,
-      err: Bun.file(paths.errFile).size,
+      out: await R.filesystem.size(paths.outFile).catch(() => 0),
+      err: await R.filesystem.size(paths.errFile).catch(() => 0),
     };
 
     const poll = setInterval(async () => {
       for (const [type, fp] of [["out", paths.outFile],["err", paths.errFile],] as const) {
 
-        const f = Bun.file(fp);
-
-        if (!(await f.exists())) continue;
+        if (!(await R.filesystem.exists(fp))) continue;
 
         let lastSize = state[type];
 
-        const size = f.size;
+        const size = await R.filesystem.size(fp);
 
         if (size < lastSize) {
           state[type] = 0; // rotated file
@@ -202,7 +201,7 @@ export class LogManager {
 
         if (size === lastSize) continue;
 
-        const chunk = await f.slice(lastSize, size).text();
+        const chunk = new TextDecoder().decode(await R.filesystem.readRange(fp, lastSize, size));
         state[type] = size;
 
         for (const line of chunk.split(/\r?\n/).filter(Boolean)) {
@@ -249,21 +248,20 @@ export class LogManager {
       type: "out" | "err",
       fp: string
     ): Promise<{ t: number; level: string; msg: string }[]> => {
-      const f = Bun.file(fp);
-      if (!(await f.exists())) return [];
+      if (!(await R.filesystem.exists(fp))) return [];
       if (state[type] === -1) {
         // first poll: start from EOF, only NEW lines are "live"
-        state[type] = f.size;
+        state[type] = await R.filesystem.size(fp);
         return [];
       }
       let lastSize = state[type];
-      const size = f.size;
+      const size = await R.filesystem.size(fp);
       if (size < lastSize) {
         state[type] = 0; // rotated file
         lastSize = 0;
       }
       if (size === lastSize) return [];
-      const chunk = await f.slice(lastSize, size).text();
+      const chunk = new TextDecoder().decode(await R.filesystem.readRange(fp, lastSize, size));
       state[type] = size;
       const lines: { t: number; level: string; msg: string }[] = [];
       for (const line of chunk.split(/\r?\n/).filter(Boolean)) {
@@ -301,9 +299,8 @@ export class LogManager {
 
   async rotate(filePath: string, options: LogRotateOptions): Promise<void> {
     
-    const file = Bun.file(filePath);
-    
-    if (!(await file.exists()) || file.size < options.maxSize) return;
+    if (!(await R.filesystem.exists(filePath))) return;
+    if ((await R.filesystem.size(filePath)) < options.maxSize) return;
   
     const bgTasks: Promise<any>[] = [];
   
@@ -312,17 +309,16 @@ export class LogManager {
       const src = i === 1 ? filePath : `${filePath}.${i - 1}`;
       const dst = `${filePath}.${i}`;
   
-      if (await Bun.file(src).exists()) {
+      if (await R.filesystem.exists(src)) {
         
         await rename(src, dst);
         if (options.compress) {
           bgTasks.push((async () => {
             try {
-              const srcFile = Bun.file(dst);
-              if (await srcFile.exists()) {
-                const data = await srcFile.arrayBuffer();
-                const compressed = Bun.gzipSync(new Uint8Array(data));
-                await Bun.write(`${dst}.gz`, compressed);
+              if (await R.filesystem.exists(dst)) {
+                const data = await R.filesystem.readText(dst);
+                const compressed = R.filesystem.gzip(new TextEncoder().encode(data));
+                await R.filesystem.write(`${dst}.gz`, compressed);
                 await unlink(dst);
               }
             } catch (err) {
@@ -335,7 +331,7 @@ export class LogManager {
       }
     }
   
-    await Bun.write(filePath, ""); // Instantly truncate and reclaim space
+    await R.filesystem.write(filePath, ""); // Instantly truncate and reclaim space
   
     const dir = dirname(filePath);
     const baseName = basename(filePath);
@@ -358,8 +354,8 @@ export class LogManager {
 
   async flush(name: string, id: number, customOut?: string, customErr?: string) {
     const paths = this.getLogPaths(name, id, customOut, customErr);
-    try { await Bun.write(paths.outFile, ""); } catch (err) { warn(`truncate ${paths.outFile}`, err); }
-    try { await Bun.write(paths.errFile, ""); } catch (err) { warn(`truncate ${paths.errFile}`, err); }
+    try { await R.filesystem.write(paths.outFile, ""); } catch (err) { warn(`truncate ${paths.outFile}`, err); }
+    try { await R.filesystem.write(paths.errFile, ""); } catch (err) { warn(`truncate ${paths.errFile}`, err); }
   }
 
   async checkRotation(
@@ -467,12 +463,12 @@ export async function searchLogFiles(
     const { path, level } = expanded[i]!;
     let text: string;
     try {
-      const f = Bun.file(path);
-      if (!(await f.exists())) continue;
-      const buf = await f.arrayBuffer();
+      if (!(await R.filesystem.exists(path))) continue;
+      // .gz files are read as BYTES — a text round-trip would corrupt the
+      // compressed stream before gunzip ever sees it.
       text = path.endsWith(".gz")
-        ? new TextDecoder().decode(Bun.gunzipSync(new Uint8Array(buf)))
-        : new TextDecoder().decode(buf);
+        ? new TextDecoder().decode(R.filesystem.gunzip(await R.filesystem.readBytes(path)))
+        : await R.filesystem.readText(path);
     } catch (err) {
       ignore(`read log file ${path} for search`, err);
       continue;

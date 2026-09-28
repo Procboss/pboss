@@ -19,6 +19,8 @@
 
 import { DAEMON_SOCKET } from "./constants";
 import { ignore } from "./error-handling";
+import { getRuntime } from "./runtime";
+const R = getRuntime();
 
 export type DaemonProbe = { pid: number; uptime: number };
 
@@ -29,12 +31,11 @@ export type DaemonProbe = { pid: number; uptime: number };
  */
 export async function probeDaemon(socketPath: string = DAEMON_SOCKET): Promise<DaemonProbe | null> {
   try {
-    const res = await fetch("http://localhost/", {
+    const res = await R.network.socketFetch("http://localhost/", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ type: "ping", id: "daemon-probe" }),
-      unix: socketPath,
-    });
+    }, socketPath);
     if (!res.ok) return null;
     const body = (await res.json()) as { success?: boolean; data?: DaemonProbe };
     if (!body?.success || !body.data) return null;

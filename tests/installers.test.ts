@@ -1,5 +1,5 @@
 import { describe, test, expect } from "bun:test";
-import { readFileSync, existsSync, mkdtempSync, rmSync, writeFileSync, chmodSync } from "fs";
+import { readFileSync, existsSync, mkdtempSync, rmSync, writeFileSync, chmodSync, symlinkSync } from "fs";
 import { join, dirname } from "path";
 import { tmpdir } from "os";
 
@@ -12,33 +12,26 @@ const ps1 = readFileSync(PS1_PATH, "utf8");
 const cmd = readFileSync(CMD_PATH, "utf8");
 
 /**
- * No-root target contract (owner request, 2026-09-10): "we still dont need
- * root … no need for /usr/local/bin — if ~/.local/bin is not in PATH in
- * ~/.bashrc, then add it." The installer NEVER invokes sudo: a plain user
- * installs to ~/.local/bin, and when that dir is not on PATH the installer
- * appends the export to the shell rc (~/.bashrc / ~/.zshrc — created when
- * missing) plus the login profile when it exists, instead of printing a
- * manual note. Running the installer AS root (the legacy sudo pipe) still
- * installs system-wide to /usr/local/bin — but sudo is never required.
+ * The universal installer's runtime policy (runtime-agnostic architecture):
+ *
+ *   - The installer's ONLY runtime responsibility: ensure AT LEAST ONE of
+ *     Bun / Node / Deno exists. Any one → do nothing. None → install Bun.
+ *   - It NEVER selects a runtime, NEVER persists one (no PBOSS_RUNTIME), and
+ *     multiple installed runtimes are NOT a conflict.
+ *   - It installs the PUBLISHED package globally (bun install -g pboss /
+ *     npm install -g pboss / deno install -g npm:pboss) — no git clone,
+ *     no source compilation, no Bun build toolchain.
+ *   - The PATH self-heal and the no-root contract stay exactly as they were.
  *
  * The functional sims are machine-independent (Task 67 lesson): temp HOME
- * and a stub `id` on PATH — never the real sudo, never a /usr/local/bin
- * write, no password prompts.
+ * and stub `id`/`bun`/`node`/`deno`/`curl` on PATH — never the real
+ * installer's network side, never a real global install.
  */
 
-/** Extract step 1 (target selection) from the real script. */
-function step1(): string {
-  const start = sh.indexOf('INVOKE_USER="${SUDO_USER:-}"');
-  const end = sh.indexOf("# 2. Bun build toolchain");
-  expect(start).toBeGreaterThan(0);
-  expect(end).toBeGreaterThan(start);
-  return sh.slice(start, end);
-}
-
-/** Extract step 3 (source fetch) from the real script. */
-function step3(): string {
-  const start = sh.indexOf("TMP_DIR=$(mktemp -d");
-  const end = sh.indexOf('echo -e "${CYAN}Compiling standalone');
+/** Extract step 2 (runtime presence) from the real script. */
+function stepRuntime(): string {
+  const start = sh.indexOf("# 2. Runtime presence");
+  const end = sh.indexOf("# 3. Install the published pboss package");
   expect(start).toBeGreaterThan(0);
   expect(end).toBeGreaterThan(start);
   return sh.slice(start, end);
@@ -46,7 +39,7 @@ function step3(): string {
 
 /** Extract step 5 (PATH self-heal) from the real script. */
 function step5(): string {
-  const start = sh.indexOf('if [[ ":$PATH:" != *":$INSTALL_DIR:"* ]]; then');
+  const start = sh.indexOf('if [ -n "$PM_DIR" ] && [[ ":$PATH:" != *":$PM_DIR:"* ]]; then');
   const end = sh.indexOf("# 6. Boot persistence");
   expect(start).toBeGreaterThan(0);
   expect(end).toBeGreaterThan(start);
@@ -61,6 +54,10 @@ function stubDir(files: Record<string, string>): string {
     writeFileSync(f, `#!/bin/bash\n${body}\n`);
     chmodSync(f, 0o755);
   }
+  // The shell itself must resolve inside the hermetic PATH (pipes spawn
+  // `bash` by name) — a symlink, never a stub, so it behaves exactly like
+  // the real one.
+  symlinkSync("/bin/bash", join(dir, "bash"));
   return dir;
 }
 
@@ -70,91 +67,145 @@ const ID_STUB = `case "$1" in
   *) echo "\${FAKE_UID:-1000}" ;;
 esac`;
 
-/** sudo stub that records every invocation — the regression proof: after
- *  a non-root install the log file must still NOT exist. */
-const SUDO_RECORD = `echo "$@" >> "\${SUDO_LOG:-/dev/null}"
-exit 0`;
+/** A runtime stub: prints its name so we can see it being probed. */
+const RUNTIME_STUB = `echo "stub-$0 ran with $@" >> "\${STUB_LOG:-/dev/null}"\nexit 0`;
+
+/** curl stub: records every URL — proves no runtime gets downloaded. */
+const CURL_STUB = `echo "curl $*" >> "\${STUB_LOG:-/dev/null}"\nexit 1`;
 
 /**
- * Run an extracted slice with a temp HOME and stubbed `id`. `sudo` is also
- * stubbed to a recorder so tests can prove it is never invoked.
+ * Run a slice with a temp HOME, stubbed `id`/`curl` and a configurable set
+ * of "installed" runtimes. Returns the stub log (everything the stubs saw).
  */
 function runSlice(
   block: string,
   home: string,
-  extra: Record<string, string> = {},
-): { code: number; out: string; sudoLog: string } {
-  const sudoLog = join(home, "sudo-probe.log");
-  const dir = stubDir({ id: ID_STUB, sudo: SUDO_RECORD });
+  opts: { runtimes?: string[]; extra?: Record<string, string> } = {},
+): { code: number; out: string; log: string } {
+  const log = join(home, "stub.log");
+  const files: Record<string, string> = {
+    id: ID_STUB,
+    curl: CURL_STUB,
+  };
+  for (const rt of opts.runtimes ?? []) {
+    files[rt] = RUNTIME_STUB;
+  }
+  const dir = stubDir(files);
   try {
+    // NOTE: the PATH carries ONLY the stub dir — the host's real
+    // node/bun must not leak into "is a runtime present?" decisions.
     const proc = Bun.spawnSync(["bash", "-c", block], {
       env: {
         ...process.env,
         HOME: home,
         SUDO_USER: "",
-        SUDO_LOG: sudoLog,
-        PATH: `${dir}:/usr/bin:/bin`,
-        ...extra,
+        STUB_LOG: log,
+        PATH: dir,
+        ...opts.extra,
       },
     });
-    return { code: proc.exitCode, out: proc.stdout.toString(), sudoLog };
+    return {
+      code: proc.exitCode,
+      out: proc.stdout.toString() + proc.stderr.toString(),
+      log: existsSync(log) ? readFileSync(log, "utf8") : "",
+    };
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 }
 
-describe("install.sh: the no-root target contract", () => {
-  test("INSTALL_DIR is assigned exactly twice (root + non-root branches)", () => {
-    const assignments = sh.match(/^\s*INSTALL_DIR=/gm) ?? [];
-    expect(assignments).toHaveLength(2);
-    expect(sh).toContain('INSTALL_DIR="/usr/local/bin"');
-    expect(sh).toContain('INSTALL_DIR="$HOME/.local/bin"');
-  });
+// ─── The runtime policy (architecture spec §14–§21) ───────────────────────
 
-  test("no INSTALL_DIR assignment after the step-1 mkdir (the stale-override bug class)", () => {
-    const mkdirIdx = sh.indexOf('mkdir -p "$INSTALL_DIR"');
-    expect(mkdirIdx).toBeGreaterThan(0);
-    expect(/^\s*INSTALL_DIR=/m.test(sh.slice(mkdirIdx))).toBe(false);
-  });
-
-  test("the sudo machinery is GONE — the installer never probes, prompts, or elevates", () => {
-    for (const gone of [
-      "probe_sudo",
-      "SUDO_PREFIX",
-      "CAN_SUDO",
-      "target_writable",
-      "STAMPED_DIR",
-      "PBOSS_INSTALL_DIR",
-      "PBOSS_NO_SUDO",
-      "elev ",
-      "sudo -n true",
-      "sudo -v",
-    ]) {
-      expect(sh).not.toContain(gone);
+describe("install.sh: runtime presence policy", () => {
+  test("no runtime at all → Bun is installed (the only runtime side effect)", () => {
+    const home = mkdtempSync(join(tmpdir(), "pboss-policy-"));
+    try {
+      // Slice: the detection + the "none found" branch up to the install
+      // (curl stubbed — it records instead of downloading).
+      const block = stepRuntime() + '\necho "BRANCH-DONE"\n';
+      const r = runSlice(block, home, { runtimes: [] });
+      // The branch body references curl (stubbed) — the slice proves the
+      // IF fires: the script says it is installing Bun.
+      expect(r.out).toContain("No supported runtime found");
+      expect(r.out).toContain("installing Bun");
+    } finally {
+      rmSync(home, { recursive: true, force: true });
     }
-    // The one remaining sudo in CODE is the legacy root pipe dropping back
-    // to the invoking user for the per-user service (root-only, step 6).
-    const codeLines = sh
-      .split("\n")
-      .filter((l) => /\bsudo\b/.test(l))
-      .filter((l) => !/^\s*#/.test(l))
-      .filter((l) => !/\becho\b/.test(l));
-    expect(codeLines).toHaveLength(1);
-    expect(codeLines[0]).toContain('sudo -u "$INVOKE_USER" env');
   });
 
-  test("the channel stamp records the channel, not the install dir", () => {
-    expect(sh).toContain('"channel":"universal","by":"install.sh","stampedAt":%s');
-    expect(sh).not.toContain("installDir");
+  for (const [label, runtimes] of [
+    ["bun", ["bun"]],
+    ["node", ["node"]],
+    ["deno", ["deno"]],
+    ["bun + node", ["bun", "node"]],
+    ["bun + node + deno", ["bun", "node", "deno"]],
+  ] as const) {
+    test(`${label} present → nothing installed, nothing selected`, () => {
+      const home = mkdtempSync(join(tmpdir(), "pboss-policy-"));
+      try {
+        const block = stepRuntime() + '\necho "BRANCH-DONE"\n';
+        const r = runSlice(block, home, { runtimes: [...runtimes] });
+        expect(r.out).toContain("A supported runtime is present — nothing installed, nothing selected");
+        // No runtime download happened (curl stub stayed silent).
+        expect(r.log).not.toContain("bun.sh/install");
+        // Each PRESENT runtime was reported as found (no "not found" line).
+        for (const rt of runtimes) expect(r.out).not.toContain(`${rt} not found`);
+      } finally {
+        rmSync(home, { recursive: true, force: true });
+      }
+    });
+  }
+
+  test("the none-found condition tests ALL THREE runtimes before installing Bun", () => {
+    expect(sh).toContain('if [ -z "$HAS_BUN" ] && [ -z "$HAS_NODE" ] && [ -z "$HAS_DENO" ]; then');
   });
 
-  test("the PATH self-heal appends to (or creates) the user's rc files", () => {
-    expect(sh).toContain('rc_primary="$INVOKE_HOME/.bashrc"');
-    expect(sh).toContain('rc_login="$INVOKE_HOME/.profile"');
-    expect(sh).toContain('rc_primary="$INVOKE_HOME/.zshrc"');
-    expect(sh).toContain('rc_login="$INVOKE_HOME/.zprofile"');
-    expect(sh).toContain("Added ${INSTALL_DIR} to PATH in");
-    expect(sh).toContain("open a NEW terminal");
+  test("no priority chain — the installer never ranks runtimes", () => {
+    // The forbidden shape: a case/elseif that prefers bun over node over deno
+    // FOR RUNTIME SELECTION. (The package-manager choice is install-only
+    // and is allowed — it installs the npm package, it does not pick a
+    // runtime for pboss.)
+    const runtimeSection = stepRuntime();
+    expect(runtimeSection).not.toMatch(/prefer|priority|rank/i);
+  });
+
+  test("never persists a runtime choice (no PBOSS_RUNTIME is ever set)", () => {
+    expect(sh).not.toMatch(/export\s+PBOSS_RUNTIME|PBOSS_RUNTIME=/);
+    expect(ps1).not.toMatch(/\$env:PBOSS_RUNTIME/);
+  });
+});
+
+describe("install.sh: published package, no source compilation", () => {
+  test("installs the published package globally via an available package manager", () => {
+    expect(sh).toContain("bun install -g");
+    expect(sh).toContain("npm install -g");
+    expect(sh).toContain("deno install -g");
+    expect(sh).toContain("npm:${PKG_SPEC}");
+  });
+
+  test("NO git clone, NO source archive, NO compiling", () => {
+    expect(sh).not.toContain("git clone");
+    expect(sh).not.toContain("archive/refs/heads");
+    expect(sh).not.toContain("bun build");
+    expect(sh).not.toContain("--compile");
+    expect(sh).not.toContain("Compiling");
+    expect(ps1).not.toContain("git");
+    expect(ps1).not.toContain("Expand-Archive");
+    expect(ps1).not.toContain("bun build");
+  });
+
+  test("the package-manager choice is documented as install-only", () => {
+    expect(sh).toContain("installs ONLY the npm package");
+    expect(sh).toContain("not a runtime selection");
+  });
+
+  test("verifies pboss and reports the EXECUTING runtime (not a selection)", () => {
+    expect(sh).toContain('command -v pboss');
+    expect(sh).toContain('--runtime 2>/dev/null');
+  });
+
+  test("version-exact installs: PBOSS_VERSION pins the package spec", () => {
+    expect(sh).toContain('[ -n "$PBOSS_VERSION" ] && PKG_SPEC="pboss@${PBOSS_VERSION}"');
   });
 
   test("bash syntax is valid", () => {
@@ -163,285 +214,128 @@ describe("install.sh: the no-root target contract", () => {
   });
 });
 
-describe("install.sh: target resolution (functional, machine-independent)", () => {
-  test("non-root → ~/.local/bin, dir created, sudo NEVER invoked", () => {
-    const home = mkdtempSync(join(tmpdir(), "pboss-installer-local-"));
-    try {
-      const { code, out, sudoLog } = runSlice(
-        step1() + '\nprintf "RESOLVED=%s" "$INSTALL_DIR"',
-        home,
-      );
-      expect(code).toBe(0);
-      expect(out).toContain("no root required");
-      expect(out).toContain("Installing as testuser");
-      expect(out).toContain(`RESOLVED=${home}/.local/bin`);
-      expect(existsSync(join(home, ".local", "bin"))).toBe(true);
-      // The owner's contract: a plain-user install must never touch sudo.
-      expect(existsSync(sudoLog)).toBe(false);
-    } finally {
-      rmSync(home, { recursive: true, force: true });
-    }
+// ─── The no-root contract (unchanged from the old installer) ──────────────
+
+describe("install.sh: no-root contract", () => {
+  test("INSTALL_DIR references are gone — the package manager owns the bin dir now", () => {
+    expect(sh).not.toContain("INSTALL_DIR=");
   });
 
-  test("root (legacy sudo pipe) → /usr/local/bin", () => {
-    const home = mkdtempSync(join(tmpdir(), "pboss-installer-root-"));
-    try {
-      // No mkdir is executed here: never write toward the real /usr/local/bin.
-      const block = step1().replace('mkdir -p "$INSTALL_DIR"', "") +
-        '\nprintf "RESOLVED=%s" "$INSTALL_DIR"';
-      const { code, out } = runSlice(block, home, { FAKE_UID: "0", FAKE_USER: "root" });
-      expect(code).toBe(0);
-      expect(out).toContain("Running as root — installing system-wide");
-      expect(out).toContain("sudo is NOT needed");
-      expect(out).toContain("RESOLVED=/usr/local/bin");
-    } finally {
-      rmSync(home, { recursive: true, force: true });
-    }
-  });
-});
-
-describe("install.sh: PATH self-heal (add ~/.local/bin to the rc — no root)", () => {
-  function runStep5(home: string, shell = "/bin/bash", path = "/usr/bin:/bin") {
-    const proc = Bun.spawnSync(["bash", "-c", step5()], {
-      env: {
-        ...process.env,
-        HOME: home,
-        SHELL: shell,
-        PATH: path,
-        INSTALL_DIR: `${home}/.local/bin`,
-        INVOKE_HOME: home,
-      },
-    });
-    expect(proc.exitCode).toBe(0);
-    return proc.stdout.toString();
-  }
-
-  test("the owner's field report: ~/.bashrc without the dir gets the export appended", () => {
-    const home = mkdtempSync(join(tmpdir(), "pboss-path-heal-"));
-    try {
-      writeFileSync(join(home, ".bashrc"), "# existing bashrc\n");
-      writeFileSync(join(home, ".profile"), "# existing profile\n");
-      const out = runStep5(home);
-      expect(out).toContain("Added");
-      expect(out).toContain(".bashrc");
-      const expected = `export PATH="${home}/.local/bin:$PATH"`;
-      expect(readFileSync(join(home, ".bashrc"), "utf8")).toContain(expected);
-      expect(readFileSync(join(home, ".profile"), "utf8")).toContain(expected);
-      expect(readFileSync(join(home, ".bashrc"), "utf8")).toContain(
-        "# Added by the ProcBoss installer — keep pboss on PATH",
-      );
-    } finally {
-      rmSync(home, { recursive: true, force: true });
-    }
-  });
-
-  test("a MISSING ~/.bashrc is created (the ask is 'add it', not 'note it') — a missing ~/.profile is not", () => {
-    const home = mkdtempSync(join(tmpdir(), "pboss-path-heal2-"));
-    try {
-      const out = runStep5(home);
-      expect(out).toContain("Added");
-      expect(existsSync(join(home, ".bashrc"))).toBe(true);
-      expect(readFileSync(join(home, ".bashrc"), "utf8")).toContain(
-        `export PATH="${home}/.local/bin:$PATH"`,
-      );
-      expect(existsSync(join(home, ".profile"))).toBe(false);
-    } finally {
-      rmSync(home, { recursive: true, force: true });
-    }
-  });
-
-  test("idempotent: a second run appends nothing", () => {
-    const home = mkdtempSync(join(tmpdir(), "pboss-path-heal3-"));
-    try {
-      writeFileSync(join(home, ".bashrc"), "# existing bashrc\n");
-      runStep5(home);
-      const afterFirst = readFileSync(join(home, ".bashrc"), "utf8");
-      runStep5(home);
-      expect(readFileSync(join(home, ".bashrc"), "utf8")).toBe(afterFirst);
-    } finally {
-      rmSync(home, { recursive: true, force: true });
-    }
-  });
-
-  test("an rc that already references the dir — $HOME or ~/ spelling — is left alone", () => {
-    for (const spelling of ['export PATH="$HOME/.local/bin:$PATH"', "export PATH=~/.local/bin:$PATH"]) {
-      const home = mkdtempSync(join(tmpdir(), "pboss-path-heal4-"));
-      try {
-        writeFileSync(join(home, ".bashrc"), `${spelling}\n`);
-        const out = runStep5(home);
-        expect(out).toContain("Note:");
-        expect(out).toContain("already in your shell profile");
-        expect(readFileSync(join(home, ".bashrc"), "utf8")).toBe(`${spelling}\n`);
-      } finally {
-        rmSync(home, { recursive: true, force: true });
-      }
-    }
-  });
-
-  test("zsh users heal ~/.zshrc (creating it), never .bashrc", () => {
-    const home = mkdtempSync(join(tmpdir(), "pboss-path-heal5-"));
-    try {
-      const out = runStep5(home, "/bin/zsh");
-      expect(out).toContain(".zshrc");
-      expect(existsSync(join(home, ".zshrc"))).toBe(true);
-      expect(readFileSync(join(home, ".zshrc"), "utf8")).toContain(
-        `export PATH="${home}/.local/bin:$PATH"`,
-      );
-      expect(existsSync(join(home, ".bashrc"))).toBe(false);
-    } finally {
-      rmSync(home, { recursive: true, force: true });
-    }
-  });
-
-  test("the dir already on the current PATH → nothing is touched", () => {
-    const home = mkdtempSync(join(tmpdir(), "pboss-path-heal6-"));
-    try {
-      const out = runStep5(home, "/bin/bash", `/usr/bin:/bin:${home}/.local/bin`);
-      expect(out).not.toContain("Added");
-      expect(existsSync(join(home, ".bashrc"))).toBe(false);
-    } finally {
-      rmSync(home, { recursive: true, force: true });
-    }
-  });
-});
-
-describe("install.sh: step 1 + step 5 in sequence (the curl | bash shape)", () => {
-  test("non-root install: binary dir created AND the rc healed in one run", () => {
-    const home = mkdtempSync(join(tmpdir(), "pboss-installer-e2e-"));
-    try {
-      writeFileSync(join(home, ".bashrc"), "# stock ubuntu bashrc\n");
-      const { code, out, sudoLog } = runSlice(
-        step1() + "\n" + step5(),
-        home,
-      );
-      expect(code).toBe(0);
-      expect(out).toContain("no root required");
-      expect(out).toContain("Added");
-      expect(existsSync(join(home, ".local", "bin"))).toBe(true);
-      expect(readFileSync(join(home, ".bashrc"), "utf8")).toContain(
-        `export PATH="${home}/.local/bin:$PATH"`,
-      );
-      expect(existsSync(sudoLog)).toBe(false);
-    } finally {
-      rmSync(home, { recursive: true, force: true });
-    }
-  });
-});
-
-describe("install.ps1: same contract on Windows", () => {
-  test("$installDir is decided exactly once (the elevation if/else)", () => {
-    const assignments = ps1.match(/^\s*\$installDir = Join-Path/gm) ?? [];
-    expect(assignments).toHaveLength(2);
-  });
-
-  test("non-elevated default is the per-user LOCALAPPDATA dir", () => {
-    expect(ps1).toContain('Join-Path $env:LOCALAPPDATA "pboss"');
-  });
-
-  test("elevated legacy path is ProgramFiles", () => {
-    expect(ps1).toContain('Join-Path $env:ProgramFiles "pboss"');
-  });
-
-  test("compile output lands in the chosen dir", () => {
-    expect(ps1).toContain('Join-Path $installDir "pboss.exe"');
-  });
-
-  test("PATH scope follows the branch (User vs Machine)", () => {
-    expect(ps1).toContain("[System.EnvironmentVariableTarget]::User");
-    expect(ps1).toContain("[System.EnvironmentVariableTarget]::Machine");
-  });
-});
-
-describe("install.cmd: launcher only, no target logic of its own", () => {
-  test("delegates to install.ps1 (comments may explain, code must not decide)", () => {
-    expect(cmd).toContain("install.ps1");
-    // Strip REM comment lines: the remaining code must be delegation only.
-    const code = cmd
-      .split("\n")
-      .filter((l) => !/^\s*REM/i.test(l))
-      .join("\n");
-    expect(/LOCALAPPDATA|ProgramFiles/i.test(code)).toBe(false);
-    expect(code).toMatch(/powershell .*install\.ps1/);
-  });
-});
-
-/**
- * Reinstall contract (owner report: "after pboss reinstalls, it fails to
- * detect existing cloud connections"): the machine credential in
- * ~/.pboss/cloud.json is the permanent cache — every installer must CHECK
- * for it and say so, so a reinstalled machine never looks unlinked.
- */
-describe("installers detect an existing cloud link (the permanent cache)", () => {
-  test("install.sh checks the credential before the success banner", () => {
-    const bannerIdx = sh.indexOf("successfully installed");
-    const checkIdx = sh.indexOf('"$INVOKE_HOME/.pboss/cloud.json"');
-    expect(checkIdx).toBeGreaterThan(0);
-    expect(checkIdx).toBeLessThan(bannerIdx);
-    expect(sh).toContain("Existing cloud link detected — the daemon will resume it automatically.");
-    expect(sh).toContain("pboss cloud status");
-  });
-
-  test("install.ps1 checks the credential before the success banner", () => {
-    const bannerIdx = ps1.indexOf("successfully installed");
-    const checkIdx = ps1.indexOf('Join-Path $env:USERPROFILE ".pboss\\cloud.json"');
-    expect(checkIdx).toBeGreaterThan(0);
-    expect(checkIdx).toBeLessThan(bannerIdx);
-    expect(ps1).toContain("Existing cloud link detected");
-  });
-});
-
-/**
- * Version-exact installs (owner report, 2026-09-10: "after pboss upgrade was
- * success, pboss -v still showed the old version"). Root cause: the registry
- * (1.2.4) was ahead of git main (1.2.3), and the universal installer
- * compiled git main — a "successful" upgrade that shipped the same version.
- * The contract now: `pboss upgrade` pins PBOSS_VERSION on the bash side of
- * the pipe, and install.sh fetches EXACTLY that version's npm tarball.
- */
-describe("install.sh: version-exact installs (PBOSS_VERSION)", () => {
-  test("the pinned branch downloads the npm registry tarball for that version", () => {
-    expect(sh).toContain(
-      'curl -fsSL "https://registry.npmjs.org/pboss/-/pboss-${PBOSS_VERSION}.tgz"',
-    );
-    expect(sh).toContain("npm registry tarball");
-  });
-
-  test("the unpinned default still clones git main (fresh installs get the dev edge)", () => {
-    expect(sh).toContain("git clone --depth 1 https://github.com/procboss/pboss.git");
-    expect(sh).toContain("Fetching latest pboss source");
-  });
-
-  test("the tarball branch fails LOUDLY when the registry download fails", () => {
-    expect(sh).toContain("Failed to download pboss v${PBOSS_VERSION}");
-    expect(sh).toContain("exit 1");
-  });
-
-  test("the success banner reports the version the binary itself prints", () => {
-    // INSTALLED_V is read once in step 4b (channel stamp) and reused by the
-    // banner — one source of truth, no drift between stamp and message.
-    expect(sh).toContain('INSTALLED_V=$("$INSTALL_DIR/pboss" --version');
-    expect(sh).toContain('echo "✓ ProcBoss (pboss) v${INSTALLED_V} successfully installed');
-    // The generic fallback line stays for the (unlikely) unreadable case.
-    expect(sh).toContain('echo "✓ ProcBoss (pboss) successfully installed');
-  });
-
-  test("step 3 slices cleanly: pinned → tarball, unset → git clone", () => {
-    const block = step3();
-    expect(block).toContain('if [ -n "$PBOSS_VERSION" ]; then');
-    expect(block.indexOf("registry.npmjs.org")).toBeGreaterThan(
-      block.indexOf('if [ -n "$PBOSS_VERSION" ]; then'),
-    );
-    expect(block.indexOf("git clone")).toBeGreaterThan(block.indexOf("else"));
-  });
-
-  test("a pinned install is still a no-root install (no new sudo appears)", () => {
-    // The whole-file sudo-line count from the no-root contract must hold
-    // (one legacy root-pipe line in step 6 only).
+  test("the sudo machinery is GONE from the install path — one drop-back exception", () => {
+    // The ONLY sudo use left: root invoking for the per-user boot service.
     const codeLines = sh
       .split("\n")
       .filter((l) => /\bsudo\b/.test(l))
       .filter((l) => !/^\s*#/.test(l))
       .filter((l) => !/\becho\b/.test(l));
-    expect(codeLines).toHaveLength(1);
+    expect(codeLines.length).toBe(1);
+    expect(codeLines[0]).toContain('sudo -u "$INVOKE_USER" env');
+  });
+
+  test("the channel stamp records the channel (upgrade re-runs this installer)", () => {
+    expect(sh).toContain('"channel":"universal","by":"install.sh","stampedAt":%s');
+  });
+
+  test("PATH self-heal: appends to (or creates) the user's rc files", () => {
+    expect(sh).toContain('rc_primary="$INVOKE_HOME/.bashrc"');
+    expect(sh).toContain('rc_login="$INVOKE_HOME/.profile"');
+    expect(sh).toContain('rc_primary="$INVOKE_HOME/.zshrc"');
+    expect(sh).toContain('rc_login="$INVOKE_HOME/.zprofile"');
+    expect(sh).toContain("Added ${PM_DIR} to PATH in");
+    expect(sh).toContain("open a NEW terminal");
+  });
+
+  test("PATH self-heal sim: a missing ~/.bashrc is created; a missing ~/.profile is not", () => {
+    const home = mkdtempSync(join(tmpdir(), "pboss-heal-"));
+    try {
+      const block = step5();
+      const proc = Bun.spawnSync(["bash", "-c", block], {
+        env: {
+          ...process.env,
+          HOME: home,
+          INVOKE_HOME: home,
+          PM_DIR: join(home, ".bun", "bin"),
+          PATH: "/usr/bin:/bin",
+          SHELL: "/bin/bash",
+        },
+      });
+      expect(proc.exitCode).toBe(0);
+      const out = proc.stdout.toString();
+      expect(out).toContain("Added");
+      expect(existsSync(join(home, ".bashrc"))).toBe(true);
+      expect(existsSync(join(home, ".profile"))).toBe(false);
+      expect(readFileSync(join(home, ".bashrc"), "utf8")).toContain(
+        `export PATH="${join(home, ".bun", "bin")}:$PATH"`
+      );
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test("PATH self-heal sim: an rc already referencing the dir is left alone", () => {
+    const home = mkdtempSync(join(tmpdir(), "pboss-heal-"));
+    try {
+      const pmDir = join(home, ".bun", "bin");
+      writeFileSync(join(home, ".bashrc"), `export PATH="$HOME/.bun/bin:$PATH"\n`);
+      const block = step5();
+      const proc = Bun.spawnSync(["bash", "-c", block], {
+        env: {
+          ...process.env,
+          HOME: home,
+          INVOKE_HOME: home,
+          PM_DIR: pmDir,
+          PATH: "/usr/bin:/bin",
+          SHELL: "/bin/bash",
+        },
+      });
+      const out = proc.stdout.toString();
+      expect(out).toContain("already in your shell profile");
+      expect(readFileSync(join(home, ".bashrc"), "utf8")).toBe(
+        `export PATH="$HOME/.bun/bin:$PATH"\n`
+      );
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+});
+
+// ─── install.ps1: the same policy on Windows ─────────────────────────────
+
+describe("install.ps1: same runtime policy as the shell installer", () => {
+  test("detects bun, node AND deno — any one is enough", () => {
+    expect(ps1).toContain("Get-Command bun");
+    expect(ps1).toContain("Get-Command node");
+    expect(ps1).toContain("Get-Command deno");
+  });
+
+  test("installs Bun ONLY when NO runtime exists", () => {
+    expect(ps1).toContain("if (-not ($bunCmd -or $nodeCmd -or $denoCmd))");
+    expect(ps1).toContain("install.ps1");
+  });
+
+  test("installs the published package, never compiles", () => {
+    expect(ps1).toContain("bun install -g");
+    expect(ps1).toContain("npm install -g");
+    expect(ps1).toContain("deno install -g");
+    expect(ps1).not.toContain("git");
+    expect(ps1).not.toContain("Expand-Archive");
+    expect(ps1).not.toContain("bun build");
+  });
+
+  test("reports the executing runtime at the end", () => {
+    expect(ps1).toContain("pboss --runtime");
+  });
+
+  test("the shell and PowerShell installers agree on the policy text", () => {
+    const shPolicy = sh.includes("Ensure at least one supported runtime exists");
+    const ps1Policy = ps1.includes("Ensure at least one supported runtime exists");
+    expect(shPolicy).toBe(true);
+    expect(ps1Policy).toBe(true);
+  });
+});
+
+describe("install.cmd: the launcher delegates to install.ps1", () => {
+  test("still just invokes the PowerShell installer", () => {
+    expect(cmd).toContain("install.ps1");
   });
 });

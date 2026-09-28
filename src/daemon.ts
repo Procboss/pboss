@@ -35,7 +35,10 @@ import { probeDaemon } from "./daemon-probe";
 import { enrichPathWithBun } from "./install-mode";
 import { ensureDirs, tightenPbossHomeMode } from "./utils";
 import type { DaemonMessage, DaemonResponse } from "./types";
-import type { Server } from "bun";
+import { getRuntime } from "./runtime";
+import type { PBServerHandle } from "./runtime";
+
+const R = getRuntime();
 import { existsSync, unlinkSync, readFileSync } from "node:fs";
 
 
@@ -43,7 +46,7 @@ export default class Daemon {
 
   initialized: boolean = false;
 
-  server: Server<any> | null = null;
+  server: PBServerHandle | null = null;
   pm: ProcessManager | null = null;
   dashboard: Dashboard | null = null;
   moduleManager: ModuleManager | null = null;
@@ -55,11 +58,11 @@ export default class Daemon {
   debugMode: boolean = false;
   daemonEnabled: boolean = true;
 
-  // ── Bound once so Bun.serve always has the right `this` ──────────────────
+  // ── Bound once so the adapter's serve always has the right `this` ───────
   private boundFetch = (req: Request) => this.handleServerRequests(req);
 
   getServerOpts = () => ({
-    unix: DAEMON_SOCKET,
+    socketPath: DAEMON_SOCKET,
     fetch: this.boundFetch,
     idleTimeout: 0
   });
@@ -131,7 +134,7 @@ export default class Daemon {
       }
 
       // Write PID file
-      await Bun.write(DAEMON_PID_FILE, String(process.pid));
+      await R.filesystem.write(DAEMON_PID_FILE, String(process.pid));
     }
 
     // Load modules
@@ -227,13 +230,16 @@ export default class Daemon {
   }
 
   // initialize MUST be called before startServer
-  startServer(): Server<any> {
+  startServer(): PBServerHandle {
     
     if (!this.initialized) {
       throw new Error("Daemon.initialize() must be called before startServer()");
     }
     
-    this.server = Bun.serve(this.getServerOpts() as any);
+    // The runtime adapter's NATIVE unix-socket server: Bun.serve({unix}),
+    // node:http listen(path), Deno.serve({unix}).
+    const opts = this.getServerOpts();
+    this.server = R.network.serve({ socketPath: opts.socketPath!, fetch: (req) => opts.fetch(req) });
     return this.server;
   }
   
@@ -576,7 +582,7 @@ export default class Daemon {
           if (!this.server) {
             this.server = this.startServer();
           } else {
-            this.server.reload(this.getServerOpts() as any);
+            this.server.reload(this.boundFetch);
           }
           return { type: "daemonReload", data: "Daemon reloaded", success: true, id: msg.id };
         }
@@ -636,7 +642,11 @@ export default class Daemon {
 
 
 // ── Entrypoint (spawned by CLI) ───────────────────────────────────────────
-if (import.meta.main) {
+// The argv check pins this to `bun run src/daemon.ts` (the script-install
+// daemon spawn command); the bundled CLI reaches daemon mode through
+// index.ts's "__daemon" case instead — the bundler's static
+// import.meta.main handling alone is not a reliable guard.
+if (import.meta.main === true && /(?:^|[/\\])daemon\.ts$/.test(process.argv[1] ?? "")) {
   (async () => {
     const dm = new Daemon();
     await dm.initialize();

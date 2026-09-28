@@ -2,10 +2,20 @@
 # https://procboss.com
 # Usage: powershell -c "irm https://procboss.com/install.ps1 | iex"
 #
-# No Administrator required: by default the compiled pboss.exe goes to
-# %LOCALAPPDATA%\pboss and is added to the USER PATH. Running the installer
-# from an elevated shell still works and installs machine-wide to
-# %ProgramFiles%\pboss with the system PATH (legacy behavior).
+# ProcBoss is runtime-agnostic: it runs under Bun, Node.js or Deno, using
+# each runtime's native APIs. This installer has exactly ONE
+# runtime-related responsibility:
+#
+#   Ensure at least one supported runtime exists on the machine.
+#     - Bun OR Node OR Deno present  ->  do nothing, install nothing
+#     - none present                 ->  install Bun
+#
+# It NEVER selects a runtime, NEVER persists a runtime preference, and
+# NEVER compiles anything — pboss is installed from the PUBLISHED npm
+# package, globally. The runtime executing `pboss` is decided at
+# execution time. Shell and PowerShell installers share this policy.
+#
+# No Administrator required.
 
 $ErrorActionPreference = "Stop"
 
@@ -14,33 +24,15 @@ Write-Host "  ⚡ ProcBoss (pboss) Windows Installer" -ForegroundColor Cyan
 Write-Host "  https://procboss.com" -ForegroundColor DarkGray
 Write-Host ""
 
-# 1. Install target — elevation only for the machine-wide legacy path.
 $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
 $principal = New-Object System.Security.Principal.WindowsPrincipal($identity)
 $isAdmin = $principal.IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)
 
-if ($isAdmin) {
-    $installDir = Join-Path $env:ProgramFiles "pboss"
-    $pathTarget = [System.EnvironmentVariableTarget]::Machine
-    Write-Host "✓ Running elevated — installing machine-wide to $installDir" -ForegroundColor Green
-    Write-Host "  (Administrator is NOT required: a normal shell installs per-user)" -ForegroundColor Yellow
-} else {
-    $installDir = Join-Path $env:LOCALAPPDATA "pboss"
-    $pathTarget = [System.EnvironmentVariableTarget]::User
-    Write-Host "✓ Installing per-user to $installDir — no Administrator required" -ForegroundColor Green
-}
-
-if (-not (Test-Path $installDir)) {
-    New-Item -ItemType Directory -Path $installDir -Force | Out-Null
-}
-
-# 2. Bun build toolchain.
-#    Bun is only needed to COMPILE pboss — the final executable embeds the Bun
-#    runtime, so the system does not need Bun installed once pboss is built.
+# 1. Runtime presence — ANY ONE of Bun / Node / Deno is enough.
+#    Multiple runtimes are NOT a conflict; nothing is chosen here.
 $bunCmd = Get-Command bun -ErrorAction SilentlyContinue
-
-# An elevated session may not have the user-level Bun on its PATH — check the
-# default install location before deciding to (re)install.
+# An elevated session may not have the user-level Bun on its PATH — check
+# the default install location before deciding it is absent.
 if (-not $bunCmd) {
     $userBun = Join-Path $env:USERPROFILE ".bun\bin\bun.exe"
     if (Test-Path $userBun) {
@@ -48,120 +40,130 @@ if (-not $bunCmd) {
         $bunCmd = Get-Command bun -ErrorAction SilentlyContinue
     }
 }
+$nodeCmd = Get-Command node -ErrorAction SilentlyContinue
+$denoCmd = Get-Command deno -ErrorAction SilentlyContinue
 
-if (-not $bunCmd) {
-    Write-Host "Bun runtime is not detected. Installing Bun..." -ForegroundColor Yellow
+Write-Host "Runtime check — pboss runs under Bun, Node.js or Deno:" -ForegroundColor Cyan
+if ($bunCmd)  { Write-Host "  ✓ Bun found    ($($bunCmd.Source))" -ForegroundColor Green } else { Write-Host "  · Bun not found" -ForegroundColor Yellow }
+if ($nodeCmd) { Write-Host "  ✓ Node found   ($($nodeCmd.Source))" -ForegroundColor Green } else { Write-Host "  · Node not found" -ForegroundColor Yellow }
+if ($denoCmd) { Write-Host "  ✓ Deno found   ($($denoCmd.Source))" -ForegroundColor Green } else { Write-Host "  · Deno not found" -ForegroundColor Yellow }
+
+# None at all -> install Bun (the ONLY runtime-side effect this script has).
+if (-not ($bunCmd -or $nodeCmd -or $denoCmd)) {
+    Write-Host "No supported runtime found — installing Bun (https://bun.sh)..." -ForegroundColor Yellow
     Invoke-Expression (Invoke-RestMethod -Uri "https://bun.sh/install.ps1")
 
     $bunBinPath = Join-Path $env:USERPROFILE ".bun\bin"
     if (Test-Path $bunBinPath) {
         $env:PATH = "$bunBinPath;$env:PATH"
     }
-} else {
-    Write-Host "Updating Bun to the latest version..." -ForegroundColor Cyan
-    try {
-        & bun upgrade | Out-Null
-    } catch {
-        try {
-            Invoke-Expression (Invoke-RestMethod -Uri "https://bun.sh/install.ps1")
-        } catch {}
+    $bunCmd = Get-Command bun -ErrorAction SilentlyContinue
+    if (-not $bunCmd) {
+        Write-Host "✗ Failed to install Bun." -ForegroundColor Red
+        Write-Host "Install any one runtime manually and re-run:"
+        Write-Host "  https://bun.sh  ·  https://nodejs.org  ·  https://deno.com" -ForegroundColor Cyan
+        exit 1
     }
+    Write-Host "✓ Bun installed — pboss will run under it until you choose otherwise." -ForegroundColor Green
+} else {
+    Write-Host "✓ A supported runtime is present — nothing installed, nothing selected." -ForegroundColor Green
 }
 
-$bunCmd = Get-Command bun -ErrorAction SilentlyContinue
-if (-not $bunCmd) {
-    Write-Host "Failed to locate Bun. Please open a new PowerShell terminal and run again." -ForegroundColor Red
+# 2. Install the published pboss package, GLOBALLY. The package-manager
+#    choice installs ONLY the npm package — it is not a runtime selection
+#    and nothing is persisted. Preference: bun (user-writable global) >
+#    npm > deno. PBOSS_VERSION pins the exact release for `pboss upgrade`.
+$pkgSpec = "pboss"
+if ($env:PBOSS_VERSION) { $pkgSpec = "pboss@$($env:PBOSS_VERSION)" }
+$pmBinDir = ""
+$pmChoice = ""
+$npmCmd = Get-Command npm -ErrorAction SilentlyContinue
+
+if ($bunCmd) {
+    $pmChoice = "bun"
+    Write-Host "Installing the published pboss package globally (bun install -g $pkgSpec)..." -ForegroundColor Cyan
+    & bun install -g $pkgSpec
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "✗ bun install -g failed." -ForegroundColor Red
+        exit 1
+    }
+    $pmBinDir = Join-Path $env:USERPROFILE ".bun\bin"
+} elseif ($npmCmd) {
+    $pmChoice = "npm"
+    Write-Host "Installing the published pboss package globally (npm install -g $pkgSpec)..." -ForegroundColor Cyan
+    & npm install -g $pkgSpec
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "✗ npm install -g failed." -ForegroundColor Red
+        exit 1
+    }
+    $npmPrefix = (& npm config get prefix)
+    $pmBinDir = $npmPrefix
+} elseif ($denoCmd) {
+    $pmChoice = "deno"
+    Write-Host "Installing the published pboss package globally (deno install -g npm:$pkgSpec)..." -ForegroundColor Cyan
+    & deno install -g "npm:$pkgSpec"
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "✗ deno install -g failed." -ForegroundColor Red
+        exit 1
+    }
+    $pmBinDir = Join-Path $env:USERPROFILE ".deno\bin"
+} else {
+    Write-Host "✗ No package manager available to install the pboss package (bun/npm/deno)." -ForegroundColor Red
     exit 1
 }
 
-$bunVersion = & bun --version
-Write-Host "✓ Build toolchain ready: Bun v$bunVersion" -ForegroundColor Green
+if ($pmBinDir) { $env:PATH = "$pmBinDir;$env:PATH" }
 
-# 3. Target installation directory — created in step 1 (per-user default).
+# 3. Verify — `pboss` must answer.
+$pbossBin = (Get-Command pboss -ErrorAction SilentlyContinue).Source
+if (-not $pbossBin -and $pmBinDir) {
+    $candidate = Join-Path $pmBinDir "pboss"
+    if (Test-Path "$candidate.cmd") { $pbossBin = "$candidate.cmd" }
+    elseif (Test-Path "$candidate.ps1") { $pbossBin = "$candidate.ps1" }
+    elseif (Test-Path $candidate) { $pbossBin = $candidate }
+}
+if (-not $pbossBin) {
+    Write-Host "✗ pboss did not become available after the install." -ForegroundColor Red
+    Write-Host "  Package manager: $pmChoice; expected bin in: $pmBinDir"
+    Write-Host "  Open a NEW terminal (PATH heals below) and run:  pboss --version"
+    exit 1
+}
+$installedV = (& pboss --version 2>$null | ForEach-Object { $_.Split(' ')[-1] }) -replace 'v', ''
+Write-Host "✓ pboss is available: $pbossBin" -ForegroundColor Green
 
-# 4. Temporary workspace: download source and compile the binary
-$tempDir = Join-Path ([System.IO.Path]::GetTempPath()) ("pboss-install-" + [System.Guid]::NewGuid().ToString("N"))
-New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
+# 3b. Record the install channel — `pboss upgrade` re-runs THIS installer.
+$stampDir = Join-Path $env:USERPROFILE ".pboss"
+if (-not (Test-Path $stampDir)) {
+    New-Item -ItemType Directory -Path $stampDir -Force | Out-Null
+}
+$stamp = @{
+    channel   = "universal"
+    by        = "install.ps1"
+    stampedAt = [int][double]::Parse((Get-Date -UFormat %s))
+} | ConvertTo-Json -Compress
+Set-Content -Path (Join-Path $stampDir "channel.json") -Value $stamp -Encoding ascii
+Write-Host "✓ Install channel recorded (universal)" -ForegroundColor Green
 
-try {
-    Write-Host "Downloading latest pboss source..." -ForegroundColor Cyan
-    $zipPath = Join-Path $tempDir "source.zip"
-    Invoke-RestMethod -Uri "https://github.com/procboss/pboss/archive/refs/heads/main.zip" -OutFile $zipPath
-    Expand-Archive -Path $zipPath -DestinationPath $tempDir -Force
-
-    $sourceDir = Join-Path $tempDir "pboss-main"
-
-    # Echo the source version: install.ps1 always builds the LATEST main
-    # branch, and this line is the fastest way to see WHICH code a host
-    # actually received when comparing install logs.
-    $srcPkg = Get-Content (Join-Path $sourceDir "package.json") -Raw | ConvertFrom-Json
-    Write-Host "✓ Downloaded pboss v$($srcPkg.version) source" -ForegroundColor Green
-
-    Set-Location $sourceDir
-
-    # Stop a running daemon BEFORE compiling: Windows locks a running
-    # executable, so `bun build --outfile $installDir\pboss.exe` fails with
-    # "file in use" during an upgrade. Best-effort — the startup step at
-    # the end brings the new binary back up.
-    try { & schtasks /end /tn "PBOSS_Daemon" 2>$null } catch {}
-    try { Stop-Process -Name "pboss" -ErrorAction SilentlyContinue } catch {}
-
-    Write-Host "Compiling standalone pboss executable for Windows..." -ForegroundColor Cyan
-    # --ignore-scripts: this is a SOURCE build, not a package install — the
-    # postinstall hook would no-op (it only acts on global installs) and its
-    # shell-guard syntax trips Bun's Windows shell parser. Lifecycle scripts
-    # of the (pure-JS) dependencies are not needed to compile the binary.
-    & bun install --ignore-scripts | Out-Null
-
-    $outputExe = Join-Path $installDir "pboss.exe"
-    & bun build --compile --minify --bytecode .\src\index.ts --outfile $outputExe
-
-    Write-Host "✓ Binary installed at $outputExe" -ForegroundColor Green
-
-    # Record the install channel — `pboss upgrade` re-runs THIS installer
-    # (never npm/brew/snap) so the machine keeps exactly one pboss.
-    $stampDir = Join-Path $env:USERPROFILE ".pboss"
-    if (-not (Test-Path $stampDir)) {
-        New-Item -ItemType Directory -Path $stampDir -Force | Out-Null
+# 4. Add the package-manager bin dir to the PATH if needed — USER scope
+#    for per-user installs (no elevation), Machine scope only for the
+#    elevated legacy path.
+$pathTarget = if ($isAdmin) { [System.EnvironmentVariableTarget]::Machine } else { [System.EnvironmentVariableTarget]::User }
+if ($pmBinDir) {
+    $scopePath = [System.Environment]::GetEnvironmentVariable("Path", $pathTarget)
+    $pathEntries = @($scopePath -split ';' | Where-Object { $_ -ne '' })
+    if ($pathEntries -notcontains $pmBinDir) {
+        Write-Host "Adding $pmBinDir to the $pathTarget PATH..." -ForegroundColor Yellow
+        $newPath = ($pathEntries + $pmBinDir) -join ';'
+        [System.Environment]::SetEnvironmentVariable("Path", $newPath, $pathTarget)
+        Write-Host "✓ Added $pmBinDir to the $pathTarget PATH" -ForegroundColor Green
     }
-    $stamp = @{
-        channel    = "universal"
-        by         = "install.ps1"
-        stampedAt  = [int][double]::Parse((Get-Date -UFormat %s))
-    } | ConvertTo-Json -Compress
-    Set-Content -Path (Join-Path $stampDir "channel.json") -Value $stamp -Encoding ascii
-    Write-Host "✓ Install channel recorded (universal)" -ForegroundColor Green
-}
-finally {
-    Set-Location $env:USERPROFILE
-    Remove-Item -Path $tempDir -Recurse -Force -ErrorAction SilentlyContinue
+    $env:PATH = "$pmBinDir;$env:PATH"
 }
 
-# 5. Add pboss to the PATH if needed — USER scope for per-user installs
-#    (no elevation), Machine scope only for the elevated legacy path.
-$scopePath = [System.Environment]::GetEnvironmentVariable("Path", $pathTarget)
-$pathEntries = @($scopePath -split ';' | Where-Object { $_ -ne '' })
-
-if ($pathEntries -notcontains $installDir) {
-    Write-Host "Adding $installDir to the $pathTarget PATH..." -ForegroundColor Yellow
-    $newPath = ($pathEntries + $installDir) -join ';'
-    [System.Environment]::SetEnvironmentVariable("Path", $newPath, $pathTarget)
-    Write-Host "✓ Added $installDir to the $pathTarget PATH" -ForegroundColor Green
-}
-
-$env:PATH = "$installDir;$env:PATH"
-
-# 6. Boot persistence — installed automatically.
-#    The whole point of pboss: processes survive reboots by default. The
-#    Scheduled Task (PBOSS_Daemon) starts the daemon at THIS user's logon,
-#    and the daemon resurrects the saved process list (auto-saved after every
-#    pboss start/stop/delete). Best-effort: a failure prints the manual
-#    command instead of failing the install.
+# 5. Boot persistence — installed automatically, best-effort.
 Write-Host "Enabling boot persistence..." -ForegroundColor Cyan
 try {
-    # USERNAME identifies the invoking user even in the elevated session, so
-    # the task fires at THEIR logon, running under their profile.
-    & "$installDir\pboss.exe" startup install
+    & pboss startup install
     if ($LASTEXITCODE -eq 0) {
         Write-Host "✓ Boot persistence enabled — pboss starts at logon and resurrects saved processes." -ForegroundColor Green
     } else {
@@ -174,9 +176,8 @@ try {
 }
 
 # Existing cloud link — the machine credential in ~\.pboss\cloud.json is the
-# permanent cache: it outlives the binary across deletes, reinstalls and
-# upgrades. The step above (re)started the daemon, which resumes the link.
-# Say so instead of making a reinstalled machine look unlinked.
+# permanent cache: it outlives the package across deletes, reinstalls and
+# upgrades.
 $cloudCred = Join-Path $env:USERPROFILE ".pboss\cloud.json"
 if (Test-Path $cloudCred) {
     Write-Host "✓ Existing cloud link detected — the daemon will resume it automatically." -ForegroundColor Green
@@ -184,6 +185,12 @@ if (Test-Path $cloudCred) {
 }
 
 Write-Host ""
-Write-Host "✓ ProcBoss (pboss) successfully installed to $installDir\pboss.exe!" -ForegroundColor Green
+if ($installedV) {
+    Write-Host "✓ ProcBoss (pboss) v$installedV successfully installed!" -ForegroundColor Green
+} else {
+    Write-Host "✓ ProcBoss (pboss) successfully installed!" -ForegroundColor Green
+}
+# Which runtime is ACTUALLY executing pboss right now — a report, not a choice.
+Write-Host "Executing runtime:  $(& pboss --runtime 2>$null)" -ForegroundColor Cyan
 Write-Host "Open a NEW terminal (so the PATH refreshes) and run 'pboss --version' to verify." -ForegroundColor Cyan
 Write-Host ""

@@ -16,6 +16,8 @@
 import type { ProcessContainer } from "./process-container";
 import { treeKill } from "./utils";
 import { ignore } from "./error-handling";
+import { getRuntime } from "./runtime";
+const R = getRuntime();
 
 export class GracefulReload {
   async reload(
@@ -52,12 +54,12 @@ export class GracefulReload {
               }
             }, 100);
           }),
-          Bun.sleep(listenTimeout),
+          R.misc.sleep(listenTimeout),
         ]);
         if (checkReady) clearInterval(checkReady);
       } else {
         await startPromise;
-        await Bun.sleep(delay);
+        await R.misc.sleep(delay);
       }
   
       if (oldPid) {
@@ -89,7 +91,7 @@ export class GracefulReload {
       }
   
       if (i < containers.length - 1) {
-        await Bun.sleep(delay);
+        await R.misc.sleep(delay);
       }
     }
   

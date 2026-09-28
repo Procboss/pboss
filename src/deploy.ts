@@ -14,6 +14,8 @@
  * License: GPL-3.0-only
  */
  import type { DeployConfig } from "./types";
+ import { getRuntime } from "./runtime";
+ const R = getRuntime();
  
  export class DeployManager {
    async deploy(config: DeployConfig, command?: string): Promise<void> {
@@ -147,14 +149,7 @@
      if (sshOpts) args.push(...sshOpts.split(" "));
      args.push(target, command);
  
-     const proc = Bun.spawn(args, {
-       stdout: "pipe",
-       stderr: "pipe",
-     });
- 
-     const stdout = await new Response(proc.stdout).text();
-     const stderr = await new Response(proc.stderr).text();
-     const exitCode = await proc.exited;
+     const { stdout, stderr, exitCode } = await R.process.capture(args);
  
      if (exitCode !== 0 && stderr) {
        console.error(`[pboss] Remote error: ${stderr}`);
@@ -169,14 +164,7 @@
     private async localExec(command: string): Promise<string> {
       const isWin = process.platform === "win32";
       const cmd = isWin ? ["cmd.exe", "/c", command] : ["sh", "-c", command];
-      const proc = Bun.spawn(cmd, {
-        stdout: "pipe",
-        stderr: "pipe",
-      });
- 
-     const stdout = await new Response(proc.stdout).text();
-     const stderr = await new Response(proc.stderr).text();
-     const exitCode = await proc.exited;
+     const { stdout, stderr, exitCode } = await R.process.capture(cmd);
  
      if (exitCode !== 0 && stderr) {
        console.error(`[pboss] Local error: ${stderr}`);
