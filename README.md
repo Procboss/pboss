@@ -101,6 +101,13 @@ Start with a name, 4 instances, and a base port:
 pboss start app.ts --name my-api --instances 4 --port 3000
 ```
 
+Flags may appear before or after the script path (issue #34) — these are equivalent:
+
+```bash
+pboss start --name my-api --instances 4 app.ts
+pboss start app.ts --name my-api --instances 4
+```
+
 Group processes into a namespace and manage them as one unit:
 
 ```bash

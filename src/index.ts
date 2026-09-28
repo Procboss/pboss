@@ -93,6 +93,71 @@ function parseWaitFlag(args: string[]): number | null {
   return null;
 }
 
+// Issue #34: every `pboss start` flag that CONSUMES the next token as its
+// value. The target scan in cmdStart must skip these values — a naive
+// "first arg that doesn't start with -" scan treats `--name procboss_dev`'s
+// VALUE as the positional target, so
+// `pboss start --name procboss_dev ./server.mjs` tried to execute a script
+// named `procboss_dev`. Mirrors parseStartFlags exactly (see each case there):
+// a recognized value flag consumes the next token whatever it looks like.
+const START_VALUE_FLAGS = new Set([
+  "--name", "-n",
+  "--instances", "-i",
+  "--cwd",
+  "--interpreter",
+  "--interpreter-args",
+  "--node-args",
+  "--watch-path",
+  "--ignore-watch",
+  "--exec-mode", "-x",
+  "--max-memory-restart",
+  "--max-restarts",
+  "--min-uptime",
+  "--kill-timeout",
+  "--restart-delay",
+  "--cron", "--cron-restart",
+  "--env",
+  "--log", "--output", "-o",
+  "--error", "-e",
+  "--log-date-format",
+  "--log-max-size",
+  "--log-retain",
+  "--port", "-p",
+  "--health-check-url",
+  "--health-check-interval",
+  "--health-check-timeout",
+  "--health-check-max-fails",
+  "--listen-timeout",
+  "--namespace",
+  "--depends-on",
+  "--on-ns-member-exit",
+  // Already extracted by cmdStart before the scan runs; listed so the two
+  // scanners can never disagree if that ordering ever changes.
+  "--config", "-c",
+]);
+
+/**
+ * Issue #34: the positional start target, computed flag-aware — flags may
+ * appear anywhere, so their VALUES must not be mistaken for the target.
+ * Byte-for-byte the same token parseStartFlags would assign to opts.script:
+ *   - a value flag skips itself + its value; any other dash-token is a
+ *     valueless flag (unknown flags are warned about there, never positional)
+ *   - the `--` sentinel ends target scanning — everything after it belongs
+ *     to the script's own argv, exactly like parseStartFlags treats it
+ */
+function findStartTarget(args: string[]): string | undefined {
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]!;
+    if (arg === "--") return undefined; // script args only from here on
+    if (arg.startsWith("-")) {
+      if (START_VALUE_FLAGS.has(arg)) i++; // skip the flag's VALUE too
+      continue;
+    }
+    return arg;
+  }
+  return undefined;
+}
+
 class PBossCLI {
   public pboss: PBoss;
   public noDaemon: boolean = false;
@@ -381,8 +446,10 @@ class PBossCLI {
     // pm2.config.*, each as .json/.js/.ts, first match wins. Detection NEVER
     // fires when the user named something: an explicit config, script, or
     // name/namespace resume target (issue #27) keeps its exact old behavior.
+    // Issue #34: "named something" means a real positional — a value flag's
+    // VALUE (--name foo) is not a target, so detection still fires.
     if (!configPath) {
-      const hasTarget = args.some((a) => !a.startsWith("-"));
+      const hasTarget = findStartTarget(args) !== undefined;
       if (!hasTarget) {
         const detected = await findDefaultConfigFile();
         if (detected) {
@@ -395,7 +462,10 @@ class PBossCLI {
       }
     }
 
-    const firstPositional = configPath ? undefined : args.find((a) => !a.startsWith("-"));
+    // Issue #34: flag-aware target scan — `--name procboss_dev` before the
+    // script must contribute its VALUE to the flag, not steal the target slot
+    // (and the resume-by-name fallback below must only see real positionals).
+    const firstPositional = configPath ? undefined : findStartTarget(args);
     if (!configPath && !firstPositional) {
       // Issue #29: nothing resolvable — no config detected in the cwd and no
       // target named. The old generic usage line hid the actual cause; this
@@ -1539,10 +1609,31 @@ Examples:
         }
 
         case "next": {
-          const positional = rest.filter((a, i) => !(a.startsWith("--") && i > 0));
-          const countFlagIdx = rest.indexOf("--count");
-          const count = countFlagIdx !== -1 ? parseInt(rest[countFlagIdx + 1] ?? "3", 10) || 3 : 3;
-          const target = positional[0];
+          // Issue #34 (same class as `start`): flags may appear anywhere, so
+          // the target scan must skip flag VALUES — the old
+          // `filter((a, i) => !(a.startsWith("--") && i > 0))` kept `--count`
+          // itself when it came first, making `pboss cron next --count 5
+          // <job>` target the string "--count".
+          let count = 3;
+          const countEq = rest.find((a) => a.startsWith("--count="));
+          if (countEq) {
+            count = parseInt(countEq.slice("--count=".length), 10) || 3;
+          } else {
+            const countIdx = rest.indexOf("--count");
+            if (countIdx !== -1) count = parseInt(rest[countIdx + 1] ?? "3", 10) || 3;
+          }
+          let target: string | undefined;
+          for (let i = 0; i < rest.length; i++) {
+            const a = rest[i]!;
+            if (a === "--count") {
+              i++; // skip the value
+              continue;
+            }
+            if (a.startsWith("--count=")) continue;
+            if (a.startsWith("-")) continue; // unknown flag — valueless here
+            target = a;
+            break;
+          }
 
           if (!target) {
             console.error(colorize("Usage: pboss cron next <id|name> [--count N]", "red"));
