@@ -158,6 +158,79 @@ function findStartTarget(args: string[]): string | undefined {
   return undefined;
 }
 
+/**
+ * Extract `--config <file>` / `-c <file>` / `--config=<file>` from ANYWHERE
+ * in a command's args and hand back the remainder — the flag's value is
+ * consumed so it can never be mistaken for a positional target, wherever
+ * the flag sits (issue #34's position-independence rule, applied to
+ * `--config` exactly like every other value flag).
+ *
+ * `start` has honored this since issue #28; the fleet commands
+ * (restart/stop/reload/delete) share it so a custom js/ts ecosystem file
+ * can drive ANY of them: `pboss restart --config ./any.js` restarts the
+ * apps the file names. Scanning stops at the `--` sentinel — post-sentinel
+ * tokens are script arguments, not flags.
+ */
+function extractConfigFlag(args: string[]): { configPath?: string; rest: string[] } {
+  let configPath: string | undefined;
+  const rest: string[] = [];
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]!;
+    if (arg === "--") {
+      rest.push(...args.slice(i));
+      break;
+    }
+    if (arg === "--config" || arg === "-c") {
+      const value = args[i + 1];
+      if (!value || value.startsWith("-")) {
+        console.error(
+          colorize(`Error: ${arg} requires a config file path (e.g. ${arg} ecosystem.config.js)`, "red")
+        );
+        process.exit(1);
+      }
+      configPath = value;
+      i++; // consume the value so it is not mistaken for a positional
+      continue;
+    }
+    if (arg.startsWith("--config=")) {
+      const value = arg.slice("--config=".length);
+      if (!value) {
+        console.error(colorize("Error: --config= requires a config file path", "red"));
+        process.exit(1);
+      }
+      configPath = value;
+      continue;
+    }
+    rest.push(arg);
+  }
+  return { configPath, rest };
+}
+
+/**
+ * A positional fleet target (restart/stop/reload/delete) is treated as an
+ * ecosystem file when it carries a config-file EXTENSION or one of the
+ * conventional config NAME patterns — `pboss restart ecosystem.config.js`
+ * is deep PM2 muscle memory. Deliberately narrower than the `--config`
+ * flag: an arbitrary filename like `./any.js` is ONLY a config when the
+ * user says so with the flag, because a positional on a fleet command has
+ * a perfectly good existing meaning (a process/namespace name), and an
+ * import-based probe on arbitrary files could execute script side effects.
+ * Mirrors the heuristic `start` uses for its positional.
+ */
+const ECOSYSTEM_NAME_HINTS = [
+  "ecosystem",
+  "pboss.config",
+  "procboss.config",
+  "bm2.config",
+  "pm2.config",
+];
+
+function looksLikeEcosystemTarget(target: string): boolean {
+  if (!target || target === "all") return false;
+  if (extname(target).toLowerCase() === ".json") return true;
+  return ECOSYSTEM_NAME_HINTS.some((hint) => target.includes(hint));
+}
+
 class PBossCLI {
   public pboss: PBoss;
   public noDaemon: boolean = false;
@@ -406,39 +479,11 @@ class PBossCLI {
     // mistaken for the positional target, and a config like
     // `procboss.config.js` was then executed as a plain script (so every
     // option inside it — `noDaemon` included — was silently ignored).
-    // Extraction stops at the `--` sentinel so script arguments are kept.
-    let configPath: string | undefined;
-    const restArgs: string[] = [];
-    for (let i = 0; i < args.length; i++) {
-      const arg = args[i]!;
-      if (arg === "--") {
-        restArgs.push(...args.slice(i));
-        break;
-      }
-      if (arg === "--config" || arg === "-c") {
-        const value = args[i + 1];
-        if (!value || value.startsWith("-")) {
-          console.error(
-            colorize(`Error: ${arg} requires a config file path (e.g. ${arg} ecosystem.config.js)`, "red")
-          );
-          process.exit(1);
-        }
-        configPath = value;
-        i++; // consume the value so it is not mistaken for a positional
-        continue;
-      }
-      if (arg.startsWith("--config=")) {
-        const value = arg.slice("--config=".length);
-        if (!value) {
-          console.error(colorize("Error: --config= requires a config file path", "red"));
-          process.exit(1);
-        }
-        configPath = value;
-        continue;
-      }
-      restArgs.push(arg);
-    }
+    // The extraction now lives in the shared extractConfigFlag() helper —
+    // the fleet commands run the identical scan for their own --config.
+    const { configPath: explicitConfig, rest: restArgs } = extractConfigFlag(args);
     args = restArgs;
+    let configPath = explicitConfig;
 
     // Issue #29: `pboss start` with no target (no --config and no positional)
     // auto-detects a config file in the current working directory before
@@ -607,7 +652,13 @@ class PBossCLI {
   }
 
   async cmdStop(args: string[]) {
-    const target = args[0] || "all";
+    // A custom js/ts ecosystem file can drive the fleet commands too:
+    // `pboss stop --config ./any.js` (flag anywhere) or the conventional
+    // positional `pboss stop ecosystem.config.js`.
+    const { configPath, rest } = extractConfigFlag(args);
+    if (configPath) return this.runFleetOnConfig("stop", configPath);
+    const target = rest[0] || "all";
+    if (looksLikeEcosystemTarget(target)) return this.runFleetOnConfig("stop", target);
     try {
       const states = await this.pboss.stop(target);
       this.printNamespaceSummary("Stopped", states, target);
@@ -619,7 +670,10 @@ class PBossCLI {
   }
 
   async cmdRestart(args: string[]) {
-    const target = args[0] || "all";
+    const { configPath, rest } = extractConfigFlag(args);
+    if (configPath) return this.runFleetOnConfig("restart", configPath);
+    const target = rest[0] || "all";
+    if (looksLikeEcosystemTarget(target)) return this.runFleetOnConfig("restart", target);
     try {
       const states = await this.pboss.restart(target);
       this.printNamespaceSummary("Restarted", states, target);
@@ -631,7 +685,10 @@ class PBossCLI {
   }
 
   async cmdReload(args: string[]) {
-    const target = args[0] || "all";
+    const { configPath, rest } = extractConfigFlag(args);
+    if (configPath) return this.runFleetOnConfig("reload", configPath);
+    const target = rest[0] || "all";
+    if (looksLikeEcosystemTarget(target)) return this.runFleetOnConfig("reload", target);
     try {
       const states = await this.pboss.reload(target);
       this.printNamespaceSummary("Reloaded", states, target);
@@ -643,8 +700,13 @@ class PBossCLI {
   }
 
   async cmdDelete(args: string[]) {
-    const target = args[0] || "all";
-    const force = args.some((a) => ["--force", "-f", "--yes", "-y"].includes(a));
+    const { configPath, rest } = extractConfigFlag(args);
+    // --config extracts BEFORE the force scan so a config path can never be
+    // mistaken for a force flag (its value is already consumed above).
+    const force = rest.some((a) => ["--force", "-f", "--yes", "-y"].includes(a));
+    if (configPath) return this.runFleetOnConfig("delete", configPath, { force });
+    const target = rest[0] || "all";
+    if (looksLikeEcosystemTarget(target)) return this.runFleetOnConfig("delete", target, { force });
     try {
       // Issue #27 safety: deleting a whole NAMESPACE can remove many
       // processes at once, so preview first and confirm when the target
@@ -671,6 +733,100 @@ class PBossCLI {
       this.printNamespaceSummary("Deleted", states, target);
       console.log(colorize("✓ Deleted", "green"));
       printProcessTable(states);
+    } catch (err: any) {
+      console.error(colorize(`Error: ${err.message}`, "red"));
+      process.exit(1);
+    }
+  }
+
+  /**
+   * Run a fleet command (restart/stop/reload/delete) against the apps an
+   * ecosystem config file names — `pboss restart --config ./any.js`
+   * restarts every app in ./any.js, whatever the file is called (the
+   * custom-name freedom `start --config` has had since issue #28, now
+   * shared by the whole fleet vocabulary).
+   *
+   * Each app acts as its own name-unit, exactly like typing the command
+   * once per name:
+   *   - restart on a registered-but-stopped app starts it (restart's
+   *     existing semantics), stop/reload/delete do what they say;
+   *   - an app that is not registered at all is reported as a miss and
+   *     the sweep CONTINUES — one stale entry in the file never blocks
+   *     the rest of the fleet;
+   *   - zero successes is a failure (exit 1) with the start hint, since
+   *     nothing in the file was ever launched;
+   *   - delete keeps the explicit-names stance of the name path: the
+   *     file lists exactly what to remove, so no namespace confirmation
+   *     fires (--force still rides through for dependents).
+   */
+  private async runFleetOnConfig(
+    verb: "restart" | "stop" | "reload" | "delete",
+    configPath: string,
+    opts: { force?: boolean } = {}
+  ): Promise<void> {
+    try {
+      const config = await loadEcosystemConfig(configPath);
+      const names = (config.apps ?? [])
+        .map((a) => a.name)
+        .filter((n): n is string => typeof n === "string" && n.trim() !== "");
+      if (names.length === 0) {
+        console.error(
+          colorize(
+            `Error: ${configPath} defines no apps to ${verb} (expected an "apps: [{ name, script }, …]" array)`,
+            "red"
+          )
+        );
+        process.exit(1);
+      }
+
+      const pastTense = { restart: "Restarted", stop: "Stopped", reload: "Reloaded", delete: "Deleted" }[verb];
+      const states: ProcessState[] = [];
+      const missed: string[] = [];
+      for (const name of names) {
+        try {
+          const s =
+            verb === "restart"
+              ? await this.pboss.restart(name)
+              : verb === "stop"
+                ? await this.pboss.stop(name)
+                : verb === "reload"
+                  ? await this.pboss.reload(name)
+                  : await this.pboss.delete(name, { force: opts.force });
+          states.push(...s);
+        } catch (err: any) {
+          const msg: string = err?.message ?? "";
+          if (msg.includes("not found")) {
+            missed.push(name); // not registered — report, keep sweeping
+          } else {
+            throw err; // daemon/transport errors keep their honest message
+          }
+        }
+      }
+
+      printProcessTable(states);
+      console.log(
+        colorize(
+          `✓ ${pastTense} ${states.length} app${states.length === 1 ? "" : "s"} from ${configPath}`,
+          states.length > 0 ? "green" : "yellow"
+        )
+      );
+      if (missed.length > 0) {
+        console.error(
+          colorize(
+            `⚠ not registered, nothing to ${verb}: ${missed.join(", ")} — start them with 'pboss start --config ${configPath}'`,
+            "yellow"
+          )
+        );
+      }
+      if (states.length === 0) {
+        console.error(
+          colorize(
+            `Error: none of the apps in ${configPath} are registered — run 'pboss start --config ${configPath}' first.`,
+            "red"
+          )
+        );
+        process.exit(1);
+      }
     } catch (err: any) {
       console.error(colorize(`Error: ${err.message}`, "red"));
       process.exit(1);
@@ -2595,7 +2751,10 @@ ${colorize("Notes:", "dim")}
     --env <KEY=VALUE>             Set environment variable
     --no-autorestart              Disable auto-restart
     --no-daemon, -d               Run without daemon (blocks)
-    --config, -c <file>           Start from an ecosystem config file
+    --config, -c <file>           Custom js/ts/json ecosystem file — ANY
+                                  name works, at any position. Works on
+                                  start AND restart/stop/reload/delete
+                                  (acts on the apps the file names)
     --raw                         Mirror child logs to stdout and stderr
     --log, -o <file>              Custom stdout log path
     --error, -e <file>            Custom stderr log path
@@ -2620,10 +2779,13 @@ ${colorize("Notes:", "dim")}
     pboss start --name api --no-daemon server.ts
     pboss start ecosystem.config.ts
     pboss start --config procboss.config.js
+    pboss start --config ./any.js   (any custom config file name)
     pboss cron run everyday@2:00 "bun /srv/backup.ts"
     pboss cron run every-sunday@10:10 "sh cleanup.sh" --name cleanup
     pboss restart api
     pboss restart stellarforge        (whole namespace)
+    pboss restart --config ./any.js  (restart the apps it defines)
+    pboss stop --config ecosystem.config.js
     pboss stop stellarforge
     pboss start stellarforge          (resume stopped namespace — atomic)
     pboss delete stellarforge --force

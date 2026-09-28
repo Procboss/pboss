@@ -108,6 +108,24 @@ pboss start --name my-api --instances 4 app.ts
 pboss start app.ts --name my-api --instances 4
 ```
 
+Point pboss at a **custom js/ts/json ecosystem file** with `--config` (short `-c`, or `--config=`) — any file name works, at any position, and the file is treated as the config, never as the script to invoke:
+
+```bash
+pboss start --config ./any.js
+pboss start -c ecosystem.config.ts
+pboss start --config=/srv/procboss.config.js
+```
+
+The same flag drives the fleet commands — each acts on the apps the file names (a stopped app comes back on `restart`, an unregistered app is reported and skipped, and the conventional positional form works too):
+
+```bash
+pboss restart --config ./any.js
+pboss stop --config ./any.js
+pboss reload --config ./any.js
+pboss delete --config ./any.js
+pboss restart ecosystem.config.js   # positional, PM2-style
+```
+
 Group processes into a namespace and manage them as one unit:
 
 ```bash
