@@ -44,110 +44,7 @@ The full documentation lives at [docs.procboss.com](https://docs.procboss.com)
 
 ---
 
-## Runtime-Agnostic Architecture
-
-> **ProcBoss is runtime-agnostic, not runtime-generic.**
->
-> pboss shares its core process-management logic across runtimes, while using
-> each runtime's native APIs and optimized implementations whenever possible.
-> Runtime detection happens at execution time, not installation time. The
-> installer only guarantees that at least one supported runtime is available.
-
-pboss executes under **Bun**, **Node.js** or **Deno** — the same published
-package, the same CLI, the same daemon. A runtime adapter layer picks the
-executing runtime's native APIs:
-
-```text
-                    PBoss Core
-                        │
-                Runtime Adapter
-                /       │        \
-             Bun      Node      Deno
-              │         │         │
-              ▼         ▼         ▼
-         Bun native  Node native  Deno native
-           APIs        APIs        APIs
-```
-
-- **Bun** → `Bun.spawn`, `Bun.file`/`Bun.write`, `Bun.serve` (unix socket + native WebSockets), `fetch(url, { unix })`, `Bun.sleep`, `Bun.which`, `Bun.gzipSync`
-- **Node** → `node:child_process`, `node:fs/promises` + `node:zlib`, `node:http` (`listen(path)` server, `socketPath` client, `ws` for the dashboard's WebSockets), `node:timers/promises`
-- **Deno** → `Deno.Command`, `Deno.readTextFile`/`Deno.writeFile`, `Deno.serve` + `Deno.upgradeWebSocket`, HTTP-over-`Deno.connect` for the daemon transport
-
-Node-compatibility APIs are never used as a shortcut: Bun does not run
-`node:child_process` because it happens to support it, and detection never
-classifies Bun as Node even though Bun implements Node's APIs. Shared code
-stays shared where sharing is genuinely better (for example `node:fs` sync
-calls — which Bun and Deno implement natively themselves — and proven
-cross-runtime libraries).
-
-Multiple instances / cluster mode use the runtime's native process spawning
-(pboss's instance model is process-based: N supervised processes with
-per-worker env and port offsets). Detection happens **once** at startup; the
-adapter is cached for the process lifetime and hot paths resolve directly to
-the native implementation — no per-call detection, no wrappers.
-
-Adding a runtime = a new `src/runtime/<name>/` directory plus one line in the
-factory (`src/runtime/index.ts`); the core never changes.
-
-### Which runtime is executing pboss?
-
-```bash
-pboss --runtime     # e.g. "Runtime: Node.js 24.2.0" — detected at execution time
-```
-
-This reports the actual execution environment — never what the installer
-detected, and never a configured choice. There is no `runtime` config key;
-run pboss under whichever runtime you like (`bunx pboss`, `npx pboss`,
-`deno run -A npm:pboss`).
-
-### Which runtime runs your apps?
-
-For JavaScript and TypeScript workers, the runner is resolved per machine in
-this order: **Bun** (`bun run`) → **Deno** (`deno run -A`) → **Node.js**. On a
-Node-only machine, TypeScript runs through [tsx](https://github.com/privatenumber/tsx)
-— found in your app's own `node_modules`, on `PATH`, or shipped with pboss
-itself; when no tsx is usable, Node's `--experimental-strip-types`
-(Node ≥ 22.6) is the fallback. An explicit `--interpreter` always wins:
-`--interpreter node`, `--interpreter "deno run -A"`, `--interpreter none` for
-binaries. Other languages (Go, Python, Ruby, PHP, Java, shell, Windows
-scripts) are detected by file extension, and compiled binaries run directly.
-
 ## Installation
-
-### One-Line Universal Install
-
-Installs the published package globally — no root required, nothing compiled
-from source. The installer's only runtime responsibility is to ensure at
-least one supported runtime exists:
-
-```text
-Bun OR Node OR Deno already installed  →  nothing installed, nothing selected
-none of them                           →  Bun is installed
-```
-
-A machine with several runtimes is not a conflict — the installer never
-chooses, never persists a runtime preference, and the runtime executing
-`pboss` is detected at execution time.
-
-**Linux / macOS:**
-```bash
-curl -fsSL https://procboss.com/install.sh | bash
-```
-
-(Running the installer as root still works and installs system-wide — but
-sudo is never required.)
-
-**Windows (PowerShell):**
-```powershell
-powershell -c "irm https://procboss.com/install.ps1 | iex"
-```
-
-(No Administrator needed. An elevated shell installs machine-wide instead.)
-
-**Windows (Command Prompt):**
-```cmd
-curl -fsSL https://procboss.com/install.cmd | cmd
-```
 
 ### Package-Manager Installs
 
@@ -171,9 +68,9 @@ pboss --runtime    # which runtime is executing pboss right now
 ```
 
 The `pboss` command lands in the package manager's bin directory
-(`~/.bun/bin`, the npm prefix, or `~/.deno/bin`); when that directory is not
-on your PATH, the installer adds it to your shell profile automatically —
-open a new terminal and `pboss` is found.
+(`~/.bun/bin`, the npm global bin, or `~/.deno/bin`) — normally already on
+your `PATH`. When it is not, add that directory to your shell profile and
+open a new terminal; `pboss` is found from then on.
 
 ---
 

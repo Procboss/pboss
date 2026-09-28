@@ -137,31 +137,6 @@ ProcBoss (pboss) is a production-grade, runtime-agnostic process manager built o
 
 ## Installation
 
-### One-Line Universal Install
-
-Install and compile the native standalone `pboss` executable directly on your device — **no root required**. The installer puts the binary in `~/.local/bin` and, when that directory is not on your `PATH`, adds it to your shell profile (`~/.bashrc` / `~/.zshrc`) automatically — no manual edits:
-
-**Linux / macOS:**
-```bash
-curl -fsSL https://procboss.com/install.sh | bash
-```
-
-(Running the installer as root still works and installs system-wide to `/usr/local/bin` — but sudo is never required.)
-
-**Windows (PowerShell):**
-```powershell
-powershell -c "irm https://procboss.com/install.ps1 | iex"
-```
-
-(No Administrator needed — installs per-user to `%LOCALAPPDATA%\pboss`; an elevated shell installs machine-wide instead.)
-
-**Windows (Command Prompt):**
-```cmd
-curl -fsSL https://procboss.com/install.cmd | cmd
-```
-
----
-
 ### Bun Global Install
 
 ```bash
@@ -171,6 +146,26 @@ bun add -g pboss
 No sudo needed anywhere: the boot service pboss installs is a **per-user systemd unit** (`~/.config/systemd/user`), driven with `systemctl --user`, so a user-local install (the default for `bun add -g`) is the recommended setup. Update later with `bun update -g pboss`.
 
 On Windows, a regular `bun add -g pboss` is fine too — the scheduled task is registered for your user and needs no elevation.
+
+---
+
+### npm Global Install
+
+```bash
+npm install -g pboss
+```
+
+Update later with `npm install -g pboss@latest`.
+
+---
+
+### Deno Global Install
+
+```bash
+deno install -g -A npm:pboss
+```
+
+Deno is deny-by-default — `-A` grants what a process manager needs. The explicit equivalent is `--allow-run --allow-read --allow-write --allow-net --allow-env --allow-sys`.
 
 ---
 
@@ -257,7 +252,7 @@ Output:
 pboss start server.ts
 ```
 
-That is the whole setup. The process list is saved to `~/.pboss/dump.json` after **every** change, and the boot service — installed by the one-line installer — starts the daemon at boot and resurrects the list: running processes come back running, stopped ones stopped, deleted ones never.
+That is the whole setup. The process list is saved to `~/.pboss/dump.json` after **every** change, and the boot service — installed automatically with the package — starts the daemon at boot and resurrects the list: running processes come back running, stopped ones stopped, deleted ones never.
 
 `pboss startup status` shows the whole picture read-only: service installed/enabled, daemon up, and what a reboot would restore.
 
@@ -1469,7 +1464,7 @@ pboss startup
 #   generate [os]  Print the service config without installing
 ```
 
-The boot service is normally installed **automatically** — the one-line installer does it as its final step, and global npm installs attempt it (printing the exact manual command on hosts without a user systemd session). These commands are for the cases the automation could not cover: a host without systemd at install time, or re-enabling after an uninstall.
+The boot service is normally installed **automatically** — package-manager installs set it up for you (printing the exact manual command on hosts without a user systemd session). These commands are for the cases the automation could not cover: a host without systemd at install time, or re-enabling after an uninstall.
 
 #### pboss startup install
 
@@ -1558,8 +1553,8 @@ Running processes are kept as-is (no duplicates); saved-stopped processes are re
 #### What a reboot looks like
 
 ```
-# once, at install time (the one-line installer does all of this):
-curl -fsSL https://procboss.com/install.sh | bash
+# once, at install time (the boot service sets itself up automatically):
+bun add -g pboss
 
 # then just use pboss — every change is already persisted:
 pboss start ecosystem.config.json
