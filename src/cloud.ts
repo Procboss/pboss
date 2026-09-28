@@ -1062,7 +1062,11 @@ export class CloudAgent {
       serverSecret: body.serverSecret,
       serverName: body.serverName,
     };
-    saveCloudConfig(cfg);
+    // Awaited: enroll's contract is "linked" — the credential must be on
+    // disk before the CLI returns, or a daemon started in the same breath
+    // (or `cloud status` a tick later) reads a file the write hasn't
+    // reached yet. The 1.5.1 async sweep left this un-awaited.
+    await saveCloudConfig(cfg);
     this.cfg = cfg;
     // the tier's report cadence rides the enrollment response — adopt it
     // from link-up (unless the operator pinned a local interval)
@@ -1158,7 +1162,12 @@ export class CloudAgent {
         // record it so a persistent reachability problem stays visible.
         ignore("revoke cloud credential (agent disconnect)", err);
       }
-      clearCloudConfig();
+      // Awaited — the sweep missed this one: stop() resolving before the
+      // unlink lands let a caller's very next read see the dead credential
+      // (the cloud-relink "zombie relink" test caught it, intermittently:
+      // rm submitted first usually wins the fs queue, but under load the
+      // read can overtake it).
+      await clearCloudConfig();
       if (!opts.quiet) {
         console.log(colorize("☁  cloud: credential revoked, this machine is unlinked", "cyan"));
       }
@@ -1266,7 +1275,7 @@ export class CloudAgent {
 
       // Revoked: the cloud told us to go away — unlink, don't retry.
       if (closedWith?.code === WS_CLOSE_REVOKED) {
-        this.handleRevoked();
+        await this.handleRevoked();
         return;
       }
 
@@ -1482,7 +1491,7 @@ export class CloudAgent {
     }
   }
 
-  private handleRevoked(): void {
+  private async handleRevoked(): Promise<void> {
     this.running = false;
     if (this.reportTimer) clearInterval(this.reportTimer);
     this.reportTimer = null;
@@ -1491,7 +1500,11 @@ export class CloudAgent {
     this.stopAllLogTails();
     this.outbox.length = 0; // unlinking — held events are moot
     this.streamState = "stopped";
-    clearCloudConfig();
+    // Awaited: the log line right below says "re-link with pboss cloud
+    // connect" — if the process dies before the unlink lands, the next
+    // boot would relink with the revoked credential (the zombie the
+    // cloud-relink tests refuse).
+    await clearCloudConfig();
     this.cfg = null;
     console.error(
       colorize(
