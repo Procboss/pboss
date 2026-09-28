@@ -15,7 +15,7 @@
  * secret beyond the handshake itself.
  */
 
-import { existsSync, readFileSync, writeFileSync, chmodSync, unlinkSync, mkdirSync } from "node:fs";
+import { readFile, writeFile, chmod, rm, mkdir } from "node:fs/promises";
 import { platform, arch, hostname } from "node:os";
 import { dirname } from "node:path";
 import { CLOUD_USER_FILE, VERSION } from "./constants";
@@ -203,10 +203,9 @@ export interface CloudUserCredential {
   user: { email: string; name: string; handle: string | null; provider: string };
 }
 
-export function loadCloudUser(): CloudUserCredential | null {
+export async function loadCloudUser(): Promise<CloudUserCredential | null> {
   try {
-    if (!existsSync(CLOUD_USER_FILE)) return null;
-    const raw = JSON.parse(readFileSync(CLOUD_USER_FILE, "utf-8")) as Partial<CloudUserCredential>;
+    const raw = JSON.parse(await readFile(CLOUD_USER_FILE, "utf-8")) as Partial<CloudUserCredential>;
     if (!raw.cloudUrl || !raw.token || !raw.user?.email) return null;
     return {
       cloudUrl: String(raw.cloudUrl),
@@ -224,27 +223,27 @@ export function loadCloudUser(): CloudUserCredential | null {
   }
 }
 
-export function saveCloudUser(cred: CloudUserCredential): void {
+export async function saveCloudUser(cred: CloudUserCredential): Promise<void> {
   // same mkdir-first policy as saveCloudConfig: a missing ~/.pboss must
   // never cost the credential.
   try {
-    mkdirSync(dirname(CLOUD_USER_FILE), { recursive: true, mode: 0o700 });
+    await mkdir(dirname(CLOUD_USER_FILE), { recursive: true, mode: 0o700 });
   } catch {
-    // exists already, or a parent we cannot create — writeFileSync below
+    // exists already, or a parent we cannot create — writeFile below
     // reports the honest error.
   }
-  writeFileSync(CLOUD_USER_FILE, JSON.stringify(cred, null, 2), { mode: 0o600 });
+  await writeFile(CLOUD_USER_FILE, JSON.stringify(cred, null, 2), { mode: 0o600 });
   try {
-    chmodSync(CLOUD_USER_FILE, 0o600);
+    await chmod(CLOUD_USER_FILE, 0o600);
   } catch (err) {
     // Best-effort — same policy as the machine credential file.
     ignore(`chmod user credential ${CLOUD_USER_FILE} 0600`, err);
   }
 }
 
-export function clearCloudUser(): void {
+export async function clearCloudUser(): Promise<void> {
   try {
-    if (existsSync(CLOUD_USER_FILE)) unlinkSync(CLOUD_USER_FILE);
+    await rm(CLOUD_USER_FILE, { force: true });
   } catch (err) {
     ignore(`unlink user credential ${CLOUD_USER_FILE}`, err);
   }

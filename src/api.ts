@@ -16,7 +16,7 @@
  */
 
 import { EventEmitter } from "events";
-import { existsSync, readFileSync, statSync, unlinkSync } from "fs";
+import { stat, readFile as fsReadFile, rm } from "fs/promises";
 import path, { join, resolve, extname, isAbsolute } from "path";
 import {
   DAEMON_SOCKET,
@@ -196,7 +196,7 @@ export async function findDefaultConfigFile(dir?: string): Promise<string | unde
   for (const name of CONFIG_FILE_CANDIDATES) {
     const candidate = join(base, name);
     try {
-      if (statSync(candidate).isFile()) return candidate;
+      if ((await stat(candidate)).isFile()) return candidate;
     } catch {
       // Candidate absent (or not statable) — try the next one.
     }
@@ -255,7 +255,7 @@ export async function readSavedProcesses(): Promise<ProcessState[]> {
  */
 export async function getProcesses(): Promise<ProcessState[]> {
   const defaultClient = PBoss.getDefaultInstance();
-  if (defaultClient.isDaemonRunning() && (await defaultClient.isDaemonAlive())) {
+  if ((await defaultClient.isDaemonRunning()) && (await defaultClient.isDaemonAlive())) {
     try {
       return await defaultClient.list();
     } catch (err) {
@@ -1222,12 +1222,11 @@ export class PBoss extends EventEmitter<PBossEvents> {
   //  daemon lifecycle
 
   /**
-   * Check synchronously if the daemon PID file exists and the process is alive.
+   * Check if the daemon PID file exists and the process is alive.
    */
-  isDaemonRunning(): boolean {
-    if (!existsSync(DAEMON_PID_FILE)) return false;
+  async isDaemonRunning(): Promise<boolean> {
     try {
-      const pid = parseInt(readFileSync(DAEMON_PID_FILE, "utf-8").trim());
+      const pid = parseInt((await fsReadFile(DAEMON_PID_FILE, "utf-8")).trim());
       process.kill(pid, 0);
       return true;
     } catch {
@@ -1252,7 +1251,7 @@ export class PBoss extends EventEmitter<PBossEvents> {
       return false;
     }
 
-    // Verify the socket file exists — STAT-based (node:fs), never
+    // Verify the socket file exists — STAT-based (node:fs/promises), never
     // Bun.file().exists(): that method OPENs the file, and a unix socket
     // file cannot be opened (ENXIO on POSIX; a sharing violation on
     // Windows AF_UNIX reparse points), so it returned false for a LIVE
@@ -1260,9 +1259,13 @@ export class PBoss extends EventEmitter<PBossEvents> {
     // command spawned a doomed duplicate daemon — on Windows its log-file
     // open collided with the running daemon's task-launcher handles:
     // "EBUSY: resource busy or locked, open" (owner report 2026-09-15,
-    // `pboss logs -f` right after reboot). fs.existsSync stats the path
+    // `pboss logs -f` right after reboot). stat() stats the path
     // and sees socket files fine.
-    if (!existsSync(DAEMON_SOCKET)) return false;
+    try {
+      await stat(DAEMON_SOCKET);
+    } catch {
+      return false;
+    }
 
     try {
       const response = await R.network.socketFetch("http://localhost/", {
@@ -1301,7 +1304,7 @@ export class PBoss extends EventEmitter<PBossEvents> {
     // Resolved from the install mode (see install-mode.ts):
     //   compiled → [<pboss binary>, "__daemon"]   (no system Bun needed)
     //   script   → [<bun>, "run", <daemon.ts>]    (system Bun required)
-    const spawnArgs = daemonSpawnCommand();
+    const spawnArgs = await daemonSpawnCommand();
 
     // Open log files for daemon stdout/stderr
     // Append sinks — the adapter's native file redirection (Bun: fd,
@@ -1363,20 +1366,19 @@ export class PBoss extends EventEmitter<PBossEvents> {
     while (Date.now() < deadline) {
       await R.misc.sleep(200);
       try {
-        if (existsSync(DAEMON_SOCKET)) {
-          const rawRes = await R.network.socketFetch("http://localhost/", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ type: "ping", id: "daemon-launch-ping" }),
-          }, DAEMON_SOCKET);
-          if (rawRes.ok) {
-            const res = (await rawRes.json()) as DaemonResponse;
-            if (res.success) {
-              alive = true;
-              this._daemonPid = res.data?.pid ?? proc.pid;
-              this._connected = true;
-              break;
-            }
+        await stat(DAEMON_SOCKET);
+        const rawRes = await R.network.socketFetch("http://localhost/", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ type: "ping", id: "daemon-launch-ping" }),
+        }, DAEMON_SOCKET);
+        if (rawRes.ok) {
+          const res = (await rawRes.json()) as DaemonResponse;
+          if (res.success) {
+            alive = true;
+            this._daemonPid = res.data?.pid ?? proc.pid;
+            this._connected = true;
+            break;
           }
         }
       } catch (err) {
@@ -1409,7 +1411,7 @@ export class PBoss extends EventEmitter<PBossEvents> {
    */
   async stopDaemon(): Promise<void> {
     try {
-      if (!this.isDaemonRunning()) return;
+      if (!(await this.isDaemonRunning())) return;
 
       const pidText = await R.filesystem.readText(DAEMON_PID_FILE);
       const pid = Number(pidText);
@@ -1464,8 +1466,8 @@ export class PBoss extends EventEmitter<PBossEvents> {
 
     // Clean up leftover files (real ones after a kill, stale ones when no
     // daemon was running at all)
-    try { if (existsSync(DAEMON_SOCKET)) unlinkSync(DAEMON_SOCKET); } catch (err) { ignore(`unlink ${DAEMON_SOCKET} after kill`, err); }
-    try { if (existsSync(DAEMON_PID_FILE)) unlinkSync(DAEMON_PID_FILE); } catch (err) { ignore(`unlink ${DAEMON_PID_FILE} after kill`, err); }
+    try { await rm(DAEMON_SOCKET, { force: true }); } catch (err) { ignore(`unlink ${DAEMON_SOCKET} after kill`, err); }
+    try { await rm(DAEMON_PID_FILE, { force: true }); } catch (err) { ignore(`unlink ${DAEMON_PID_FILE} after kill`, err); }
 
     this._connected = false;
     this._daemonPid = null;
@@ -1762,9 +1764,9 @@ export class PBoss extends EventEmitter<PBossEvents> {
   }
 
   /**
-   * Check synchronously if the daemon process is running.
+   * Check if the daemon process is running.
    */
-  static isDaemonRunning(): boolean {
+  static async isDaemonRunning(): Promise<boolean> {
     return PBoss.getDefaultInstance().isDaemonRunning();
   }
 

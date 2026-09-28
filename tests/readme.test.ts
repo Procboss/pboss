@@ -40,7 +40,7 @@ describe("README.md: removed-at-the-owner's-request sections stay removed", () =
 describe("README.md: the untouched core contract survives removals", () => {
   test("Highlights keeps its head and tail — the removal was surgical", () => {
     expect(readme).toContain("## Highlights");
-    expect(readme).toContain("**Universal runtimes**");
+    expect(readme).toContain("**First-class Bun, Node.js, and Deno**");
     expect(readme).toContain("**Persistence (default on)**");
     expect(readme).toContain("**Tiny footprint**");
     // Highlights is a contiguous list: no orphaned blank line left behind

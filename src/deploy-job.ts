@@ -41,7 +41,17 @@
  * clean credential-free URL.
  */
 import { spawn } from "node:child_process";
-import { cpSync, mkdirSync, existsSync, readlinkSync, symlinkSync, renameSync, rmSync, readdirSync } from "node:fs";
+import { cp, mkdir, readlink, symlink, rename, rm, readdir, stat } from "node:fs/promises";
+
+/** Async existence probe — deploy jobs never block the event loop. */
+async function pathExists(p: string): Promise<boolean> {
+  try {
+    await stat(p);
+    return true;
+  } catch {
+    return false;
+  }
+}
 import { homedir } from "node:os";
 import { join, dirname, resolve } from "node:path";
 import { PBOSS_HOME } from "./constants";
@@ -124,7 +134,7 @@ type JobCtx = {
  * `keepCommit` (the last-known-good — the actual safety net). Returns the
  * new backup path + the pruned ones (the cloud maintains its registry).
  */
-function backupDir(
+async function backupDir(
   opts: {
     targetId: string;
     fromDir: string;
@@ -132,15 +142,15 @@ function backupDir(
     retention: number;
     keepCommit: string | null;
   },
-): { backupPath: string; prunedPaths: string[] } {
+): Promise<{ backupPath: string; prunedPaths: string[] }> {
   const safeTarget = opts.targetId.replace(/[^a-zA-Z0-9._-]/g, "_");
   const root = join(backupsRoot(), safeTarget);
-  mkdirSync(root, { recursive: true });
+  await mkdir(root, { recursive: true });
 
   // next version ordinal = max existing + 1
   let maxN = 0;
   const existing: Array<{ n: number; name: string }> = [];
-  for (const entry of readdirSync(root)) {
+  for (const entry of await readdir(root)) {
     const m = /^v(\d+)_/.exec(entry);
     if (!m) continue;
     const n = Number(m[1]);
@@ -151,7 +161,7 @@ function backupDir(
   const name = `v${maxN + 1}_${commitPart}`;
   const backupPath = join(root, name);
 
-  cpSync(opts.fromDir, backupPath, { recursive: true });
+  await cp(opts.fromDir, backupPath, { recursive: true });
 
   // prune oldest beyond retention — never the keepCommit's folder
   const pruned: string[] = [];
@@ -161,7 +171,7 @@ function backupDir(
     if (over <= 0) break;
     if (opts.keepCommit && e.name.endsWith(`_${opts.keepCommit}`)) continue; // last-known-good stays even over budget
     try {
-      rmSync(join(root, e.name), { recursive: true, force: true });
+      await rm(join(root, e.name), { recursive: true, force: true });
       pruned.push(join(root, e.name));
       over--;
     } catch {
@@ -251,7 +261,7 @@ async function runInplaceDeploy(
       `process "${payload.processName}" not found on this server — an adopted target needs the process to stay registered`,
     );
   }
-  if (!existsSync(join(def.cwd, ".git"))) {
+  if (!await pathExists(join(def.cwd, ".git"))) {
     throw new Error(`"${def.cwd}" (the working directory of ${payload.processName}) is not a git checkout`);
   }
 
@@ -268,7 +278,7 @@ async function runInplaceDeploy(
   }
   let backupFacts: { backupPath: string; prunedPaths: string[] } | null = null;
   if (payload.targetId) {
-    backupFacts = backupDir({
+    backupFacts = await backupDir({
       targetId: payload.targetId,
       fromDir: def.cwd,
       commit: liveSha ?? "live",
@@ -354,10 +364,10 @@ async function runReleaseDeploy(
   const currentLink = join(root, "current");
   const workdir = payload.workdir ? payload.workdir.replace(/^\/+|\/+$/g, "") : "";
 
-  mkdirSync(releasesDir, { recursive: true });
+  await mkdir(releasesDir, { recursive: true });
 
-  const priorCurrent = existsSync(currentLink)
-    ? resolve(dirname(currentLink), readlinkSync(currentLink))
+  const priorCurrent = await pathExists(currentLink)
+    ? resolve(dirname(currentLink), await readlink(currentLink))
     : null;
 
   /* 0a — legacy rollback fast path: the release for this SHA may already
@@ -365,7 +375,7 @@ async function runReleaseDeploy(
    * it's still on disk: seconds, not a full rebuild). The cloud's new
    * restore command (deploy.restore) carries its own version of this. */
   if (payload.mode === "rollback") {
-    const existing = findReleaseForSha(releasesDir, payload.commitSha);
+    const existing = await findReleaseForSha(releasesDir, payload.commitSha);
     if (existing) {
       progress("deploying", [log(`reusing existing release ${dirname(existing)}`)]);
       let startCmd = payload.startCmd;
@@ -395,7 +405,7 @@ async function runReleaseDeploy(
         return null;
       });
     }
-    const backupFacts = backupDir({
+    const backupFacts = await backupDir({
       targetId: payload.targetId,
       fromDir: priorCurrent,
       commit: liveSha ?? "live",
@@ -414,7 +424,7 @@ async function runReleaseDeploy(
   const releaseName = `${payload.commitSha.slice(0, 8)}-${Date.now()}`;
   const releaseDir = join(releasesDir, releaseName);
 
-  if (!existsSync(join(sourceDir, ".git"))) {
+  if (!await pathExists(join(sourceDir, ".git"))) {
     await exec(job, payload, { cwd: DEPLOYS_ROOT }, [
       "git",
       "clone",
@@ -434,7 +444,7 @@ async function runReleaseDeploy(
 
   /* 2 — release dir from the exact commit */
   progress("cloning", [log(`creating release ${releaseName} (git archive)`)]);
-  mkdirSync(releaseDir, { recursive: true });
+  await mkdir(releaseDir, { recursive: true });
   await exec(job, payload, { cwd: sourceDir }, [
     "sh",
     "-c",
@@ -459,7 +469,7 @@ async function runReleaseDeploy(
 
   /* 4 — install + build */
   const runDir = workdir ? join(releaseDir, workdir) : releaseDir;
-  if (!existsSync(runDir)) {
+  if (!await pathExists(runDir)) {
     throw new Error(`working directory "${payload.workdir}" does not exist in the repository`);
   }
   if (payload.installCmd) {
@@ -475,7 +485,7 @@ async function runReleaseDeploy(
   try {
     await flipAndStart(ctx, job, payload, currentLink, releaseDir, workdir, progress, startCmd, startCwd, startEnv);
   } catch (err) {
-    if (priorCurrent && existsSync(priorCurrent)) {
+    if (priorCurrent && await pathExists(priorCurrent)) {
       try {
         await exec(job, payload, { cwd: DEPLOYS_ROOT }, [
           "sh", "-c", `ln -sfn ${shellQuote(priorCurrent)} ${shellQuote(currentLink)}`,
@@ -529,14 +539,14 @@ export async function evalConfigApp(
   if (!path.startsWith(resolve(baseDir) + "/")) {
     throw new Error(`config file "${configFile}" escapes the repository`);
   }
-  if (!existsSync(path)) {
+  if (!await pathExists(path)) {
     throw new Error(`config file "${configFile}" not found in the repository`);
   }
 
   let apps: Array<Record<string, unknown>> = [];
   if (path.endsWith(".json")) {
-    const { readFileSync } = await import("node:fs");
-    const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
+    const { readFile } = await import("node:fs/promises");
+    const parsed: unknown = JSON.parse(await readFile(path, "utf8"));
     apps = normalizeConfigApps(parsed);
   } else {
     // module load — the file's own semantics win
@@ -618,7 +628,7 @@ export async function runRestoreJob(
 
   try {
     progress("restoring", [log(`restoring ${payload.backupPath}`)]);
-    if (!existsSync(payload.backupPath)) {
+    if (!await pathExists(payload.backupPath)) {
       throw new Error(`backup ${payload.backupPath} no longer exists on this server`);
     }
 
@@ -630,12 +640,12 @@ export async function runRestoreJob(
       const root = join(DEPLOYS_ROOT, slug);
       const releasesDir = join(root, "releases");
       const currentLink = join(root, "current");
-      mkdirSync(releasesDir, { recursive: true });
+      await mkdir(releasesDir, { recursive: true });
 
-      let target = findReleaseForSha(releasesDir, payload.commitSha);
+      let target = await findReleaseForSha(releasesDir, payload.commitSha);
       if (!target) {
         const releaseDir = join(releasesDir, `${payload.commitSha.slice(0, 8)}-${Date.now()}`);
-        cpSync(payload.backupPath, releaseDir, { recursive: true });
+        await cp(payload.backupPath, releaseDir, { recursive: true });
         target = releaseDir;
         progress("restoring", [log(`copied the backup into ${releaseDir}`)]);
       } else {
@@ -657,11 +667,11 @@ export async function runRestoreJob(
       }
 
       const tmpLink = `${currentLink}.tmp-${Date.now()}`;
-      symlinkSync(target, tmpLink);
+      await symlink(target, tmpLink);
       try {
-        renameSync(tmpLink, currentLink);
+        await rename(tmpLink, currentLink);
       } catch {
-        rmSync(tmpLink, { force: true });
+        await rm(tmpLink, { force: true });
         throw new Error("symlink flip failed");
       }
       progress("starting", [log(`restarting ${payload.processName}`)]);
@@ -682,12 +692,12 @@ export async function runRestoreJob(
         throw new Error(`process "${payload.processName}" not found on this server`);
       }
       const displaced = `${def.cwd}.pboss-restore-${Date.now()}`;
-      renameSync(def.cwd, displaced);
+      await rename(def.cwd, displaced);
       try {
-        cpSync(payload.backupPath, def.cwd, { recursive: true });
+        await cp(payload.backupPath, def.cwd, { recursive: true });
       } catch (err) {
         // put the live dir back before failing — never leave a hole
-        renameSync(displaced, def.cwd);
+        await rename(displaced, def.cwd);
         throw err;
       }
       progress("starting", [log(`restarting ${payload.processName} on the restored directory`)]);
@@ -705,7 +715,7 @@ export async function runRestoreJob(
         execMode: env.execMode,
         autorestart: env.autorestart !== false,
       });
-      rmSync(displaced, { recursive: true, force: true });
+      await rm(displaced, { recursive: true, force: true });
     }
 
     finish(true, undefined, [log(`restored ${payload.commitSha.slice(0, 7)}`)]);
@@ -725,8 +735,8 @@ export async function runPurgeJob(
   // backups always go
   const safeTarget = payload.targetId.replace(/[^a-zA-Z0-9._-]/g, "_");
   const backupPath = join(backupsRoot(), safeTarget);
-  if (existsSync(backupPath)) {
-    rmSync(backupPath, { recursive: true, force: true });
+  if (await pathExists(backupPath)) {
+    await rm(backupPath, { recursive: true, force: true });
   }
 
   if (payload.strategy === "release") {
@@ -739,8 +749,8 @@ export async function runPurgeJob(
     try {
       await ctx.pm.del(payload.processName);
     } catch { /* not registered */ }
-    if (existsSync(root)) {
-      rmSync(root, { recursive: true, force: true });
+    if (await pathExists(root)) {
+      await rm(root, { recursive: true, force: true });
     }
   }
   // adopted processes keep their own directory — only the backups were ours
@@ -847,11 +857,11 @@ async function flipAndStart(
 ): Promise<void> {
   progress?.("deploying", [`[deploy ${payload.processName}] flipping the current symlink`]);
   const tmpLink = `${currentLink}.tmp-${Date.now()}`;
-  symlinkSync(releaseDir, tmpLink);
+  await symlink(releaseDir, tmpLink);
   try {
-    renameSync(tmpLink, currentLink); // atomic replace (rename over a symlink)
+    await rename(tmpLink, currentLink); // atomic replace (rename over a symlink)
   } catch {
-    rmSync(tmpLink, { force: true });
+    await rm(tmpLink, { force: true });
     throw new Error("symlink flip failed");
   }
 
@@ -876,10 +886,10 @@ async function flipAndStart(
 }
 
 /** Find an existing built release for a commit SHA (restore fast path). */
-function findReleaseForSha(releasesDir: string, commitSha: string): string | null {
+async function findReleaseForSha(releasesDir: string, commitSha: string): Promise<string | null> {
   const prefix = commitSha.slice(0, 8);
   try {
-    const entries = readdirSync(releasesDir);
+    const entries = await readdir(releasesDir);
     const hit = entries.filter((e) => e.startsWith(`${prefix}-`)).sort().pop();
     return hit ? join(releasesDir, hit) : null;
   } catch {
@@ -911,7 +921,7 @@ export async function gitInfoForProcess(
       c.on("close", (code) => (code === 0 ? res(out.trim()) : rej(new Error(`git ${args.join(" ")} exited ${code}`))));
       c.on("error", rej);
     });
-  if (!existsSync(join(cwd, ".git"))) {
+  if (!await pathExists(join(cwd, ".git"))) {
     return { remote: null, branch: null, commit: null, exists: false };
   }
   try {

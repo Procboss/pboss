@@ -331,7 +331,7 @@ describe("ThresholdMonitor — restart loop", () => {
     expect(evs.filter((e) => e.kind === "restart.loop").length).toBe(1);
   });
 
-  test("counter reset (process deleted + recreated) never false-arms", () => {
+  test("counter reset (process deleted + recreated) never false-arms", async () => {
     const m = new ThresholdMonitor(DEFAULT_THRESHOLD_CONFIG);
     m.evaluate([proc("api", { restarts: 10 })], sys(), NO_EXTRA, T0);
     // recreated with restarts back at 0, then climbs 1..4 → never 5-in-window
@@ -348,8 +348,8 @@ describe("ThresholdMonitor — restart loop", () => {
 describe("threshold config — load / save / patch / merge", () => {
   const dir = mkdtempSync(join(tmpdir(), "pboss-thr-"));
 
-  test("missing file → built-in defaults; partial JSON merges onto defaults", () => {
-    const cfg = loadThresholdConfig(join(dir, "none.json"));
+  test("missing file → built-in defaults; partial JSON merges onto defaults", async () => {
+    const cfg = await loadThresholdConfig(join(dir, "none.json"));
     expect(cfg).toEqual(DEFAULT_THRESHOLD_CONFIG);
 
     const p = join(dir, "partial.json");
@@ -357,26 +357,26 @@ describe("threshold config — load / save / patch / merge", () => {
       p,
       JSON.stringify({ system: { cpuPercent: { trigger: 70 } }, overrides: { "my-api": { cpuSpikePercent: { trigger: 90 } } } })
     );
-    const merged = loadThresholdConfig(p);
+    const merged = await loadThresholdConfig(p);
     expect(merged.system.cpuPercent.trigger).toBe(70);
     expect(merged.system.cpuPercent.clear).toBe(65); // default kept
     expect(merged.defaults.cpuSpikePercent.trigger).toBe(95); // untouched
     expect(merged.overrides["my-api"]!.cpuSpikePercent!.trigger).toBe(90);
   });
 
-  test("corrupt JSON degrades to defaults (alerting never throws)", () => {
+  test("corrupt JSON degrades to defaults (alerting never throws)", async () => {
     const p = join(dir, "corrupt.json");
     writeFileSync(p, "{not json");
-    expect(loadThresholdConfig(p)).toEqual(DEFAULT_THRESHOLD_CONFIG);
+    expect(await loadThresholdConfig(p)).toEqual(DEFAULT_THRESHOLD_CONFIG);
   });
 
-  test("save → load round-trip", () => {
+  test("save → load round-trip", async () => {
     const p = join(dir, "roundtrip.json");
     const cfg = patchThresholdConfig(DEFAULT_THRESHOLD_CONFIG, "my-api", {
       cpuSpikePercent: { trigger: 90 },
     });
-    saveThresholdConfig(cfg, p);
-    const loaded = loadThresholdConfig(p);
+    await saveThresholdConfig(cfg, p);
+    const loaded = await loadThresholdConfig(p);
     expect(loaded.overrides["my-api"]!.cpuSpikePercent!.trigger).toBe(90);
     expect(loaded.overrides["my-api"]!.cpuSpikePercent!.sustainedSec).toBe(30);
   });

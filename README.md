@@ -1,7 +1,10 @@
 # ⚡ ProcBoss (pboss)
 
-**A blazing-fast, universal, runtime-agnostic production process manager.**
-Run, cluster, monitor, and manage any application — Node.js, Bun, Deno, Go, Python, Rust, Ruby, PHP, Java, native binaries, and shell scripts — with pure performance and zero overhead.
+**A blazing-fast, runtime-agnostic process manager for Bun, Node.js, and Deno —
+native APIs per runtime, no compatibility layers.** Beyond that first-class
+trio it manages everything else on the machine — Go, Python, Rust, Ruby, PHP,
+Java, native binaries, and shell scripts — with pure performance and zero
+overhead.
 By [procboss.com](https://procboss.com).
 
 ![Runtime](https://img.shields.io/badge/runtimes-Bun%20%7C%20Node.js%20%7C%20Deno-8b5cf6?style=flat-square)
@@ -23,7 +26,7 @@ The full documentation lives at [docs.procboss.com](https://docs.procboss.com)
 
 ## Highlights
 
-- **Universal runtimes** — auto-detected: Node.js, Bun, Go, Python, Rust, Ruby, PHP, Java JARs, shell scripts, compiled binaries.
+- **First-class Bun, Node.js, and Deno** — pboss runs natively on all three, and JS/TS apps resolve their runner per machine (`bun run` → `deno run -A` → `node`, TypeScript under Node through [tsx](https://github.com/privatenumber/tsx), which pboss ships as an optional dependency). Everything else is managed too: Go, Python, Rust, Ruby, PHP, Java JARs, shell scripts, compiled binaries.
 - **Cluster mode** — N instances, per-worker env, automatic ports, zero-downtime rolling reloads.
 - **Namespaces** — group processes (`--namespace my-app`) and operate on the group: `pboss restart my-app`, `pboss delete my-app` (confirmed; `--force` skips). Atomic startup with rollback ([#31](https://github.com/Procboss/pboss/issues/31)): a failed member rolls back only what that start brought up; members already running are never touched; namespace-less processes stay fully independent.
 - **Dependencies** ([#33](https://github.com/Procboss/pboss/issues/33)) — `dependsOn: ["postgres", "redis"]`: pboss resolves the graph (ProcBoss apps first, then systemd units like `postgresql.service`), starts stopped app dependencies recursively in topological order (independent branches concurrently), checks system services without ever managing them, refuses cycles upfront, rolls back only what an invocation started, and keeps boot recovery dependency-ordered. `pboss deps api` (and `--reverse`) inspects the graph; required/optional policies; failures are machine-readable on the API.
@@ -96,6 +99,18 @@ This reports the actual execution environment — never what the installer
 detected, and never a configured choice. There is no `runtime` config key;
 run pboss under whichever runtime you like (`bunx pboss`, `npx pboss`,
 `deno run -A npm:pboss`).
+
+### Which runtime runs your apps?
+
+For JavaScript and TypeScript workers, the runner is resolved per machine in
+this order: **Bun** (`bun run`) → **Deno** (`deno run -A`) → **Node.js**. On a
+Node-only machine, TypeScript runs through [tsx](https://github.com/privatenumber/tsx)
+— found in your app's own `node_modules`, on `PATH`, or shipped with pboss
+itself; when no tsx is usable, Node's `--experimental-strip-types`
+(Node ≥ 22.6) is the fallback. An explicit `--interpreter` always wins:
+`--interpreter node`, `--interpreter "deno run -A"`, `--interpreter none` for
+binaries. Other languages (Go, Python, Ruby, PHP, Java, shell, Windows
+scripts) are detected by file extension, and compiled binaries run directly.
 
 ## Installation
 

@@ -273,13 +273,18 @@ pboss startup install
 
 ## Multi-Language & Runtime Support
 
-ProcBoss runs and supervises any application, programming language, runtime, or compiled binary:
+ProcBoss gives **Bun, Node.js, and Deno first-class support** — it runs natively
+on all three, and JS/TS apps resolve their runner per machine in the order
+`bun run` → `deno run -A` → `node` (TypeScript under Node through
+[tsx](https://github.com/privatenumber/tsx), which pboss ships as an optional
+dependency; `--experimental-strip-types` on Node ≥ 22.6 is the zero-dependency
+fallback). Beyond that trio it manages everything else on the machine:
 
 | Runtime / Language | File Extension | Auto-detected Runner | Example |
 |---|---|---|---|
-| **TypeScript / JSX** | `.ts`, `.tsx`, `.jsx`, `.mjs`, `.cjs` | `bun run <file>` | `pboss start server.ts` |
-| **JavaScript (Bun)** | `.js` | `bun run <file>` | `pboss start app.js` |
-| **JavaScript (Node.js)** | `.js` | `node <file>` (via `--interpreter`) | `pboss start app.js --interpreter node` |
+| **TypeScript / JSX** | `.ts`, `.tsx`, `.jsx`, `.mts` | `bun run <file>` → `deno run -A` → `node` via tsx / `--experimental-strip-types` | `pboss start server.ts` |
+| **JavaScript** | `.js`, `.mjs`, `.cjs` | `bun run <file>` → `deno run -A` → `node <file>` | `pboss start app.js` |
+| **Node.js (pinned)** | `.js` | `node <file>` (via `--interpreter`) | `pboss start app.js --interpreter node` |
 | **Python** | `.py` | `python3 <file>` (or `python`) | `pboss start worker.py` |
 | **Go** | `.go` | `go run <file>` | `pboss start main.go` |
 | **Compiled Binaries (Go / Rust / C / C++)** | *(no ext)*, `.bin`, `.exe` | Direct binary execution | `pboss start ./my-go-server` |

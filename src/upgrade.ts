@@ -20,7 +20,7 @@
  *      node_modules path is a package-manager install.
  */
 
-import { mkdirSync, readFileSync, writeFileSync } from "fs";
+import { mkdir, readFile, writeFile } from "fs/promises";
 import { join, dirname } from "path";
 import { PBOSS_HOME } from "./constants";
 import { getRuntime } from "./runtime";
@@ -51,9 +51,9 @@ export type ChannelStamp = {
 
 /* ── stamp read/write ─────────────────────────────────────────────────── */
 
-export function readChannelStamp(file: string = CHANNEL_FILE): ChannelStamp | null {
+export async function readChannelStamp(file: string = CHANNEL_FILE): Promise<ChannelStamp | null> {
   try {
-    const raw = readFileSync(file, "utf8");
+    const raw = await readFile(file, "utf8");
     const parsed = JSON.parse(raw) as ChannelStamp;
     if (typeof parsed?.channel === "string") {
       return parsed;
@@ -64,13 +64,13 @@ export function readChannelStamp(file: string = CHANNEL_FILE): ChannelStamp | nu
   }
 }
 
-export function writeChannelStamp(
+export async function writeChannelStamp(
   stamp: ChannelStamp,
   file: string = CHANNEL_FILE,
-): void {
+): Promise<void> {
   try {
-    mkdirSync(dirname(file), { recursive: true });
-    writeFileSync(file, `${JSON.stringify(stamp, null, 2)}\n`);
+    await mkdir(dirname(file), { recursive: true });
+    await writeFile(file, `${JSON.stringify(stamp, null, 2)}\n`);
   } catch {
     // Best-effort: the heuristics in detectChannel() still resolve the
     // channel without a stamp.
@@ -102,9 +102,9 @@ export type ChannelContext = {
   platform: NodeJS.Platform;
 };
 
-export function currentChannelContext(): ChannelContext {
+export async function currentChannelContext(): Promise<ChannelContext> {
   return {
-    stamp: readChannelStamp(),
+    stamp: await readChannelStamp(),
     execPath: process.execPath,
     isCompiled:
       (typeof Bun !== "undefined" &&

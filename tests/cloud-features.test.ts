@@ -457,7 +457,7 @@ describe("CloudAgent — new cloud commands", () => {
     expect(after.system.cpuPercent.trigger).toBe(70);
     // persisted (the file survives the in-memory agent)
     expect(existsSync(ALERT_THRESHOLDS_FILE)).toBe(true);
-    expect(loadThresholdConfig(ALERT_THRESHOLDS_FILE).system.cpuPercent.trigger).toBe(70);
+    expect((await loadThresholdConfig(ALERT_THRESHOLDS_FILE)).system.cpuPercent.trigger).toBe(70);
   });
 });
 

@@ -53,7 +53,12 @@ export class ClusterManager {
      };
    }
 
-   buildWorkerCommand(config: ProcessDescription): string[] {
+   /**
+    * Build the full worker command line. Async: JS/TS scripts resolve their
+    * interpreter through the runtime discovery chain (which may stat several
+    * candidate paths) — never blocking the daemon's event loop.
+    */
+   async buildWorkerCommand(config: ProcessDescription): Promise<string[]> {
      const cmd: string[] = [];
 
      if (config.interpreter) {
@@ -64,7 +69,7 @@ export class ClusterManager {
      } else {
        const ext = path.extname(config.script).slice(1).toLowerCase();
        if (ext === "ts" || ext === "tsx" || ext === "jsx" || ext === "mjs" || ext === "cjs" || ext === "js") {
-         cmd.push(...resolveScriptInterpreter(config.script));
+         cmd.push(...await resolveScriptInterpreter(config.script));
        } else if (ext === "py") {
          cmd.push(process.platform === "win32" ? "python" : "python3");
        } else if (ext === "go") {
@@ -84,7 +89,7 @@ export class ClusterManager {
        } else if (ext === "exe" || ext === "bin" || ext === "") {
          // Standalone compiled executable (Go, Rust, C/C++, Swift, etc.) — executed directly
        } else {
-         cmd.push(...resolveScriptInterpreter(config.script));
+         cmd.push(...await resolveScriptInterpreter(config.script));
        }
      }
 
@@ -98,20 +103,20 @@ export class ClusterManager {
      return cmd;
    }
 
-   spawnWorker(
+   async spawnWorker(
      config: ProcessDescription,
      workerId: number,
      totalWorkers: number,
      logStreams: { stdout: "pipe" | "inherit"; stderr: "pipe" | "inherit" }
-   ): PBChild {
-     const cmd = this.buildWorkerCommand(config);
+   ): Promise<PBChild> {
+     const cmd = await this.buildWorkerCommand(config);
      const env = this.createWorkerEnv(
        {
          ...(process.env as Record<string, string>),
          ...config.env,
          // Same rule as fork mode: the app dir's .env is re-read at every
          // (re)spawn and takes precedence over the start-time snapshot.
-         ...readEnvFileOverrides(config.cwd),
+         ...await readEnvFileOverrides(config.cwd),
        },
        workerId,
        totalWorkers,

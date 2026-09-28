@@ -137,7 +137,7 @@ describe("findBun: discovery beyond PATH (the daemon's view)", () => {
   test("PATH miss + ~/.bun/bin hit — the reported incident", async () => {
     const home = scratch("home");
     const fake = fakeBun(home, join(home, "marker"));
-    const script = discoveryProbe(`console.log(findBun());`);
+    const script = discoveryProbe(`console.log(await findBun());`);
 
     const proc = Bun.spawnSync([process.execPath, "run", script], {
       env: { PATH: SYSTEMD_STYLE_PATH, HOME: home },
@@ -157,7 +157,7 @@ describe("findBun: discovery beyond PATH (the daemon's view)", () => {
     const overrideBun = join(binDir, "bun");
     writeFileSync(overrideBun, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
     chmodSync(overrideBun, 0o755);
-    const script = discoveryProbe(`console.log(findBun());`);
+    const script = discoveryProbe(`console.log(await findBun());`);
 
     const proc = Bun.spawnSync([process.execPath, "run", script], {
       env: { PATH: SYSTEMD_STYLE_PATH, HOME: home, BUN_INSTALL: installPrefix },
@@ -170,7 +170,7 @@ describe("findBun: discovery beyond PATH (the daemon's view)", () => {
 
   test("fixed system locations are the last resort (no PATH, no HOME bun)", async () => {
     const home = scratch("emptyhome"); // no .bun inside
-    const script = discoveryProbe(`console.log(findBun() ?? "null");`);
+    const script = discoveryProbe(`console.log((await findBun()) ?? "null");`);
 
     const proc = Bun.spawnSync([process.execPath, "run", script], {
       env: { PATH: "/nonexistent", HOME: home },
@@ -194,9 +194,9 @@ describe("findBun: discovery beyond PATH (the daemon's view)", () => {
     const bunDir = join(home, ".bun", "bin");
     const script = discoveryProbe(
       [
-        "const first = enrichPathWithBun();",
+        "const first = await enrichPathWithBun();",
         "const afterFirst = process.env.PATH!;",
-        "const second = enrichPathWithBun();",
+        "const second = await enrichPathWithBun();",
         "const unchanged = process.env.PATH! === afterFirst;",
         "console.log(JSON.stringify({ first, afterFirst, second, unchanged }));",
       ].join("\n")

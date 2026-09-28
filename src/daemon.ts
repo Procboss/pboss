@@ -39,7 +39,7 @@ import { getRuntime } from "./runtime";
 import type { PBServerHandle } from "./runtime";
 
 const R = getRuntime();
-import { existsSync, unlinkSync, readFileSync } from "node:fs";
+import { readFile, rm, unlink, stat } from "node:fs/promises";
 
 
 export default class Daemon {
@@ -78,13 +78,13 @@ export default class Daemon {
     // the daemon's PATH — anything they shell out to by name (`bun`,
     // `bunx`) must also resolve. Worker envs are built from process.env,
     // so amending PATH here propagates to every future child.
-    enrichPathWithBun();
+    await enrichPathWithBun();
 
     await ensureDirs();
     // Security self-heal: an ~/.pboss from before the 0700 rule leaves the
     // daemon socket reachable by every local user; tighten it at every
     // boot (best-effort — see tightenPbossHomeMode).
-    tightenPbossHomeMode();
+    await tightenPbossHomeMode();
 
     this.daemonEnabled = _daemonEnabled;
     this.pm = new ProcessManager();
@@ -109,26 +109,26 @@ export default class Daemon {
 
       // Stale leftovers from a crash / reboot — take them over.
       try {
-        if (existsSync(DAEMON_PID_FILE)) {
-          const pidText = readFileSync(DAEMON_PID_FILE, "utf-8").trim();
-          const existingPid = parseInt(pidText);
-          if (pidText && existingPid !== process.pid) {
-            process.kill(existingPid, 0);
-          }
+        const pidText = (await readFile(DAEMON_PID_FILE, "utf-8")).trim();
+        const existingPid = parseInt(pidText);
+        if (pidText && existingPid !== process.pid) {
+          process.kill(existingPid, 0);
         }
       } catch (err) {
         // Stale PID file (process gone / PID reused) — safe to overwrite.
         ignore(`read/verify PID file ${DAEMON_PID_FILE} (stale)`, err);
       }
 
-      // Clean up stale socket so Bun.serve can bind cleanly. Stat-based
-      // (existsSync) and unlink-based only: Bun.file(...).exists() OPENs
-      // the path, and a unix socket file cannot be opened (ENXIO on
+      // Clean up stale socket so the runtime's server can bind cleanly.
+      // Stat-based and unlink-based only (node:fs/promises — the same
+      // syscalls the sync calls made): a PATH-BASED exists() (Bun.file)
+      // OPENs the path, and a unix socket file cannot be opened (ENXIO on
       // POSIX, a sharing violation on Windows AF_UNIX reparse points), so
-      // a Bun.file-based cleanup here can never see the socket — the
-      // unlinkSync above is the mechanism that actually works.
+      // it can never see the socket — stat + unlink is the mechanism that
+      // actually works.
       try {
-        if (existsSync(DAEMON_SOCKET)) unlinkSync(DAEMON_SOCKET);
+        await stat(DAEMON_SOCKET);
+        await unlink(DAEMON_SOCKET);
       } catch (err) {
         ignore(`unlink stale socket ${DAEMON_SOCKET}`, err);
       }
@@ -156,7 +156,7 @@ export default class Daemon {
     this.cronJobManager.onJobResult = (job, exitCode) => {
       this.cloudAgent?.reportCronOutcome(job, exitCode);
     };
-    const cloudCfg = loadCloudConfig();
+    const cloudCfg = await loadCloudConfig();
     if (cloudCfg) {
       this.cloudAgent.start(cloudCfg);
     }
@@ -469,7 +469,7 @@ export default class Daemon {
               id: msg.id,
             };
           }
-          const data = this.cloudAgent!.alertsSet(target, patch);
+          const data = await this.cloudAgent!.alertsSet(target, patch);
           return { type: "alertsSet", data, success: true, id: msg.id };
         }
         case "alertsReset": {
@@ -477,7 +477,7 @@ export default class Daemon {
             typeof msg.data?.target === "string" && msg.data.target
               ? msg.data.target
               : "all";
-          const data = this.cloudAgent!.alertsReset(target);
+          const data = await this.cloudAgent!.alertsReset(target);
           return { type: "alertsReset", data, success: true, id: msg.id };
         }
         case "alertsTest": {
@@ -526,7 +526,7 @@ export default class Daemon {
             serverSecret: String(serverSecret),
             serverName: serverName ? String(serverName) : undefined,
           };
-          saveCloudConfig(cfg);
+          await saveCloudConfig(cfg);
           this.cloudAgent!.start(cfg);
           return {
             type: "cloudLink",
@@ -542,14 +542,14 @@ export default class Daemon {
           // install racing a restore/sync), or whose start attempt degraded,
           // must pick the link back up the moment someone asks instead of
           // reporting "not linked" while the credential sits on disk.
-          this.cloudAgent!.resumeFromDisk();
+          await this.cloudAgent!.resumeFromDisk();
           const status = this.cloudAgent!.status();
           return { type: "cloudStatus", data: status, success: true, id: msg.id };
         }
         case "cloudServers": {
           // Fleet list through the MACHINE credential — daemon-mediated by
           // design: the secret stays in this process, the CLI just renders.
-          const cfg = this.cloudAgent?.config ?? loadCloudConfig();
+          const cfg = this.cloudAgent?.config ?? (await loadCloudConfig());
           if (!cfg) {
             return {
               type: "error",
@@ -562,7 +562,7 @@ export default class Daemon {
           return { type: "cloudServers", data: { servers }, success: true, id: msg.id };
         }
         case "cloudReconnect": {
-          const cfg = this.cloudAgent?.config ?? loadCloudConfig();
+          const cfg = this.cloudAgent?.config ?? (await loadCloudConfig());
           if (!cfg) {
             return {
               type: "error",
@@ -609,9 +609,12 @@ export default class Daemon {
           setTimeout(() => {
             // Remove our own runtime files so a stale socket/PID can never
             // block the next start (client-side cleanup stays as fallback).
-            try { unlinkSync(DAEMON_PID_FILE); } catch (err) { ignore("unlink PID file on kill", err); }
-            try { if (existsSync(DAEMON_SOCKET)) unlinkSync(DAEMON_SOCKET); } catch (err) { ignore("unlink socket on kill", err); }
-            process.exit(0);
+            // rm promises always settle, so the exit below always runs.
+            void (async () => {
+              try { await rm(DAEMON_PID_FILE, { force: true }); } catch (err) { ignore("unlink PID file on kill", err); }
+              try { await rm(DAEMON_SOCKET, { force: true }); } catch (err) { ignore("unlink socket on kill", err); }
+              process.exit(0);
+            })();
           }, 200);
           return { type: "kill", success: true, id: msg.id };
         }

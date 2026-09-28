@@ -1016,8 +1016,8 @@ describe("PBoss API", () => {
   // ───────────────────── Daemon helpers ─────────────────────────────
 
   describe("daemon helper methods", () => {
-    test("isDaemonRunning returns boolean", () => {
-      expect(typeof pboss.isDaemonRunning()).toBe("boolean");
+    test("isDaemonRunning returns boolean", async () => {
+      expect(typeof (await pboss.isDaemonRunning())).toBe("boolean");
     });
 
     test("startDaemon calls launchDaemon when not alive", async () => {

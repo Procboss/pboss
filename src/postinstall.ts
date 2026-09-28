@@ -49,8 +49,8 @@ export function isGlobalInstall(env: NodeJS.ProcessEnv = process.env): boolean {
  * is already linked. Read-only, never throws; null = nothing to report.
  * Exported for tests.
  */
-export function existingCloudLinkNote(): string | null {
-  const cfg = loadCloudConfig();
+export async function existingCloudLinkNote(): Promise<string | null> {
+  const cfg = await loadCloudConfig();
   if (!cfg) return null;
   const name = cfg.serverName ?? cfg.serverId;
   return `Existing cloud link found (${name}) — the daemon will resume it automatically. State: pboss cloud status`;
@@ -85,7 +85,7 @@ async function main(): Promise<void> {
   // Record WHO installed us so `pboss upgrade` upgrades through the same
   // package manager (npm/bun/pnpm/yarn) instead of spawning a second copy.
   const pm = parseUserAgent(process.env.npm_config_user_agent);
-  writeChannelStamp({
+  await writeChannelStamp({
     channel: "npm",
     pm,
     by: "postinstall",
@@ -111,7 +111,7 @@ async function main(): Promise<void> {
   // credential survived the package swap — the daemon (re)started by the
   // step above resumes it. Say so instead of leaving the user to discover
   // the link state by asking for status.
-  const linkNote = existingCloudLinkNote();
+  const linkNote = await existingCloudLinkNote();
   if (linkNote) console.log(linkNote);
 }
 

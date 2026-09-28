@@ -118,8 +118,8 @@ describe("Installation mode detection", () => {
     expect(Bun.which("bun")).toBeTruthy();
   });
 
-  test("findBun resolves the system Bun and never throws", () => {
-    const bun = findBun();
+  test("findBun resolves the system Bun and never throws", async () => {
+    const bun = await findBun();
     expect(bun).toBe(Bun.which("bun"));
   });
 
@@ -127,8 +127,8 @@ describe("Installation mode detection", () => {
     expect(["string", "null"]).toContain(typeof findNpm());
   });
 
-  test("daemonSpawnCommand uses bun + daemon.ts in script mode", () => {
-    const cmd = daemonSpawnCommand();
+  test("daemonSpawnCommand uses bun + daemon.ts in script mode", async () => {
+    const cmd = await daemonSpawnCommand();
     const bun = Bun.which("bun")!;
 
     expect(cmd[0]).toBe(bun);
@@ -142,16 +142,16 @@ describe("Installation mode detection", () => {
     expect(existsSync(daemonScript)).toBe(true);
   });
 
-  test("cliSpawnCommand appends subcommands after the entry", () => {
-    const cmd = cliSpawnCommand("resurrect");
+  test("cliSpawnCommand appends subcommands after the entry", async () => {
+    const cmd = await cliSpawnCommand("resurrect");
     expect(cmd[0]).toBe(Bun.which("bun")!);
     expect(cmd[1]).toBe("run");
     expect(cmd[2]!.endsWith("index.ts")).toBe(true);
     expect(cmd[3]).toBe("resurrect");
   });
 
-  test("installModeDescription names the flavor", () => {
-    const desc = installModeDescription();
+  test("installModeDescription names the flavor", async () => {
+    const desc = await installModeDescription();
     expect(desc).toContain("package install running on the system Bun runtime");
     expect(desc).toContain("Bun");
   });
@@ -216,15 +216,16 @@ describe("StartupManager honors install mode", () => {
     // The raw daemon command is still documented — started hidden BY the
     // launcher — so operators can see what actually runs at logon.
     expect(out).toContain(
-      `# Daemon command (started hidden by the launcher): ${daemonSpawnCommand().join(" ")}`
+      `# Daemon command (started hidden by the launcher): ${(await daemonSpawnCommand()).join(" ")}`
     );
   });
 
   test("generated configs record the detected install mode", async () => {
     const startup = new StartupManager();
+    const installMode = await installModeDescription();
     for (const os of ["linux", "darwin", "win32"]) {
       const out = await startup.generate(os);
-      expect(out).toContain(`# Install mode: ${installModeDescription()}`);
+      expect(out).toContain(`# Install mode: ${installMode}`);
     }
   });
 });

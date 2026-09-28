@@ -18,7 +18,7 @@
  * Wire protocol is mirrored on the cloud side (src/lib/cloud/protocol.ts).
  */
 
-import { existsSync, readFileSync, writeFileSync, chmodSync, unlinkSync, mkdirSync } from "node:fs";
+import { readFile, writeFile, chmod, rm, mkdir } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { platform, arch, hostname, totalmem, freemem, loadavg, cpus } from "node:os";
 import { dirname } from "node:path";
@@ -39,6 +39,7 @@ import {
 import {
   ThresholdMonitor,
   DEFAULT_THRESHOLD_CONFIG,
+  loadThresholdConfig,
   saveThresholdConfig,
   patchThresholdConfig,
   type ProcessExtra,
@@ -136,10 +137,9 @@ export interface CloudConfig {
   serverName?: string;
 }
 
-export function loadCloudConfig(): CloudConfig | null {
+export async function loadCloudConfig(): Promise<CloudConfig | null> {
   try {
-    if (!existsSync(CLOUD_FILE)) return null;
-    const raw = JSON.parse(readFileSync(CLOUD_FILE, "utf-8") as string) as Partial<CloudConfig>;
+    const raw = JSON.parse(await readFile(CLOUD_FILE, "utf-8") as string) as Partial<CloudConfig>;
     if (!raw.cloudUrl || !raw.serverId || !raw.serverSecret) return null;
     return {
       // scheme-healed on read: a legacy cloud.json written before bare
@@ -154,20 +154,20 @@ export function loadCloudConfig(): CloudConfig | null {
   }
 }
 
-export function saveCloudConfig(cfg: CloudConfig): void {
+export async function saveCloudConfig(cfg: CloudConfig): Promise<void> {
   // mkdir first: the daemon normally ran ensureDirs(), but a fresh
   // machine (or a test) can reach this write before anything created
   // ~/.pboss — a missing credential because of a missing DIRECTORY is a
   // bug, not an acceptable failure mode.
   try {
-    mkdirSync(dirname(CLOUD_FILE), { recursive: true, mode: 0o700 });
+    await mkdir(dirname(CLOUD_FILE), { recursive: true, mode: 0o700 });
   } catch {
-    // exists already, or a parent we cannot create — writeFileSync below
+    // exists already, or a parent we cannot create — writeFile below
     // reports the honest error.
   }
-  writeFileSync(CLOUD_FILE, JSON.stringify(cfg, null, 2), { mode: 0o600 });
+  await writeFile(CLOUD_FILE, JSON.stringify(cfg, null, 2), { mode: 0o600 });
   try {
-    chmodSync(CLOUD_FILE, 0o600);
+    await chmod(CLOUD_FILE, 0o600);
   } catch (err) {
     // Best-effort — some filesystems reject chmod; the credential is still
     // written, and the failure is recorded instead of vanishing.
@@ -175,9 +175,9 @@ export function saveCloudConfig(cfg: CloudConfig): void {
   }
 }
 
-export function clearCloudConfig(): void {
+export async function clearCloudConfig(): Promise<void> {
   try {
-    if (existsSync(CLOUD_FILE)) unlinkSync(CLOUD_FILE);
+    await rm(CLOUD_FILE, { force: true });
   } catch (err) {
     ignore(`unlink cloud config ${CLOUD_FILE}`, err);
   }
@@ -944,6 +944,16 @@ export class CloudAgent {
     this.pm = pm;
     this.cronJobManager = params.cronJobManager ?? null;
     this.thresholds = params.thresholdMonitor ?? new ThresholdMonitor();
+    if (!params.thresholdMonitor) {
+      // The threshold file loads asynchronously — alerting is windowed
+      // (streaks over minutes), so starting on the built-in defaults for
+      // the few ms the disk read takes is harmless; blocking the daemon's
+      // event loop with a sync read would not be.
+      void loadThresholdConfig().then(
+        (cfg) => this.thresholds.updateConfig(cfg),
+        () => undefined
+      );
+    }
     const envMs = Number.parseInt(process.env.PBOSS_CLOUD_WATCHDOG_MS ?? "", 10);
     this.watchdogMs =
       params.inboundWatchdogMs ??
@@ -1116,9 +1126,9 @@ export class CloudAgent {
    * racing a dotfiles sync / backup restore / manual migration) must not
    * answer "not linked" while the credential sits on disk unread.
    */
-  resumeFromDisk(): boolean {
+  async resumeFromDisk(): Promise<boolean> {
     if (this.cfg) return true; // already linked in memory (possibly erroring)
-    const cfg = loadCloudConfig();
+    const cfg = await loadCloudConfig();
     if (!cfg) return false;
     this.start(cfg); // never throws (see start)
     return true;
@@ -1705,15 +1715,15 @@ export class CloudAgent {
   }
 
   /** `pboss alerts set` / config.alerts.set — live patch + persist. */
-  alertsSet(target: string | undefined, patch: Record<string, unknown>): unknown {
+  async alertsSet(target: string | undefined, patch: Record<string, unknown>): Promise<unknown> {
     const next = patchThresholdConfig(this.thresholds.currentConfig, target, patch);
     this.thresholds.updateConfig(next);
-    saveThresholdConfig(next);
+    await saveThresholdConfig(next);
     return this.alertsShow();
   }
 
   /** `pboss alerts reset` — drop overrides (one process, or all, or system). */
-  alertsReset(target: string): unknown {
+  async alertsReset(target: string): Promise<unknown> {
     const next: ThresholdConfig = JSON.parse(JSON.stringify(this.thresholds.currentConfig));
     if (target === "all") {
       next.overrides = {};
@@ -1724,7 +1734,7 @@ export class CloudAgent {
       delete next.overrides[target];
     }
     this.thresholds.updateConfig(next);
-    saveThresholdConfig(next);
+    await saveThresholdConfig(next);
     return this.alertsShow();
   }
 

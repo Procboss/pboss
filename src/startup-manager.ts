@@ -26,7 +26,7 @@
  */
 
 import { join, dirname } from "path";
-import { readFileSync, rmSync, existsSync } from "fs";
+import { readFile, rm, stat } from "fs/promises";
 import { mkdir } from "fs/promises";
 import { ignore } from "./error-handling";
 import { colorize } from "./utils";
@@ -50,6 +50,16 @@ import {
 import { getRuntime } from "./runtime";
 const R = getRuntime();
 
+/** Async existence probe — every filesystem touch in this module is async. */
+async function pathExists(p: string): Promise<boolean> {
+  try {
+    await stat(p);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * The user the generated service should run as.
  *
@@ -60,10 +70,10 @@ const R = getRuntime();
  * but install() actively tells sudo users to re-run as themselves (root has
  * no user systemd session, and a root daemon would split into /root/.pboss).
  */
-function targetUserContext(): { user: string; home: string } {
+async function targetUserContext(): Promise<{ user: string; home: string }> {
   const sudoUser = process.env.SUDO_USER;
   if (sudoUser && sudoUser !== "root") {
-    const home = homeForUser(sudoUser);
+    const home = await homeForUser(sudoUser);
     if (home) return { user: sudoUser, home };
   }
   return {
@@ -72,10 +82,14 @@ function targetUserContext(): { user: string; home: string } {
   };
 }
 
-/** Resolve a user's home directory: /etc/passwd → dscl (macOS) → getent (NSS). */
-function homeForUser(user: string): string | null {
+/**
+ * Resolve a user's home directory: /etc/passwd → dscl (macOS) → getent
+ * (NSS). Async throughout — file read and subprocess capture, never a
+ * blocking syscall on the daemon's event loop.
+ */
+async function homeForUser(user: string): Promise<string | null> {
   try {
-    const passwd = readFileSync("/etc/passwd", "utf-8");
+    const passwd = await readFile("/etc/passwd", "utf-8");
     const line = passwd.split("\n").find((l) => l.startsWith(`${user}:`));
     const home = line?.split(":")[5];
     if (home) return home;
@@ -83,14 +97,14 @@ function homeForUser(user: string): string | null {
     ignore(`resolve home for ${user} via /etc/passwd`, err);
   }
   try {
-    const out = R.process.spawnSync(["dscl", ".", "-read", `/Users/${user}`, "NFSHomeDirectory"]).stdout.trim();
+    const out = (await R.process.capture(["dscl", ".", "-read", `/Users/${user}`, "NFSHomeDirectory"])).stdout.trim();
     const m = out.match(/NFSHomeDirectory:\s*(.+)/);
     if (m?.[1]) return m[1].trim();
   } catch (err) {
     ignore(`resolve home for ${user} via dscl`, err);
   }
   try {
-    const out = R.process.spawnSync(["getent", "passwd", user]).stdout.trim();
+    const out = (await R.process.capture(["getent", "passwd", user])).stdout.trim();
     const home = out.split(":")[5];
     if (home) return home;
   } catch (err) {
@@ -187,9 +201,9 @@ export async function selfHealLinger(): Promise<boolean> {
   if (process.platform !== "linux") return false;
   // systemd started us — linger is already on (or deliberately managed).
   if (process.env.INVOCATION_ID) return false;
-  const target = targetUserContext();
+  const target = await targetUserContext();
   const unit = join(userUnitDir(target.home), "pboss.service");
-  if (!existsSync(unit)) return false; // nothing to start at boot yet
+  if (!(await pathExists(unit))) return false; // nothing to start at boot yet
   const on = await enableLinger(target.user);
   if (on) {
     console.log(
@@ -209,15 +223,15 @@ export class StartupManager {
     // Resolved per install mode (see install-mode.ts):
     //   compiled → [<pboss binary>, "__daemon"]   (no Bun needed)
     //   script   → [<bun>, "run", <daemon.ts>]    (Bun required)
-    const daemonCmd = daemonSpawnCommand();
+    const daemonCmd = await daemonSpawnCommand();
 
     switch (os) {
       case "linux":
-        return this.generateSystemd(daemonCmd);
+        return await this.generateSystemd(daemonCmd);
       case "darwin":
-        return this.generateLaunchd(daemonCmd);
+        return await this.generateLaunchd(daemonCmd);
       case "win32":
-        return this.generateWindows(daemonCmd);
+        return await this.generateWindows(daemonCmd);
       default:
         throw new Error(`Unsupported platform: ${os}`);
     }
@@ -232,15 +246,15 @@ export class StartupManager {
    * processes (and anything they shell out to by name) inherit the unit's
    * PATH and a `bun`-by-name lookup inside a worker must resolve.
    */
-  private servicePath(targetHome?: string): string {
+  private async servicePath(targetHome?: string): Promise<string> {
     const parts: string[] = [];
     if (targetHome) {
       const userBunBin = join(targetHome, ".bun", "bin");
-      if (existsSync(userBunBin)) parts.push(userBunBin);
+      if (await pathExists(userBunBin)) parts.push(userBunBin);
     }
     parts.push("/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin");
     if (!IS_COMPILED) {
-      const bun = findBun();
+      const bun = await findBun();
       if (bun) {
         const bunDir = dirname(bun);
         if (!parts.includes(bunDir)) parts.push(bunDir);
@@ -249,7 +263,7 @@ export class StartupManager {
     return parts.join(":");
   }
 
-  private generateWindows(daemonCmd: string[]): string {
+  private async generateWindows(daemonCmd: string[]): Promise<string> {
     const taskName = "PBOSS_Daemon";
     // What install() actually registers: the hidden wscript launcher (the
     // VBS is generated into the pboss home by the same command), not the
@@ -263,9 +277,10 @@ export class StartupManager {
     // which is wrong for a per-user daemon (its state lives in the creating
     // user's %USERPROFILE%\.pboss).
     const trValue = ["wscript.exe", "//B", quoteWindowsToken(windowsDaemonLauncherPath())].join(" ");
-    const resurrectCmd = cliSpawnCommand("resurrect").join(" ");
+    const resurrectCmd = (await cliSpawnCommand("resurrect")).join(" ");
+    const installMode = await installModeDescription();
     return `# PBOSS Windows Startup Configuration
-# Install mode: ${installModeDescription()}
+# Install mode: ${installMode}
 # Daemon command (started hidden by the launcher): ${daemonCmd.join(" ")}
 #
 # To install as a Scheduled Task that starts automatically on user logon —
@@ -296,7 +311,7 @@ export class StartupManager {
 `;
   }
 
-  private generateSystemd(daemonCmd: string[]): string {
+  private async generateSystemd(daemonCmd: string[]): Promise<string> {
     const execStart = daemonCmd.join(" ");
     // --wait: poll for the ExecStart daemon instead of spawning a competing
     // one (resurrect's auto-spawn raced ExecStart for the socket; the loser
@@ -304,11 +319,11 @@ export class StartupManager {
     // quickly"). 10s is generous for a compiled binary to bind its socket;
     // it also keeps each FAILED start cycle short, which matters for the
     // start-rate limiter below.
-    const execStartPost = cliSpawnCommand("resurrect", "--wait", "10").join(" ");
-    const execReload = cliSpawnCommand("reload", "all").join(" ");
-    const execStop = cliSpawnCommand("kill").join(" ");
-    const target = targetUserContext();
-    const unitPath = this.servicePath(target.home);
+    const execStartPost = (await cliSpawnCommand("resurrect", "--wait", "10")).join(" ");
+    const execReload = (await cliSpawnCommand("reload", "all")).join(" ");
+    const execStop = (await cliSpawnCommand("kill")).join(" ");
+    const target = await targetUserContext();
+    const unitPath = await this.servicePath(target.home);
     const serviceDir = userUnitDir(target.home);
 
     // A USER unit: no User= directive (it runs as the owning user), and
@@ -362,8 +377,9 @@ WantedBy=default.target
 `;
 
     const servicePath = join(serviceDir, "pboss.service");
+    const installMode = await installModeDescription();
     return `# PBOSS Systemd Service (per-user — no root required)
-# Install mode: ${installModeDescription()}
+# Install mode: ${installMode}
 # Runs as user: ${target.user} (home: ${target.home})
 # Save to: ${servicePath}
 # Or install it directly with:  ${startupInstallHint()}
@@ -379,14 +395,15 @@ WantedBy=default.target
 ${unit}`;
   }
 
-  private generateLaunchd(daemonCmd: string[]): string {
+  private async generateLaunchd(daemonCmd: string[]): Promise<string> {
     const programArgs = daemonCmd
       .map((arg) => `         <string>${escapeXml(arg)}</string>`)
       .join("\n");
     // LaunchAgents are per-user — the agent targets the invoking user's
     // home (SUDO_USER-aware only so legacy sudo runs keep sane paths).
-    const target = targetUserContext();
+    const target = await targetUserContext();
     const home = target.home;
+    const svcPath = await this.servicePath(home);
 
     const plist = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -409,7 +426,7 @@ ${programArgs}
     <key>EnvironmentVariables</key>
     <dict>
         <key>PATH</key>
-        <string>${escapeXml(this.servicePath(home))}</string>
+        <string>${escapeXml(svcPath)}</string>
         <key>HOME</key>
         <string>${escapeXml(home)}</string>
         <key>PBOSS_HOME</key>
@@ -421,7 +438,7 @@ ${programArgs}
     const plistPath = `${home}/Library/LaunchAgents/com.pboss.daemon.plist`;
 
     return `# PBOSS LaunchAgent (macOS)
-# Install mode: ${installModeDescription()}
+# Install mode: ${await installModeDescription()}
 # Runs as user: ${target.user}
 # Save to: ${plistPath}
 # Or install it directly with:  ${startupInstallHint()}
@@ -453,7 +470,7 @@ ${plist}`;
       // invoking user's manager. Tell the legacy habit to re-run plain.
       assertNotUnderSudo();
 
-      const target = targetUserContext();
+      const target = await targetUserContext();
       const servicePath = join(userUnitDir(target.home), "pboss.service");
 
       const unitStart = content.indexOf("[Unit]");
@@ -479,7 +496,7 @@ ${plist}`;
     } else if (os === "darwin") {
       // LaunchAgents are per-user and need no root.
       assertNotUnderSudo();
-      const target = targetUserContext();
+      const target = await targetUserContext();
       const plistPath = join(target.home, "Library", "LaunchAgents", "com.pboss.daemon.plist");
       // Extract plist content
       const plistStart = content.indexOf("<?xml");
@@ -515,7 +532,7 @@ ${plist}`;
       // Scheduler permissions required. Only when BOTH mechanisms fail is
       // this an error — thrown, so the CLI exits nonzero and installers
       // stop printing success banners for a machine with no persistence.
-      const daemonCmd = daemonSpawnCommand();
+      const daemonCmd = await daemonSpawnCommand();
       const taskName = "PBOSS_Daemon";
 
       // Hidden launcher: Windows boot persistence (task and Run key) can
@@ -734,7 +751,7 @@ ${plist}`;
       windowsDaemonLauncherPath(),
       buildWindowsDaemonLauncherVbs(
         daemonCmd,
-        cliSpawnCommand("resurrect", "--wait", "15"),
+        await cliSpawnCommand("resurrect", "--wait", "15"),
         DAEMON_OUT_LOG_FILE,
         DAEMON_ERR_LOG_FILE,
         RESURRECT_OUT_LOG_FILE,
@@ -749,7 +766,7 @@ ${plist}`;
     if (os === "linux") {
       // The unit is per-user — removing it is the user's own operation.
       assertNotUnderSudo();
-      const target = targetUserContext();
+      const target = await targetUserContext();
       const servicePath = join(userUnitDir(target.home), "pboss.service");
 
       // Stop with --no-block + our own bounded wait: a plain `systemctl stop`
@@ -770,7 +787,7 @@ ${plist}`;
       const disable = await runSystemctl(["disable", "pboss"], { user: true });
       if (disable.code !== 0) ignore("systemctl --user disable pboss (uninstall)", disable.err);
       try {
-        rmSync(servicePath, { force: true });
+        await rm(servicePath, { force: true });
       } catch (err) {
         ignore(`rm ${servicePath} (uninstall)`, err);
       }
@@ -780,7 +797,7 @@ ${plist}`;
       return "PBOSS service removed";
     } else if (os === "darwin") {
       assertNotUnderSudo();
-      const target = targetUserContext();
+      const target = await targetUserContext();
       const plistPath = join(target.home, "Library", "LaunchAgents", "com.pboss.daemon.plist");
 
       try { await R.process.capture(["launchctl", "unload", plistPath]); } catch (err) { ignore(`launchctl unload ${plistPath} (uninstall)`, err); }
@@ -828,9 +845,9 @@ ${plist}`;
       // persistence that references it, so ~/.pboss never carries a stale
       // script whose baked paths went stale after a reinstall elsewhere.
       const launcherPath = windowsDaemonLauncherPath();
-      if (existsSync(launcherPath)) {
+      if (await pathExists(launcherPath)) {
         try {
-          rmSync(launcherPath, { force: true });
+          await rm(launcherPath, { force: true });
           lines.push(`Hidden daemon launcher removed (${WINDOWS_DAEMON_LAUNCHER_NAME}).`);
         } catch (err) {
           ignore("remove daemon-launch.vbs (uninstall)", err);
@@ -857,7 +874,7 @@ ${plist}`;
    */
   async status(opts: { unitDir?: string } = {}): Promise<string> {
     const os = process.platform;
-    const target = targetUserContext();
+    const target = await targetUserContext();
     const unitDir = opts.unitDir ?? userUnitDir(target.home);
     // The pboss home the daemon actually uses: an explicit PBOSS_HOME env
     // wins (the daemon started under it honors the same pointer), else the
@@ -869,14 +886,14 @@ ${plist}`;
     if (os === "linux") {
       const unitPath = join(unitDir, "pboss.service");
       const wantsPath = join(unitDir, "default.target.wants", "pboss.service");
-      installed = existsSync(unitPath);
+      installed = await pathExists(unitPath);
 
       lines.push("Boot startup service (systemd, per-user)");
       lines.push(`  Service:    ${unitPath}`);
       lines.push(`  Installed:  ${installed ? "yes" : "no"}`);
       if (installed) {
         lines.push(
-          existsSync(wantsPath)
+          (await pathExists(wantsPath))
             ? "  Enabled:    yes — starts with your session (default.target)"
             : "  Enabled:    no — run:  systemctl --user enable pboss"
         );
@@ -899,7 +916,7 @@ ${plist}`;
       }
     } else if (os === "darwin") {
       const plistPath = join(target.home, "Library", "LaunchAgents", "com.pboss.daemon.plist");
-      installed = existsSync(plistPath);
+      installed = await pathExists(plistPath);
       lines.push("Boot startup service (launchd)");
       lines.push(`  Service:    ${plistPath}`);
       lines.push(`  Installed:  ${installed ? "yes" : "no"}`);
@@ -926,14 +943,15 @@ ${plist}`;
       lines.push(
         `  Run key:    ${WINDOWS_RUN_KEY}\\PBOSS_Daemon — ${runKeyInstalled ? "installed" : "not installed"}`
       );
+      const launcherPresent = await pathExists(windowsDaemonLauncherPath());
       lines.push(
         `  Launcher:   ${windowsDaemonLauncherPath()} — ${
-          existsSync(windowsDaemonLauncherPath()) ? "present" : "missing"
+          launcherPresent ? "present" : "missing"
         }`
       );
       lines.push(
         installed
-          ? existsSync(windowsDaemonLauncherPath())
+          ? launcherPresent
             ? "  Installed:  yes — the daemon starts at your logon and resurrects saved processes"
             : "  Installed:  yes — the daemon starts at your logon (launcher missing: no hidden boot, no auto-resurrect)"
           : "  Installed:  no"
@@ -962,7 +980,7 @@ ${plist}`;
 
     // What a reboot restores — from the auto-saved dump.
     const dumpPath = join(pbossHome, "dump.json");
-    const summary = dumpBootSummary(pbossHome);
+    const summary = await dumpBootSummary(pbossHome);
     lines.push("");
     lines.push("Reboot persistence:");
     lines.push(`  Dump:       ${dumpPath}`);
@@ -1199,11 +1217,11 @@ export interface DumpBootSummary {
  * entries with stopped === true come back stopped, everything else comes
  * back running. Returns null when there is no dump (nothing started yet).
  */
-export function dumpBootSummary(pbossHome: string): DumpBootSummary | null {
+export async function dumpBootSummary(pbossHome: string): Promise<DumpBootSummary | null> {
   try {
     const dumpPath = join(pbossHome, "dump.json");
-    if (!existsSync(dumpPath)) return null;
-    const parsed = JSON.parse(readFileSync(dumpPath, "utf-8"));
+    if (!(await pathExists(dumpPath))) return null;
+    const parsed = JSON.parse(await readFile(dumpPath, "utf-8"));
     if (!Array.isArray(parsed)) return null;
     let running = 0;
     let stopped = 0;
@@ -1244,16 +1262,16 @@ export async function bootServiceInstalled(
 ): Promise<BootServicePresence> {
   const os = process.platform;
   if (os === "linux") {
-    const unitDir = opts.unitDir ?? userUnitDir(targetUserContext().home);
+    const unitDir = opts.unitDir ?? userUnitDir((await targetUserContext()).home);
     return {
-      installed: existsSync(join(unitDir, "pboss.service")),
+      installed: await pathExists(join(unitDir, "pboss.service")),
       howToInstall: startupInstallHint(),
     };
   }
   if (os === "darwin") {
-    const home = targetUserContext().home;
+    const home = (await targetUserContext()).home;
     return {
-      installed: existsSync(join(home, "Library", "LaunchAgents", "com.pboss.daemon.plist")),
+      installed: await pathExists(join(home, "Library", "LaunchAgents", "com.pboss.daemon.plist")),
       howToInstall: startupInstallHint(),
     };
   }

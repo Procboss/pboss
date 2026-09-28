@@ -16,8 +16,7 @@
 
 import { join } from "path";
 import { ALL_DIRS, PBOSS_HOME } from "./constants";
-import { mkdir } from "fs/promises";
-import { chmodSync, readFileSync } from "fs";
+import { mkdir, readFile, chmod } from "fs/promises";
 import { ignore } from "./error-handling";
 import { totalmem, freemem, loadavg, platform, hostname, uptime } from "node:os";
 import { getRuntime } from "./runtime";
@@ -31,9 +30,9 @@ export const DUMP_FILE = join(PBOSS_HOME, "dump.json");
  * fleet's first process — the moment the persistence onboarding hint
  * becomes relevant.
  */
-export function dumpEntryCount(): number {
+export async function dumpEntryCount(): Promise<number> {
   try {
-    const parsed = JSON.parse(readFileSync(DUMP_FILE, "utf-8"));
+    const parsed = JSON.parse(await readFile(DUMP_FILE, "utf-8"));
     return Array.isArray(parsed) ? parsed.length : 0;
   } catch (err) {
     ignore("count dump entries", err);
@@ -60,10 +59,10 @@ export async function ensureDirs() {
  * (or by a mode-ignoring filesystem): best-effort, never fatal. Unix only —
  * Windows named pipes carry their own ACLs.
  */
-export function tightenPbossHomeMode(): void {
+export async function tightenPbossHomeMode(): Promise<void> {
   if (process.platform === "win32") return;
   try {
-    chmodSync(PBOSS_HOME, 0o700);
+    await chmod(PBOSS_HOME, 0o700);
   } catch {
     // Not ours to fix (shared dir, exotic fs) — the mkdir mode already
     // covers fresh installs; a deliberate override stays deliberate.
@@ -163,10 +162,10 @@ export function parseEnvFile(text: string): Record<string, string> {
  * be hijacked. An
  * unreadable/missing file contributes nothing and never blocks a spawn.
  */
-export function readEnvFileOverrides(cwd?: string): Record<string, string> {
+export async function readEnvFileOverrides(cwd?: string): Promise<Record<string, string>> {
   const dir = cwd && cwd.trim() !== "" ? cwd : process.cwd();
   try {
-    return parseEnvFile(readFileSync(join(dir, ".env"), "utf8"));
+    return parseEnvFile(await readFile(join(dir, ".env"), "utf8"));
   } catch {
     return {};
   }

@@ -128,13 +128,13 @@ describe("parseEnvFile (dotenv subset)", () => {
 describe("readEnvFileOverrides", () => {
   test("missing dir / missing file contributes nothing", async () => {
     const { readEnvFileOverrides } = await import("../src/utils");
-    expect(readEnvFileOverrides(join(ROOT, "nope"))).toEqual({});
+    expect(await readEnvFileOverrides(join(ROOT, "nope"))).toEqual({});
   });
 
   test("reads the app dir's .env", async () => {
     const { readEnvFileOverrides } = await import("../src/utils");
     const { dir } = await makeAppDir("unit", "DATABASE_URL=postgres://real/db\n");
-    expect(readEnvFileOverrides(dir)).toEqual({ DATABASE_URL: "postgres://real/db" });
+    expect(await readEnvFileOverrides(dir)).toEqual({ DATABASE_URL: "postgres://real/db" });
   });
 });
 

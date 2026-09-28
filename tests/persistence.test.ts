@@ -267,15 +267,15 @@ describe("Persistence onboarding hint (PM2 contrast: pboss states its default)",
 
     // Absent → 0 (first-process condition true).
     await rm(TEST_HOME, { recursive: true, force: true });
-    expect(dumpEntryCount()).toBe(0);
+    expect(await dumpEntryCount()).toBe(0);
 
     // Two entries → 2.
     await mkdir(join(TEST_HOME, "logs"), { recursive: true });
     await writeFile(DUMP_FILE, JSON.stringify([{ stopped: false }, { stopped: true }]));
-    expect(dumpEntryCount()).toBe(2);
+    expect(await dumpEntryCount()).toBe(2);
 
     // Corrupt JSON → 0, never a throw.
     await writeFile(DUMP_FILE, "{not json");
-    expect(dumpEntryCount()).toBe(0);
+    expect(await dumpEntryCount()).toBe(0);
   });
 });

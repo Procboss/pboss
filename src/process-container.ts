@@ -230,7 +230,7 @@ export class ProcessContainer {
   }
 
   private async startFork(logPaths: { outFile: string; errFile: string }) {
-    const cmd = this.clusterManager.buildWorkerCommand(this.config);
+    const cmd = await this.clusterManager.buildWorkerCommand(this.config);
     const env: Record<string, string> = {
       ...(process.env as Record<string, string>),
       ...this.config.env,
@@ -238,7 +238,7 @@ export class ProcessContainer {
       // start-time snapshot — edit .env + `pboss restart` now actually
       // applies (see readEnvFileOverrides for the incident this fixes).
       // PBOSS_*/BM2_* below stay on top so .env cannot hijack pboss's own vars.
-      ...readEnvFileOverrides(this.config.cwd),
+      ...await readEnvFileOverrides(this.config.cwd),
       PBOSS_ID: String(this.id),
       PBOSS_NAME: this.name,
       PBOSS_EXEC_MODE: "fork",
@@ -275,7 +275,7 @@ export class ProcessContainer {
 
   private async startCluster(logPaths: { outFile: string; errFile: string }) {
     const workerId = parseInt(this.config.env?.PBOSS_INSTANCE_ID || this.config.env?.BM2_INSTANCE_ID || this.config.env?.NODE_APP_INSTANCE || "0") || 0;
-    const proc = this.clusterManager.spawnWorker(
+    const proc = await this.clusterManager.spawnWorker(
       this.config,
       workerId,
       this.config.instances,

@@ -20,7 +20,7 @@ import { METRICS_DIR } from "./constants";
 import { ignore } from "./error-handling";
 import { join } from "path";
 import pidusage from "pidusage";
-import { readdirSync } from "node:fs";
+import { readdir } from "node:fs/promises";
 import { getRuntime } from "./runtime";
 const R = getRuntime();
 
@@ -48,7 +48,7 @@ export class Monitor {
          
           // Count file descriptors
           try {
-            handles = readdirSync(`/proc/${pid}/fd`).length;
+            handles = (await readdir(`/proc/${pid}/fd`)).length;
           } catch (err) {
             // Expected when the process exits between the /proc reads.
             ignore(`read /proc/${pid}/fd (process may have exited)`, err);

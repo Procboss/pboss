@@ -40,7 +40,7 @@
  * License: GPL-3.0-only
  */
 
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
 import { ALERT_THRESHOLDS_FILE } from "./constants";
 import { ignore } from "./error-handling";
@@ -254,11 +254,10 @@ function mergeProcessThresholds(
  * missing file, partial JSON or wrong types all degrade to the defaults
  * (recorded, never thrown — alerting must not take the daemon down).
  */
-export function loadThresholdConfig(path = ALERT_THRESHOLDS_FILE): ThresholdConfig {
+export async function loadThresholdConfig(path = ALERT_THRESHOLDS_FILE): Promise<ThresholdConfig> {
   const base = DEFAULT_THRESHOLD_CONFIG;
   try {
-    if (!existsSync(path)) return base;
-    const raw = JSON.parse(readFileSync(path, "utf-8") as string) as Record<string, unknown>;
+    const raw = JSON.parse(await readFile(path, "utf-8") as string) as Record<string, unknown>;
     const overrides: Record<string, Partial<ProcessThresholds>> = {};
     if (raw.overrides && typeof raw.overrides === "object") {
       for (const [name, o] of Object.entries(raw.overrides as Record<string, unknown>)) {
@@ -288,16 +287,16 @@ export function loadThresholdConfig(path = ALERT_THRESHOLDS_FILE): ThresholdConf
 }
 
 /** Persist the full config (mkdir-safe, best-effort chmod like cloud.json). */
-export function saveThresholdConfig(
+export async function saveThresholdConfig(
   cfg: ThresholdConfig,
   path = ALERT_THRESHOLDS_FILE
-): void {
+): Promise<void> {
   try {
-    mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+    await mkdir(dirname(path), { recursive: true, mode: 0o700 });
   } catch {
-    // exists already — writeFileSync reports the honest error below
+    // exists already — writeFile reports the honest error below
   }
-  writeFileSync(path, JSON.stringify(cfg, null, 2));
+  await writeFile(path, JSON.stringify(cfg, null, 2));
 }
 
 /**
@@ -433,7 +432,12 @@ export class ThresholdMonitor {
   /** Last-seen samples per process name — lets us prune vanished state. */
   private seen = new Set<string>();
 
-  constructor(config: ThresholdConfig = loadThresholdConfig()) {
+  /**
+   * @param config pass `await loadThresholdConfig()` explicitly — the
+   * disk load is async; a bare `new ThresholdMonitor()` starts from the
+   * built-in defaults (call `updateConfig` after awaiting the load).
+   */
+  constructor(config: ThresholdConfig = DEFAULT_THRESHOLD_CONFIG) {
     this.config = config;
   }
 

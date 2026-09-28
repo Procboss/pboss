@@ -50,27 +50,27 @@ function ctx(overrides: Partial<ChannelContext> = {}): ChannelContext {
 }
 
 describe("channel stamp persistence", () => {
-  test("round-trips through ~/.pboss/channel.json", () => {
+  test("round-trips through ~/.pboss/channel.json", async () => {
     const file = join(home, "channel.json");
-    writeChannelStamp({ channel: "universal", by: "install.sh" }, file);
-    const stamp = readChannelStamp(file);
+    await writeChannelStamp({ channel: "universal", by: "install.sh" }, file);
+    const stamp = await readChannelStamp(file);
     expect(stamp?.channel).toBe("universal");
     expect(stamp?.by).toBe("install.sh");
   });
 
-  test("missing or corrupt stamp reads as null, never throws", () => {
-    expect(readChannelStamp(join(home, "nope.json"))).toBeNull();
+  test("missing or corrupt stamp reads as null, never throws", async () => {
+    expect(await readChannelStamp(join(home, "nope.json"))).toBeNull();
     const file = join(home, "channel.json");
     writeFileSync(file, "{not json");
-    expect(readChannelStamp(file)).toBeNull();
+    expect(await readChannelStamp(file)).toBeNull();
     writeFileSync(file, '{"nope": 1}');
-    expect(readChannelStamp(file)).toBeNull();
+    expect(await readChannelStamp(file)).toBeNull();
   });
 
-  test("writeChannelStamp creates the .pboss directory on demand", () => {
+  test("writeChannelStamp creates the .pboss directory on demand", async () => {
     const file = join(home, "nested", ".pboss", "channel.json");
-    writeChannelStamp({ channel: "npm", pm: "bun" }, file);
-    expect(readChannelStamp(file)?.channel).toBe("npm");
+    await writeChannelStamp({ channel: "npm", pm: "bun" }, file);
+    expect((await readChannelStamp(file))?.channel).toBe("npm");
   });
 });
 

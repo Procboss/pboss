@@ -210,21 +210,21 @@ describe("cloud config file", () => {
   // CLOUD_FILE is resolved at import time against the module's PBOSS_HOME,
   // so the round-trip runs against the module's own path (and cleans up).
 
-  test("save → load round-trip; clear removes", () => {
+  test("save → load round-trip; clear removes", async () => {
     const cfg = {
       cloudUrl: "https://procboss.com",
       serverId: "srv_abc",
       serverSecret: "pbs_secret",
       serverName: "prod-01",
     };
-    saveCloudConfig(cfg);
-    const loaded = loadCloudConfig();
+    await saveCloudConfig(cfg);
+    const loaded = await loadCloudConfig();
     expect(loaded).not.toBeNull();
     expect(loaded!.serverId).toBe("srv_abc");
     expect(loaded!.serverSecret).toBe("pbs_secret");
     expect(loaded!.cloudUrl).toBe("https://procboss.com");
-    clearCloudConfig();
-    expect(loadCloudConfig()).toBeNull();
+    await clearCloudConfig();
+    expect(await loadCloudConfig()).toBeNull();
   });
 
   test("resolveCloudUrl trims trailing slashes and honors override", async () => {
@@ -293,18 +293,18 @@ describe("resolveCloudUrl — bare hosts get a scheme", () => {
     expect(resolveCloudUrl("localhost:3000")).toBe("http://localhost:3000");
   });
 
-  test("loadCloudConfig heals a legacy scheme-less cloudUrl", () => {
-    saveCloudConfig({
+  test("loadCloudConfig heals a legacy scheme-less cloudUrl", async () => {
+    await saveCloudConfig({
       cloudUrl: "procboss.com",
       serverId: "srv_legacy",
       serverSecret: "pbs_legacy",
     });
-    const loaded = loadCloudConfig();
+    const loaded = await loadCloudConfig();
     expect(loaded).not.toBeNull();
     expect(loaded!.cloudUrl).toBe("https://procboss.com");
     expect(loaded!.serverId).toBe("srv_legacy");
-    clearCloudConfig();
-    expect(loadCloudConfig()).toBeNull();
+    await clearCloudConfig();
+    expect(await loadCloudConfig()).toBeNull();
   });
 });
 

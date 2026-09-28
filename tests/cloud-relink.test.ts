@@ -161,7 +161,7 @@ describe("CloudAgent.resumeFromDisk (the reinstall self-heal)", () => {
         home,
         `import { CloudAgent } from "${ROOT}/src/cloud";
          const agent = new CloudAgent(${PM_STUB});
-         const resumed = agent.resumeFromDisk();
+         const resumed = await agent.resumeFromDisk();
          console.log("__JSON__" + JSON.stringify({ resumed, status: agent.status() }));
          process.exit(0);`
       );
@@ -190,7 +190,7 @@ describe("CloudAgent.resumeFromDisk (the reinstall self-heal)", () => {
         home,
         `import { CloudAgent } from "${ROOT}/src/cloud";
          const agent = new CloudAgent(${PM_STUB});
-         const resumed = agent.resumeFromDisk();
+         const resumed = await agent.resumeFromDisk();
          console.log("__JSON__" + JSON.stringify({ resumed, status: agent.status() }));
          agent.stop({ revoke: false });
          process.exit(0);`
@@ -220,8 +220,9 @@ describe("CloudAgent.resumeFromDisk (the reinstall self-heal)", () => {
         home,
         `import { CloudAgent } from "${ROOT}/src/cloud";
          const agent = new CloudAgent(${PM_STUB});
-         agent.resumeFromDisk();
-         agent.resumeFromDisk(); // idempotent: must NOT stop/restart the loops
+         await agent.resumeFromDisk();
+         const again = await agent.resumeFromDisk(); // idempotent: must NOT stop/restart the loops
+         void again;
          console.log("__JSON__" + JSON.stringify(agent.status()));
          agent.stop({ revoke: false });
          process.exit(0);`
@@ -251,10 +252,10 @@ describe("CloudAgent.resumeFromDisk (the reinstall self-heal)", () => {
         home,
         `import { CloudAgent, loadCloudConfig } from "${ROOT}/src/cloud";
          const agent = new CloudAgent(${PM_STUB});
-         agent.resumeFromDisk();
+         await agent.resumeFromDisk();
          await agent.stop({ revoke: true }); // clears the credential file
-         const resumed = agent.resumeFromDisk();
-         console.log("__JSON__" + JSON.stringify({ resumed, file: loadCloudConfig() }));
+         const resumed = await agent.resumeFromDisk();
+         console.log("__JSON__" + JSON.stringify({ resumed, file: await loadCloudConfig() }));
          process.exit(0);`
       );
       expect(code).toBe(0);
@@ -274,10 +275,10 @@ describe("postinstall names a surviving cloud link", () => {
       const { code, out } = await runAgentSubprocess(
         home,
         `import { existingCloudLinkNote } from "${ROOT}/src/postinstall";
-         const empty = existingCloudLinkNote();
+         const empty = await existingCloudLinkNote();
          const fs = await import("node:fs");
          fs.writeFileSync(process.env.PBOSS_HOME + "/cloud.json", JSON.stringify({ cloudUrl: "https://procboss.com", serverId: "srv_note", serverSecret: "pbs_note", serverName: "note-box" }));
-         const found = existingCloudLinkNote();
+         const found = await existingCloudLinkNote();
          console.log("__JSON__" + JSON.stringify({ empty, found }));
          process.exit(0);`
       );

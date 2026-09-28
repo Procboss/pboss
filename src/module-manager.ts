@@ -16,11 +16,21 @@
 
 import path, { join } from "path";
 import { MODULE_DIR } from "./constants";
-import { existsSync, readdirSync, symlinkSync, cpSync, rmSync } from "fs";
+import { symlink, cp, rm, readdir, stat } from "fs/promises";
 import { findBun, findNpm } from "./install-mode";
 import type { ProcessManager } from "./process-manager";
 import { getRuntime } from "./runtime";
 const R = getRuntime();
+
+/** Async existence probe (stat — no sync syscalls on the daemon's loop). */
+async function pathExists(p: string): Promise<boolean> {
+  try {
+    await stat(p);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 export interface PBossModule {
   name: string;
@@ -48,20 +58,20 @@ export class ModuleManager {
       // Local path - symlink / junction / copy fallback
       try {
         const symlinkType = process.platform === "win32" ? "junction" : "dir";
-        symlinkSync(moduleNameOrPath, targetDir, symlinkType);
+        await symlink(moduleNameOrPath, targetDir, symlinkType);
       } catch {
-        cpSync(moduleNameOrPath, targetDir, { recursive: true });
+        await cp(moduleNameOrPath, targetDir, { recursive: true });
       }
     } else {
       // npm package — install with Bun when available, npm otherwise
       // (compiled standalone installs may not have a system Bun).
-      const [installer, installVerb] = resolveModuleInstaller();
+      const [installer, installVerb] = await resolveModuleInstaller();
       await R.process.capture([installer, installVerb, moduleNameOrPath], { cwd: MODULE_DIR });
     }
 
     // Install deps
-    if (existsSync(join(targetDir, "package.json"))) {
-      const [installer] = resolveModuleInstaller();
+    if (await pathExists(join(targetDir, "package.json"))) {
+      const [installer] = await resolveModuleInstaller();
       const proc = R.process.spawn([installer, "install"], {
         cwd: targetDir,
         stdout: "pipe", stderr: "pipe",
@@ -99,17 +109,17 @@ export class ModuleManager {
      this.modules.delete(name);
  
     const modPath = join(MODULE_DIR, name);
-    if (existsSync(modPath)) {
-      rmSync(modPath, { recursive: true, force: true });
+    if (await pathExists(modPath)) {
+      await rm(modPath, { recursive: true, force: true });
     }
    }
- 
+
    async loadAll(): Promise<void> {
-     if (!existsSync(MODULE_DIR)) return;
-     const entries = readdirSync(MODULE_DIR);
+     if (!(await pathExists(MODULE_DIR))) return;
+     const entries = await readdir(MODULE_DIR);
      for (const entry of entries) {
        const modPath = join(MODULE_DIR, entry);
-       if (existsSync(join(modPath, "package.json"))) {
+       if (await pathExists(join(modPath, "package.json"))) {
          await this.load(modPath);
        }
      }
@@ -131,8 +141,8 @@ export class ModuleManager {
  * Returns [executable, add-verb], e.g. ["/usr/local/bin/bun", "add"] or
  * ["/usr/bin/npm", "install"]. Throws a clear error when neither exists.
  */
-function resolveModuleInstaller(): [string, string] {
-  const bun = findBun();
+async function resolveModuleInstaller(): Promise<[string, string]> {
+  const bun = await findBun();
   if (bun) return [bun, "add"];
 
   const npm = findNpm();

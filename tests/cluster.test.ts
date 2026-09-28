@@ -113,46 +113,46 @@ describe("Cluster Utilities", () => {
   describe("Multi-Language and Binary Command Building", () => {
     const cm = new ClusterManager();
 
-    test("builds command for Go script", () => {
-      const cmd = cm.buildWorkerCommand(makeConfig("./main.go"));
+    test("builds command for Go script", async () => {
+      const cmd = await cm.buildWorkerCommand(makeConfig("./main.go"));
       expect(cmd[0]).toBe("go");
       expect(cmd[1]).toBe("run");
     });
 
-    test("builds command for Python script", () => {
-      const cmd = cm.buildWorkerCommand(makeConfig("./app.py"));
+    test("builds command for Python script", async () => {
+      const cmd = await cm.buildWorkerCommand(makeConfig("./app.py"));
       expect(cmd[0]).toMatch(/python/);
     });
 
-    test("builds command for Ruby script", () => {
-      const cmd = cm.buildWorkerCommand(makeConfig("./server.rb"));
+    test("builds command for Ruby script", async () => {
+      const cmd = await cm.buildWorkerCommand(makeConfig("./server.rb"));
       expect(cmd[0]).toBe("ruby");
     });
 
-    test("builds command for PHP script", () => {
-      const cmd = cm.buildWorkerCommand(makeConfig("./index.php"));
+    test("builds command for PHP script", async () => {
+      const cmd = await cm.buildWorkerCommand(makeConfig("./index.php"));
       expect(cmd[0]).toBe("php");
     });
 
-    test("builds command for Java JAR", () => {
-      const cmd = cm.buildWorkerCommand(makeConfig("./app.jar"));
+    test("builds command for Java JAR", async () => {
+      const cmd = await cm.buildWorkerCommand(makeConfig("./app.jar"));
       expect(cmd[0]).toBe("java");
       expect(cmd[1]).toBe("-jar");
     });
 
-    test("builds command for native standalone binary (no extension)", () => {
-      const cmd = cm.buildWorkerCommand(makeConfig("./my-compiled-go-binary"));
+    test("builds command for native standalone binary (no extension)", async () => {
+      const cmd = await cm.buildWorkerCommand(makeConfig("./my-compiled-go-binary"));
       expect(cmd[0]).toContain("my-compiled-go-binary");
     });
 
-    test("builds command with custom interpreter like node or deno", () => {
-      const cmd = cm.buildWorkerCommand(makeConfig("./server.js", { interpreter: "node", interpreterArgs: ["--max-old-space-size=2048"] }));
+    test("builds command with custom interpreter like node or deno", async () => {
+      const cmd = await cm.buildWorkerCommand(makeConfig("./server.js", { interpreter: "node", interpreterArgs: ["--max-old-space-size=2048"] }));
       expect(cmd[0]).toBe("node");
       expect(cmd[1]).toBe("--max-old-space-size=2048");
     });
 
-    test("builds command for direct binary when interpreter is 'none'", () => {
-      const cmd = cm.buildWorkerCommand(makeConfig("./service", { interpreter: "none" }));
+    test("builds command for direct binary when interpreter is 'none'", async () => {
+      const cmd = await cm.buildWorkerCommand(makeConfig("./service", { interpreter: "none" }));
       expect(cmd[0]).toContain("service");
     });
   });

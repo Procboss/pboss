@@ -24,13 +24,18 @@
  * Runtime detection here follows the architecture: the runtime EXECUTING
  * pboss decides; nothing is persisted, and the installer never chooses.
  *
+ * All filesystem access in this module is ASYNC (node:fs/promises — shared
+ * code that Bun and Deno implement natively themselves, the same rule the
+ * sync node:fs uses) so interpreter resolution never blocks the event loop
+ * of the daemon performing it.
+ *
  * https://procboss.com
  * License: GPL-3.0-only
  */
 
 import { join, dirname, win32 as pathWin32 } from "path";
 import { createRequire } from "node:module";
-import { existsSync, statSync } from "fs";
+import { stat, readFile } from "fs/promises";
 import { homedir } from "os";
 import { ignore } from "./error-handling";
 import { getRuntime } from "./runtime";
@@ -60,6 +65,24 @@ export const PBOSS_EXECUTABLE: string = process.execPath;
 /** The runtime executing pboss right now. */
 export const RUNTIME_NAME: RuntimeName = getRuntime().name;
 
+/** True when the file is TypeScript (run through tsx/strip-types on Node). */
+export function isTypeScriptFile(script: string): boolean {
+  const ext = script.slice(script.lastIndexOf(".") + 1).toLowerCase();
+  return ["ts", "tsx", "jsx", "mts"].includes(ext);
+}
+
+/**
+ * Does `path` exist and name a regular file? Async stat, never throws.
+ */
+async function isFile(path: string): Promise<boolean> {
+  try {
+    return (await stat(path)).isFile();
+  } catch {
+    // missing/unreadable candidate is normal, not an error
+    return false;
+  }
+}
+
 /**
  * Locate the system Bun runtime.
  *
@@ -79,23 +102,26 @@ export const RUNTIME_NAME: RuntimeName = getRuntime().name;
  * Returns null when no Bun exists — only acceptable when `IS_COMPILED` is
  * true (the embedded runtime covers pboss itself, but not user scripts).
  */
-export function findBun(): string | null {
+export async function findBun(): Promise<string | null> {
   const candidates = bunSearchCandidates({
     whichResult: getRuntime().misc.which("bun") ?? undefined,
     home: process.env.HOME || homedir(),
     bunInstall: process.env.BUN_INSTALL,
     platform: process.platform,
   });
-  for (const candidate of candidates) {
-    try {
-      // throwIfNoEntry: false — a missing candidate is normal, not an error.
-      const st = statSync(candidate, { throwIfNoEntry: false });
-      if (st?.isFile()) return candidate;
-    } catch (err) {
-      ignore(`stat Bun candidate ${candidate}`, err);
-    }
-  }
-  return null;
+  return firstExistingFile(candidates);
+}
+
+/**
+ * Async first-match over ordered candidates — every candidate is statted
+ * in parallel (no serialization), and the first existing one in CANDIDATE
+ * ORDER wins, preserving the documented discovery priority.
+ */
+async function firstExistingFile(candidates: string[]): Promise<string | null> {
+  const hits = await Promise.all(
+    candidates.map(async (candidate) => ((await isFile(candidate)) ? candidate : null))
+  );
+  return hits.find((h): h is string => h !== null) ?? null;
 }
 
 /** Input for bunSearchCandidates — every field is injectable for tests. */
@@ -169,8 +195,8 @@ export function bunSearchDescription(): string {
  * would fail even though findBun() can resolve the absolute path. Returns
  * true when PATH was amended.
  */
-export function enrichPathWithBun(): boolean {
-  const bun = findBun();
+export async function enrichPathWithBun(): Promise<boolean> {
+  const bun = await findBun();
   if (!bun) return false;
 
   const dir = dirname(bun);
@@ -188,22 +214,13 @@ export function enrichPathWithBun(): boolean {
  * Locate the system Deno runtime (for running TS workers when Bun is
  * absent). Same PATH-plus-well-known-locations rule as findBun.
  */
-export function findDeno(): string | null {
+export async function findDeno(): Promise<string | null> {
   const R = getRuntime();
   const candidates = [
     R.misc.which("deno"),
     join(process.env.HOME || homedir(), ".deno", "bin", process.platform === "win32" ? "deno.exe" : "deno"),
-  ];
-  for (const candidate of candidates) {
-    if (!candidate) continue;
-    try {
-      const st = statSync(candidate, { throwIfNoEntry: false });
-      if (st?.isFile()) return candidate;
-    } catch (err) {
-      ignore(`stat Deno candidate ${candidate}`, err);
-    }
-  }
-  return null;
+  ].filter((c): c is string => !!c);
+  return firstExistingFile(candidates);
 }
 
 /**
@@ -211,20 +228,14 @@ export function findDeno(): string | null {
  * runtime is available). `process.execPath` is Node itself when pboss runs
  * under Node.
  */
-export function findNode(): string | null {
+export async function findNode(): Promise<string | null> {
   if (RUNTIME_NAME === "node") return PBOSS_EXECUTABLE;
   const R = getRuntime();
   const candidate = R.misc.which("node");
   if (candidate) return candidate;
-  try {
-    // process.execPath under Bun IS bun, not node — only trust which().
-    const fallback = join("/usr/local/bin", process.platform === "win32" ? "node.exe" : "node");
-    const st = statSync(fallback, { throwIfNoEntry: false });
-    if (st?.isFile()) return fallback;
-  } catch (err) {
-    ignore("stat node fallback candidate", err);
-  }
-  return null;
+  // process.execPath under Bun IS bun, not node — only trust which().
+  const fallback = join("/usr/local/bin", process.platform === "win32" ? "node.exe" : "node");
+  return (await isFile(fallback)) ? fallback : null;
 }
 
 /**
@@ -251,39 +262,117 @@ export function findNpm(): string | null {
   return getRuntime().misc.which("npm");
 }
 
+/** Where a usable tsx was found — see findTsx for the routes. */
+export type TsxSource = "app" | "path" | "pboss";
+
+/** A resolved tsx runner: the exact interpreter prefix for a TS worker. */
+export interface TsxResolution {
+  /**
+   * The command prefix in front of the script: `[node, <tsx cli>]` for
+   * package resolutions (works everywhere — spawning node with a real .mjs
+   * argument needs no shell and no shim), or `[<tsx>]` for a direct
+   * executable on POSIX PATH (its shebang re-execs node itself).
+   */
+  cmd: string[];
+  /** Which route found it. */
+  source: TsxSource;
+}
+
 /**
- * The interpreter command prefix for a JS/TS worker script when the user did
- * not choose one explicitly. Preference order (the established pboss
- * behavior first, then every other TS-native runtime, then Node's type
- * stripping):
+ * Locate a usable tsx (https://github.com/privatenumber/tsx) for running
+ * TypeScript under Node — Node's own `--experimental-strip-types` handles
+ * only erasable syntax, while tsx runs full TypeScript (enums, namespaces,
+ * decorators, tsconfig paths). Searched in order:
  *
- *   1. Bun   — `bun run` (TS-native; pboss's original worker runtime)
- *   2. Deno  — `deno run -A` (TS-native)
- *   3. Node  — plain for .js/.mjs/.cjs; `--experimental-strip-types` for
- *              .ts/.tsx/.jsx on Node ≥ 22.6
+ *   1. app-local  — tsx in the worker's own node_modules (the app picked
+ *                   its version; resolved through Node resolution from the
+ *                   script's directory)
+ *   2. PATH       — a real `tsx` executable on PATH. POSIX only: npm's
+ *                   Windows shims are .cmd files that cannot be spawned
+ *                   without a shell (route 3 covers Windows installs).
+ *   3. pboss      — the tsx pboss itself ships as an optionalDependency
+ *                   (resolved through pboss's own node_modules, next to
+ *                   the installed package)
  *
- * Throws an actionable error when nothing can run the script — the message
- * names what was searched, exactly like the old Bun-only error did.
+ * Returns null when no tsx is usable — the caller falls back to Node's
+ * type stripping. Never throws: a broken resolution is just a miss.
  */
-export function resolveScriptInterpreter(script: string): string[] {
-  const bun = findBun();
-  if (bun) return [bun, "run"];
+export async function findTsx(
+  node: string,
+  script: string
+): Promise<TsxResolution | null> {
+  // 1. App-local devDependency — the app's own version wins.
+  const appTsx = await tsxFromModuleGraph(join(dirname(script), "pboss-probe.js"), node);
+  if (appTsx) return { cmd: appTsx, source: "app" };
 
-  const deno = findDeno();
-  if (deno) return [deno, "run", "-A"];
-
-  const node = findNode();
-  if (node) {
-    const ext = script.slice(script.lastIndexOf(".") + 1).toLowerCase();
-    if (["ts", "tsx", "jsx", "mts"].includes(ext)) {
-      // Verified lazily by the caller (nodeSupportsTypeStripping) — this
-      // function stays synchronous; the flag is always safe to pass on
-      // Node ≥ 22.6 and on newer Node it is a no-op.
-      return [node, "--experimental-strip-types"];
-    }
-    return [node];
+  // 2. Real executable on PATH (POSIX; a shebang script re-execs node).
+  if (process.platform !== "win32") {
+    const onPath = getRuntime().misc.which("tsx");
+    if (onPath) return { cmd: [onPath], source: "path" };
   }
 
+  // 3. pboss's own optionalDependency.
+  const pbossTsx = await tsxFromModuleGraph(import.meta.url, node);
+  if (pbossTsx) return { cmd: pbossTsx, source: "pboss" };
+
+  return null;
+}
+
+/**
+ * `[node, <tsx cli>]` for a tsx package resolvable from `fromFile`'s
+ * directory — or null. Reads the package's bin field (string or object
+ * form) so the CLI entry is whatever that tsx version actually ships.
+ */
+async function tsxFromModuleGraph(
+  fromFile: string,
+  node: string
+): Promise<string[] | null> {
+  try {
+    const req = createRequire(fromFile);
+    const pkgJsonPath = req.resolve("tsx/package.json");
+    const pkgDir = dirname(pkgJsonPath);
+    const pkg = JSON.parse(
+      new TextDecoder().decode(await readFile(pkgJsonPath))
+    ) as { bin?: string | Record<string, string> };
+    // bin: "./dist/cli.mjs" | { tsx: "./dist/cli.mjs" }
+    const binRel = typeof pkg.bin === "string" ? pkg.bin : pkg.bin?.tsx;
+    if (!binRel) return null;
+    const cli = join(pkgDir, binRel);
+    if (!(await isFile(cli))) return null;
+    // The cli must actually run under the node we resolved — a missing node
+    // (checked by the caller before us) makes this whole route pointless.
+    if (!(await isFile(node))) return null;
+    return [node, cli];
+  } catch (err) {
+    // Unresolvable, unreadable, or not tsx-shaped — a miss, not an error.
+    ignore(`resolve tsx from ${fromFile}`, err);
+    return null;
+  }
+}
+
+/**
+ * The pure decision half of resolveScriptInterpreter: given the discovered
+ * runtimes (and tsx, when a Node is in play), pick the interpreter prefix.
+ * Separated from the I/O so the chain is unit-testable on machines where a
+ * fixed system location hides the "no bun" case from a live probe.
+ */
+export function decideScriptInterpreter(
+  script: string,
+  found: { bun: string | null; deno: string | null; node: string | null; tsx: TsxResolution | null }
+): string[] {
+  if (found.bun) return [found.bun, "run"];
+  if (found.deno) return [found.deno, "run", "-A"];
+  if (found.node) {
+    if (isTypeScriptFile(script)) {
+      // tsx runs FULL TypeScript under Node — enums, namespaces, decorators,
+      // tsconfig paths — everything strip-types rejects. Use it whenever a
+      // usable copy exists; the stripping flag remains the zero-dependency
+      // fallback (verified by the caller via nodeSupportsTypeStripping).
+      if (found.tsx) return found.tsx.cmd;
+      return [found.node, "--experimental-strip-types"];
+    }
+    return [found.node];
+  }
   throw new Error(
     `Cannot run "${script}": no JavaScript/TypeScript runtime was found on this system. ` +
       `Looked for Bun (${bunSearchDescription()}), Deno (PATH, ~/.deno/bin) and Node (PATH). ` +
@@ -294,13 +383,42 @@ export function resolveScriptInterpreter(script: string): string[] {
 }
 
 /**
+ * The interpreter command prefix for a JS/TS worker script when the user did
+ * not choose one explicitly. Preference order (the established pboss
+ * behavior first, then every other TS-native runtime, then Node):
+ *
+ *   1. Bun   — `bun run` (TS-native; pboss's original worker runtime)
+ *   2. Deno  — `deno run -A` (TS-native)
+ *   3. Node  — plain for .js/.mjs/.cjs; for .ts/.tsx/.jsx/.mts, tsx when
+ *              usable (app-local, on PATH, or shipped with pboss), else
+ *              `--experimental-strip-types` on Node ≥ 22.6
+ *
+ * Throws an actionable error when nothing can run the script — the message
+ * names what was searched, exactly like the old Bun-only error did.
+ */
+export async function resolveScriptInterpreter(script: string): Promise<string[]> {
+  const bun = await findBun();
+  if (bun) return [bun, "run"];
+
+  const deno = await findDeno();
+  if (deno) return [deno, "run", "-A"];
+
+  const node = await findNode();
+  if (!node) {
+    return decideScriptInterpreter(script, { bun, deno, node, tsx: null });
+  }
+  const tsx = isTypeScriptFile(script) ? await findTsx(node, script) : null;
+  return decideScriptInterpreter(script, { bun, deno, node, tsx });
+}
+
+/**
  * The `bun` executable to use for spawning pboss source files (bun script
  * installs only). Prefers the resolved system Bun; throws with a clear
  * message if it is missing, because a bun script install cannot work
  * without it.
  */
-function requireBun(): string {
-  const bun = findBun();
+async function requireBun(): Promise<string> {
+  const bun = await findBun();
   if (!bun) {
     throw new Error(
       "The system Bun runtime is required for this script install of pboss " +
@@ -320,11 +438,11 @@ function requireBun(): string {
  *          falls back to resolving the package layout for library users
  *   deno → Deno.mainModule (npm: cached file)
  */
-export function currentEntryPath(): string | null {
+export async function currentEntryPath(): Promise<string | null> {
   const R = getRuntime();
   const main = R.misc.mainPath();
   if (main) {
-    if (existsSync(main)) return main;
+    if (await isFile(main)) return main;
     // A bun build --compile binary reports a $bunfs path — IS_COMPILED
     // covers that before we get here, but stay honest if it slips through.
     if (main.includes("$bunfs")) return null;
@@ -336,12 +454,12 @@ export function currentEntryPath(): string | null {
     try {
       const req = createRequire(import.meta.url ?? `${process.cwd()}/`);
       const resolved = req.resolve("pboss/dist/cli.js");
-      if (resolved && existsSync(resolved)) return resolved;
+      if (resolved && (await isFile(resolved))) return resolved;
     } catch (err) {
       ignore("resolve pboss/dist/cli.js for daemon entry", err);
     }
   }
-  return main && existsSync(main) ? main : null;
+  return main && (await isFile(main)) ? main : null;
 }
 
 /**
@@ -354,20 +472,20 @@ export function currentEntryPath(): string | null {
  *  - node:      `[<node>, <dist entry>, "__daemon"]`
  *  - deno:      `[<deno>, "run", "-A", <dist entry>, "__daemon"]`
  */
-export function daemonSpawnCommand(): string[] {
+export async function daemonSpawnCommand(): Promise<string[]> {
   if (IS_COMPILED) {
     return [PBOSS_EXECUTABLE, "__daemon"];
   }
 
   const R = getRuntime();
   if (R.name === "bun") {
-    const bun = requireBun();
+    const bun = await requireBun();
     const daemonScript = join(import.meta.dir, "daemon.ts");
-    if (existsSync(daemonScript)) {
+    if (await isFile(daemonScript)) {
       return [bun, "run", daemonScript];
     }
     const entry = R.misc.mainPath();
-    if (entry && existsSync(entry)) {
+    if (entry && (await isFile(entry))) {
       return [bun, "run", entry, "__daemon"];
     }
     throw new Error(
@@ -375,7 +493,7 @@ export function daemonSpawnCommand(): string[] {
     );
   }
 
-  const entry = currentEntryPath();
+  const entry = await currentEntryPath();
   if (!entry) {
     throw new Error(
       `Cannot locate the pboss entry module to start the daemon under ${R.name} — reinstall pboss.`
@@ -391,26 +509,26 @@ export function daemonSpawnCommand(): string[] {
  * Spawn command that runs a pboss CLI subcommand (`resurrect`, `reload`,
  * `kill`, ...), honoring the installation mode and executing runtime.
  */
-export function cliSpawnCommand(...args: string[]): string[] {
+export async function cliSpawnCommand(...args: string[]): Promise<string[]> {
   if (IS_COMPILED) {
     return [PBOSS_EXECUTABLE, ...args];
   }
 
   const R = getRuntime();
   if (R.name === "bun") {
-    const bun = requireBun();
+    const bun = await requireBun();
     const cliEntry = join(import.meta.dir, "index.ts");
-    if (existsSync(cliEntry)) {
+    if (await isFile(cliEntry)) {
       return [bun, "run", cliEntry, ...args];
     }
     const entry = R.misc.mainPath();
-    if (entry && existsSync(entry)) {
+    if (entry && (await isFile(entry))) {
       return [bun, "run", entry, ...args];
     }
     throw new Error("Cannot locate the pboss CLI entry for this bun install — reinstall pboss.");
   }
 
-  const entry = currentEntryPath();
+  const entry = await currentEntryPath();
   if (!entry) {
     throw new Error(
       `Cannot locate the pboss entry module for a CLI spawn under ${R.name} — reinstall pboss.`
@@ -426,11 +544,11 @@ export function cliSpawnCommand(...args: string[]): string[] {
  * Human-readable description of the detected installation, used in startup
  * script comments so users can see why a config looks the way it does.
  */
-export function installModeDescription(): string {
+export async function installModeDescription(): Promise<string> {
   const R = getRuntime();
   const runtimeName = R.name === "node" ? "Node.js" : R.name === "deno" ? "Deno" : "Bun";
   if (IS_COMPILED) {
-    const hasBun = findBun() !== null;
+    const hasBun = (await findBun()) !== null;
     return hasBun
       ? `compiled standalone binary (${PBOSS_EXECUTABLE}) — the embedded Bun runtime is used; the system Bun is optional`
       : `compiled standalone binary (${PBOSS_EXECUTABLE}) — no system runtime required`;

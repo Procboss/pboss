@@ -382,7 +382,7 @@ describe("Windows Support & Cross-Platform Compatibility", () => {
         src.indexOf("async status(")
       );
       expect(uninstallSrc).toContain("windowsDaemonLauncherPath()");
-      expect(uninstallSrc).toContain("rmSync");
+      expect(uninstallSrc).toContain("await rm(");
       expect(uninstallSrc).toContain(WINDOWS_DAEMON_LAUNCHER_NAME);
     });
   });
@@ -523,7 +523,7 @@ describe("Windows Support & Cross-Platform Compatibility", () => {
   });
 
   describe("ClusterManager on Windows", () => {
-    test("builds worker command with python on Windows", () => {
+    test("builds worker command with python on Windows", async () => {
       const cm = new ClusterManager();
       const origPlatform = process.platform;
       Object.defineProperty(process, "platform", { value: "win32", configurable: true });
@@ -548,14 +548,14 @@ describe("Windows Support & Cross-Platform Compatibility", () => {
           restartDelay: 0,
         };
 
-        const cmd = cm.buildWorkerCommand(config);
+        const cmd = await cm.buildWorkerCommand(config);
         expect(cmd[0]).toBe("python");
       } finally {
         Object.defineProperty(process, "platform", { value: origPlatform, configurable: true });
       }
     });
 
-    test("builds worker command with cmd.exe for .bat and .cmd on Windows", () => {
+    test("builds worker command with cmd.exe for .bat and .cmd on Windows", async () => {
       const cm = new ClusterManager();
       const config: ProcessDescription = {
         id: 0,
@@ -576,12 +576,12 @@ describe("Windows Support & Cross-Platform Compatibility", () => {
         restartDelay: 0,
       };
 
-      const cmd = cm.buildWorkerCommand(config);
+      const cmd = await cm.buildWorkerCommand(config);
       expect(cmd[0]).toBe("cmd.exe");
       expect(cmd[1]).toBe("/c");
     });
 
-    test("builds worker command with powershell.exe for .ps1 on Windows", () => {
+    test("builds worker command with powershell.exe for .ps1 on Windows", async () => {
       const cm = new ClusterManager();
       const config: ProcessDescription = {
         id: 0,
@@ -602,12 +602,12 @@ describe("Windows Support & Cross-Platform Compatibility", () => {
         restartDelay: 0,
       };
 
-      const cmd = cm.buildWorkerCommand(config);
+      const cmd = await cm.buildWorkerCommand(config);
       expect(cmd[0]).toBe("powershell.exe");
       expect(cmd).toContain("-File");
     });
 
-    test("builds worker command with resolved bun for js/ts", () => {
+    test("builds worker command with resolved bun for js/ts", async () => {
       const cm = new ClusterManager();
       const config: ProcessDescription = {
         id: 0,
@@ -628,7 +628,7 @@ describe("Windows Support & Cross-Platform Compatibility", () => {
         restartDelay: 0,
       };
 
-      const cmd = cm.buildWorkerCommand(config);
+      const cmd = await cm.buildWorkerCommand(config);
       // Interpreter is resolved to the absolute system Bun path (works under
       // minimal-PATH environments like systemd).
       const bunPath = Bun.which("bun")!;
@@ -921,14 +921,15 @@ describe("Windows Support & Cross-Platform Compatibility", () => {
       expect(checked).toBeGreaterThan(10);
     });
 
-    test("isDaemonAlive's socket check is stat-based (existsSync), not open-based", () => {
+    test("isDaemonAlive's socket check is stat-based (async stat), not open-based", () => {
       const src = readFileSync(join(import.meta.dir, "..", "src", "api.ts"), "utf8");
       const alive = src.slice(
         src.indexOf("async isDaemonAlive()"),
-        src.indexOf("async isDaemonAlive()") + 1400
+        src.indexOf("async isDaemonAlive()") + 1600
       );
-      expect(alive).toContain("existsSync(DAEMON_SOCKET)");
+      expect(alive).toContain("await stat(DAEMON_SOCKET)");
       expect(alive).not.toContain("Bun.file(DAEMON_SOCKET)");
+      expect(alive).not.toContain("filesystem.exists(DAEMON_SOCKET)");
     });
 
     test("launchDaemon re-probes before spawning (logon-task race guard)", () => {

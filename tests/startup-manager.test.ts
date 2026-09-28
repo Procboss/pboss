@@ -568,18 +568,18 @@ describe("StartupManager.status() — the read-only boot-persistence report", ()
     }
   );
 
-  test("dumpBootSummary counts running vs stopped and tolerates junk", () => {
+  test("dumpBootSummary counts running vs stopped and tolerates junk", async () => {
     const pbossHome = mkdtempSync(join(tmpdir(), "pboss-dumpsum-"));
     try {
       // No dump → null.
-      expect(dumpBootSummary(pbossHome)).toBeNull();
+      expect(await dumpBootSummary(pbossHome)).toBeNull();
 
       // The argument is the pboss home (the dir that CONTAINS dump.json).
       writeFileSync(
         join(pbossHome, "dump.json"),
         JSON.stringify([{ stopped: true }, { stopped: false }, {}, null, "junk"])
       );
-      const summary = dumpBootSummary(pbossHome)!;
+      const summary = (await dumpBootSummary(pbossHome))!;
       expect(summary.total).toBe(5);
       // stopped:true counts stopped; false/missing/non-objects count running.
       expect(summary.stopped).toBe(1);
@@ -587,7 +587,7 @@ describe("StartupManager.status() — the read-only boot-persistence report", ()
 
       // Corrupt JSON → null, never a throw.
       writeFileSync(join(pbossHome, "dump.json"), "{broken");
-      expect(dumpBootSummary(pbossHome)).toBeNull();
+      expect(await dumpBootSummary(pbossHome)).toBeNull();
     } finally {
       rmSync(pbossHome, { recursive: true, force: true });
     }

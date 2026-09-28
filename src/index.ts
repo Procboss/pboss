@@ -531,7 +531,7 @@ export class PBossCLI {
     const ext = firstPositional ? extname(firstPositional) : "";
     // Read BEFORE the start: an empty dump means this is the fleet's first
     // process — the one moment the persistence onboarding hint matters.
-    const wasEmptyFleet = dumpEntryCount() === 0;
+    const wasEmptyFleet = (await dumpEntryCount()) === 0;
 
     try {
       if (
@@ -2010,7 +2010,7 @@ Examples:
             console.log(colorize("Usage: pboss cloud deploy <owner/name> [--targets id1,id2]", "yellow"));
             process.exit(1);
           }
-          const cred = loadCloudUser();
+          const cred = await loadCloudUser();
           if (!cred) {
             console.log(colorize("Not logged in — run `pboss login` first (deploys are a user action).", "yellow"));
             process.exit(1);
@@ -2171,7 +2171,7 @@ ${colorize("Notes:", "dim")}
     }
     try {
       const cloudUrl = resolveCloudUrl(url);
-      const existing = loadCloudUser();
+      const existing = await loadCloudUser();
       if (existing) {
         const me = await cloudUserMe(existing);
         if (me) {
@@ -2180,7 +2180,7 @@ ${colorize("Notes:", "dim")}
           );
           return;
         }
-        clearCloudUser(); // revoked server-side — treat as logged out
+        await clearCloudUser(); // revoked server-side — treat as logged out
       }
 
       console.log(colorize("☁  ProcBoss Cloud — user login", "cyan"));
@@ -2204,7 +2204,7 @@ ${colorize("Notes:", "dim")}
       if (claim.scope !== "user") {
         throw new Error("the cloud returned a server credential — this flow is `pboss cloud connect`, not a user login");
       }
-      saveCloudUser({
+      await saveCloudUser({
         cloudUrl,
         token: claim.token,
         tokenName: claim.tokenName,
@@ -2225,13 +2225,13 @@ ${colorize("Notes:", "dim")}
   }
 
   async cmdLogout() {
-    const cred = loadCloudUser();
+    const cred = await loadCloudUser();
     if (!cred) {
       console.log(colorize("Not logged in.", "yellow"));
       return;
     }
     const revoked = await cloudUserRevoke(cred);
-    clearCloudUser();
+    await clearCloudUser();
     console.log(
       colorize(
         revoked
@@ -2243,7 +2243,7 @@ ${colorize("Notes:", "dim")}
   }
 
   async cmdWhoami() {
-    const cred = loadCloudUser();
+    const cred = await loadCloudUser();
     if (!cred) {
       console.log(colorize("Not logged in — run `pboss login`.", "yellow"));
       process.exit(1);
@@ -2278,7 +2278,7 @@ ${colorize("Notes:", "dim")}
     const channelOverride =
       channelFlagIdx !== -1 ? args[channelFlagIdx + 1] : undefined;
 
-    let ctx: ChannelContext = currentChannelContext();
+    let ctx: ChannelContext = await currentChannelContext();
     if (channelOverride) {
       const valid: InstallChannel[] = [
         "universal",
@@ -2298,7 +2298,7 @@ ${colorize("Notes:", "dim")}
         process.exit(1);
       }
       // The override is a repair, not a one-off: remember it.
-      writeChannelStamp({
+      await writeChannelStamp({
         channel: channelOverride as InstallChannel,
         by: "pboss upgrade --channel",
         stampedAt: Math.floor(Date.now() / 1000),
@@ -2584,8 +2584,8 @@ ${colorize("Notes:", "dim")}
   async cmdDaemon(args: string[]) {
     const subCmd = args[0];
 
-    const daemonStatus = () => {
-      if (this.pboss.isDaemonRunning()) {
+    const daemonStatus = async () => {
+      if (await this.pboss.isDaemonRunning()) {
         console.log(colorize("running", "green"));
       } else {
         console.error(colorize("stopped", "red"));
@@ -2595,7 +2595,7 @@ ${colorize("Notes:", "dim")}
 
     switch (subCmd) {
       case "status":
-        daemonStatus();
+        await daemonStatus();
         break;
       case "start":
         await this.pboss.startDaemon();
@@ -2944,7 +2944,7 @@ ${colorize("Notes:", "dim")}
       case "runtime":
         console.log(`Runtime: ${runtimeDisplayName(R.name)}`);
         console.log(`Version: ${R.misc.runtimeVersion()}`);
-        console.log(`Install: ${installModeDescription()}`);
+        console.log(`Install: ${await installModeDescription()}`);
         break;
       case "__daemon":
       case "daemon-server": {

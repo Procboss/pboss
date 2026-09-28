@@ -134,36 +134,36 @@ describe("device flow — user scope (pboss login)", () => {
 });
 
 describe("user credential file (cloud-user.json)", () => {
-  test("round-trips and is written 0600", () => {
-    auth.saveCloudUser({
+  test("round-trips and is written 0600", async () => {
+    await auth.saveCloudUser({
       cloudUrl: "http://example.test",
       token: "pbu_xyz",
       tokenName: "cli@test",
       user: { email: "a@b.c", name: "A", handle: null, provider: "github" },
     });
-    const loaded = auth.loadCloudUser();
+    const loaded = await auth.loadCloudUser();
     expect(loaded?.token).toBe("pbu_xyz");
     expect(loaded?.user.email).toBe("a@b.c");
     const mode = statSync(CLOUD_USER_FILE).mode & 0o777;
     expect(mode).toBe(0o600);
   });
 
-  test("corrupt or partial files read as logged-out, never throw", () => {
+  test("corrupt or partial files read as logged-out, never throw", async () => {
     writeFileSync(CLOUD_USER_FILE, "{broken json");
-    expect(auth.loadCloudUser()).toBeNull();
+    expect(await auth.loadCloudUser()).toBeNull();
     writeFileSync(CLOUD_USER_FILE, JSON.stringify({ cloudUrl: "x" }));
-    expect(auth.loadCloudUser()).toBeNull();
+    expect(await auth.loadCloudUser()).toBeNull();
   });
 
-  test("clearCloudUser removes the file", () => {
-    auth.saveCloudUser({
+  test("clearCloudUser removes the file", async () => {
+    await auth.saveCloudUser({
       cloudUrl: "http://x",
       token: "pbu_t",
       tokenName: "cli",
       user: { email: "e@x", name: "E", handle: null, provider: "github" },
     });
-    auth.clearCloudUser();
-    expect(auth.loadCloudUser()).toBeNull();
+    await auth.clearCloudUser();
+    expect(await auth.loadCloudUser()).toBeNull();
   });
 });
 

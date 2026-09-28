@@ -26,7 +26,7 @@
  * License: GPL-3.0-only
  */
 
-import { mkdirSync, appendFileSync, existsSync } from "node:fs";
+import { mkdir, appendFile } from "node:fs/promises";
 import { join } from "path";
 import { CRON_FILE, CRON_LOG_DIR, CRON_LATE_WINDOW_MS, CRON_WATCHDOG_INTERVAL_MS } from "./constants";
 import { warn } from "./error-handling";
@@ -109,7 +109,7 @@ export class CronJobManager {
   // ── persistence ──────────────────────────────────────────────────────────
 
   async load(): Promise<void> {
-    if (!existsSync(CRON_FILE)) return;
+    if (!(await R.filesystem.exists(CRON_FILE))) return;
     try {
       const data = JSON.parse(await R.filesystem.readText(CRON_FILE));
       if (!Array.isArray(data)) return;
@@ -381,8 +381,8 @@ export class CronJobManager {
     let exitCode: number | null = null;
 
     try {
-      mkdirSync(CRON_LOG_DIR, { recursive: true });
-      appendFileSync(
+      await mkdir(CRON_LOG_DIR, { recursive: true });
+      await appendFile(
         logFile,
         `[${stamp(started)}] ▶ pboss cron "${job.name}" (${job.schedule})${TWO_SP}cwd: ${job.cwd}\n`
       );
@@ -409,14 +409,14 @@ export class CronJobManager {
       });
       exitCode = await proc.exited;
 
-      appendFileSync(
+      await appendFile(
         logFile,
         `[${stamp(Date.now())}] ✔ exit code ${exitCode ?? "?"} after ${((Date.now() - started) / 1000).toFixed(1)}s\n`
       );
     } catch (err: any) {
       job.lastError = err?.message ?? String(err);
       try {
-        appendFileSync(logFile, `[${stamp(Date.now())}] ✖ spawn failed: ${job.lastError}\n`);
+        await appendFile(logFile, `[${stamp(Date.now())}] ✖ spawn failed: ${job.lastError}\n`);
       } catch (logErr) {
         // The cron execution log itself is unwritable — job.lastError above
         // still carries the failure, and this is now visible too.
