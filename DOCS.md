@@ -109,7 +109,7 @@ ProcBoss (pboss) is a production-grade, runtime-agnostic process manager for Bun
 
 **Core Process Management** — Start, stop, restart, reload, delete, and scale with automatic restart on crash, configurable restart strategies, memory-limit restarts, and tree killing.
 
-**Cluster Mode** — Multiple instances with per-worker environment injection, automatic port assignment, and `PBOSS_WORKER_ID` / `NODE_APP_INSTANCE` conventions.
+**Cluster Mode** — Multiple instances with per-worker environment injection and `PBOSS_WORKER_ID` / `NODE_APP_INSTANCE` conventions; Node apps cluster through `node:cluster` with one shared port.
 
 **Zero-Downtime Reload** — The new process starts before the old one stops — no dropped requests.
 
@@ -279,16 +279,20 @@ pboss startup install
 ## Runtime Support
 
 ProcBoss gives **Bun, Node.js, and Deno first-class support** — it runs natively
-on all three, and JS/TS apps resolve their runner per machine in the order
-`bun run` → `deno run -A` → `node` (TypeScript under Node through
+on all three, and an app whose runtime is **not stated** inherits the main
+runtime running pboss (owner rule, 2026-09-29): pboss under Bun runs the app
+with `bun run`, pboss under Node with `node` (TypeScript through
 [tsx](https://github.com/privatenumber/tsx), which pboss ships as an optional
 dependency; `--experimental-strip-types` on Node ≥ 22.6 is the zero-dependency
-fallback).
+fallback), pboss under Deno with `deno run -A`. A compiled standalone install
+has no JS runtime of its own, so those discover one per machine in the order
+`bun run` → `deno run -A` → `node`. Stating a runtime with `--interpreter`
+always wins.
 
-| Runtime / Language | File Extension | Auto-detected Runner | Example |
+| Runtime / Language | File Extension | Runner when unstated | Example |
 |---|---|---|---|
-| **TypeScript / JSX** | `.ts`, `.tsx`, `.jsx`, `.mts` | `bun run <file>` → `deno run -A` → `node` via tsx / `--experimental-strip-types` | `pboss start server.ts` |
-| **JavaScript** | `.js`, `.mjs`, `.cjs` | `bun run <file>` → `deno run -A` → `node <file>` | `pboss start app.js` |
+| **TypeScript / JSX** | `.ts`, `.tsx`, `.jsx`, `.mts` | main runtime — `bun run` / `deno run -A` / `node` via tsx / `--experimental-strip-types`; compiled installs: `bun run` → `deno run -A` → `node` | `pboss start server.ts` |
+| **JavaScript** | `.js`, `.mjs`, `.cjs` | main runtime — `bun run` / `deno run -A` / `node`; compiled installs: `bun run` → `deno run -A` → `node <file>` | `pboss start app.js` |
 | **Node.js (pinned)** | `.js` | `node <file>` (via `--interpreter`) | `pboss start app.js --interpreter node` |
 | **Custom Interpreter** | *any* | Custom runtime via `--interpreter` | `pboss start app.ts --interpreter "deno run -A"` |
 
@@ -410,7 +414,7 @@ pboss start server.ts --name api --wait-ready --listen-timeout 10000
 | `--cron <expression>` | Cron expression for scheduled restarts | — |
 | `--watch` | Enable file watching | `false` |
 | `--ignore-watch <dirs>` | Directories to ignore | `node_modules,.git` |
-| `--port <n>` | Base port (auto-incremented in cluster mode) | — |
+| `--port <n>` | Base port — shared by every node:cluster worker; auto-incremented per instance in the process-based model | — |
 | `--namespace <ns>` | Process namespace for grouping | — |
 | `--on-ns-member-exit <policy>` | Reaction to a namespace sibling's terminal exit: `ignore` (default) or `exit` | `ignore` |
 | `--wait-ready` | Wait for process ready signal | `false` |
@@ -786,33 +790,55 @@ pboss reset all
 
 ### Cluster Mode
 
-Cluster mode spawns multiple instances of your application, each running in its own process. This is ideal for CPU-bound workloads and for taking full advantage of multi-core servers.
+Cluster mode runs multiple instances of your application. Which clustering model you get depends on the app's runtime:
+
+| App runtime | Model | Ports |
+|---|---|---|
+| **Node.js** | **`node:cluster`** — one supervised primary process forks the N workers | **shared** — the primary distributes connections (every platform) |
+| Bun / Deno / anything else | process-based — N independent supervised processes | `basePort + workerId` (via `--port`), or `reusePort: true` in Bun apps to share |
+
+#### Node apps cluster through `node:cluster`
+
+A Node script can only be clustered by Node's own cluster API — so when the app's runtime is Node and `--instances` is greater than 1, pboss spawns a single Node primary that forks the workers with `cluster.fork()`. This holds even when pboss itself runs under Bun or Deno: the clustering is delegated to a Node process, and pboss supervises that one process. Each worker gets the standard identity env and — unlike the process-based model — the **same `PORT`**: the primary shares the listening socket across workers, round-robin, on every platform. No `SO_REUSEPORT`, none of the macOS/Windows caveats below.
 
 ```bash
-pboss start server.ts --name api --instances max
+pboss start server.js --name api --instances max --interpreter node --port 3000
 ```
+
+`pboss list` shows the app as **one** process (the primary's PID); the workers live under it. pboss supervises the primary, the primary supervises the workers:
+
+- A crashed worker is **respawned by the primary** (the delay doubles on fast crashes) — the app stays up, and pboss's restart accounting is untouched.
+- `pboss reload` sends the primary `SIGHUP`: workers are replaced **one at a time**, each replacement confirmed online before the old one retires — zero downtime. (Windows has no SIGHUP; there a reload restarts the group.)
+- `pboss stop` / `restart` / `delete` operate on the whole group — the primary tears its workers down with it.
+- `pboss scale api 8` — or a re-`start` with a different `--instances` — restarts the primary at the new worker count (v1: a brief roll, not a live resize).
+- Monitoring (`pboss list`, the dashboard) reports the **primary**; per-worker CPU/memory aggregation is not implemented yet.
+- TypeScript under cluster mode: Node ≥ 22.6 strips types (default-on on newer Node); full TypeScript needs the loader as an execArgv — `--node-args "--import tsx"` — because cluster workers inherit the primary's flags.
+
+#### Which runtime runs the app?
+
+- **Stated** — `--interpreter node|bun|deno` (or the ecosystem `interpreter` field): that runtime runs the app. Stated wins.
+- **Unstated** — the app inherits **the main runtime running pboss**: `bun run` under Bun, `node` under Node (TypeScript via tsx / type stripping), `deno run -A` under Deno.
+- **Compiled install** — no JS main runtime, so the machine chain picks: Bun → Deno → Node.
+
+#### Process-based instances (Bun / Deno / binaries)
 
 ```bash
 pboss start server.ts --name api --instances 4
-```
-
-```bash
 pboss start server.ts --name api --instances 4 --port 3000
 ```
 
-#### ⚠️ Current Status & Limitations
+Each instance is its own supervised process carrying `PBOSS_WORKER_ID` / `NODE_APP_INSTANCE` (and `PORT = basePort + workerId` when `--port` is set). `pboss list` shows one row per instance (`api-0`, `api-1`, …), and stopping one instance leaves the others untouched.
 
-While `pboss` provides the orchestration for clustering, please note that **Bun's native cluster implementation is currently limited by the underlying OS:**
+#### ⚠️ Port sharing on Bun (process-based model)
 
-* **Linux Only:** Port sharing via `reusePort` is only fully supported on **Linux**.
-* **macOS & Windows:** Due to OS-level limitations with `SO_REUSEPORT`, these platforms ignore the `reusePort` option. On these systems, clustering may result in "Address already in use" errors if attempting to bind multiple workers to the same port.
+While `pboss` provides the orchestration for clustering, **Bun's native port sharing is OS-limited**:
 
-`pboss` leverages the native [Bun.serve cluster logic](https://bun.sh/docs/api/http#cluster) to ensure maximum performance, but it remains subject to the runtime's maturity.
-
+* **Linux only:** the `reusePort` Bun.serve option is fully supported on **Linux**.
+* **macOS & Windows:** OS-level `SO_REUSEPORT` limitations make these platforms ignore `reusePort` — binding multiple workers to one port can raise "Address already in use". Give each instance its own port (`--port`), or run the app as a Node cluster (shared port, every platform).
 
 #### Environment Variables
 
-Each cluster worker receives the following environment variables:
+Each worker receives the following environment variables:
 
 | Variable | Description |
 | --- | --- |
@@ -820,13 +846,11 @@ Each cluster worker receives the following environment variables:
 | `PBOSS_WORKER_ID` | Zero-indexed worker ID |
 | `PBOSS_INSTANCES` | Total number of instances |
 | `NODE_APP_INSTANCE` | Standard cluster worker index (`PBOSS_WORKER_ID`) |
-| `PORT` | `basePort + workerIndex` (if `--port` is specified) |
+| `PORT` | node:cluster workers: the **shared** base port. Process-based instances: `basePort + workerIndex` (when `--port` is set) |
 
----
+#### Example: Cluster-Aware Port Binding (Bun, process-based model)
 
-#### Example: Cluster-Aware Port Binding
-
-To enable clustering in Bun, you must explicitly set `reusePort: true`. This allows multiple processes to listen on the same port (on supported OSs).
+To share a port across Bun processes on Linux, set `reusePort: true`:
 
 ```typescript
 // server.ts
@@ -835,8 +859,7 @@ const port = parseInt(process.env.PORT || "3000");
 
 Bun.serve({
   port,
-  // Share the same port across multiple processes
-  // This is the important part!
+  // Share the same port across multiple processes (Linux)
   reusePort: true,
   fetch(req) {
     return new Response(`Hello from worker ${workerId} on port ${port}`);
@@ -845,7 +868,6 @@ Bun.serve({
 
 console.log(`Worker ${workerId} listening on :${port}`);
 ```
-
 ---
 
 ### Log Management

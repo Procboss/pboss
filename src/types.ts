@@ -170,6 +170,15 @@ export interface ProcessDescription {
   // Cluster specific
   clusterMode?: boolean;
   reusePort?: boolean;
+  /**
+   * True when the app runs as a node:cluster group (owner rule, 2026-09-29):
+   * instances > 1 AND the app's runtime is Node → ONE supervised container
+   * (a node primary wrapper) forks the N workers through node:cluster —
+   * the only clustering a Node script can use, and the only one that shares
+   * the listening port across workers. Unstated runtimes inherit the main
+   * runtime running pboss, so "is the app Node?" follows that resolution.
+   */
+  nodeCluster?: boolean;
   // Health check
   healthCheckUrl?: string;
   healthCheckInterval?: number;

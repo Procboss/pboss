@@ -29,8 +29,8 @@ The full documentation lives at [docs.procboss.com](https://docs.procboss.com)
 
 ## Highlights
 
-- **First-class Bun, Node.js, and Deno** — pboss runs natively on all three, and JS/TS apps resolve their runner per machine (`bun run` → `deno run -A` → `node`, TypeScript under Node through [tsx](https://github.com/privatenumber/tsx), which pboss ships as an optional dependency).
-- **Cluster mode** — N instances, per-worker env, automatic ports, zero-downtime rolling reloads.
+- **First-class Bun, Node.js, and Deno** — pboss runs natively on all three. An unstated app runtime inherits the main runtime running pboss (`bun run` under Bun, `node` under Node with TypeScript through [tsx](https://github.com/privatenumber/tsx), `deno run -A` under Deno); compiled installs fall back to discovering Bun → Deno → Node.
+- **Cluster mode** — N instances, per-worker env, zero-downtime rolling reloads; Node apps cluster through `node:cluster` with one shared port.
 - **Namespaces** — group processes (`--namespace my-app`) and operate on the group: `pboss restart my-app`, `pboss delete my-app` (confirmed; `--force` skips). Atomic startup with rollback ([#31](https://github.com/Procboss/pboss/issues/31)): a failed member rolls back only what that start brought up; members already running are never touched; namespace-less processes stay fully independent.
 - **Dependencies** ([#33](https://github.com/Procboss/pboss/issues/33)) — `dependsOn: ["postgres", "redis"]`: pboss resolves the graph (ProcBoss apps first, then systemd units like `postgresql.service`), starts stopped app dependencies recursively in topological order (independent branches concurrently), checks system services without ever managing them, refuses cycles upfront, rolls back only what an invocation started, and keeps boot recovery dependency-ordered. `pboss deps api` (and `--reverse`) inspects the graph; required/optional policies; failures are machine-readable on the API.
 - **Foreground mode** — `--no-daemon` blocks as PID 1, for Docker and Kubernetes.

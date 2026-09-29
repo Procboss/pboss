@@ -14,7 +14,12 @@
  */
 import type { ProcessDescription } from "./types";
 import { getCpuCount, readEnvFileOverrides } from "./utils";
-import { resolveScriptInterpreter, findBun } from "./install-mode";
+import {
+  resolveScriptInterpreter,
+  commandRuntime,
+  findBun,
+  nodeSupportsTypeStripping,
+} from "./install-mode";
 import { getRuntime } from "./runtime";
 import type { PBChild } from "./runtime";
 import path from "path"
@@ -103,7 +108,78 @@ export class ClusterManager {
      return cmd;
    }
 
-   async spawnWorker(
+   /**
+   * The command for a node:cluster app's PRIMARY wrapper (owner rule,
+   * 2026-09-29): `node [flags] <wrapper>`. The wrapper runs under the same
+   * Node — and the same node flags — the app's workers get, because
+   * cluster workers inherit the primary's execArgv: `--experimental-strip-types`
+   * and `--import tsx` propagate from here to every worker, while an
+   * argv-based tsx CLI cannot (its loader lives in argv, not execArgv).
+   *
+   * The interpreter route mirrors buildWorkerCommand exactly so a cluster
+   * app and a single instance of the same app resolve the same runtime.
+   */
+  async buildNodeClusterCommand(
+    config: ProcessDescription,
+    wrapperPath: string
+  ): Promise<string[]> {
+    let route: string[];
+    if (
+      config.interpreter &&
+      config.interpreter !== "none" &&
+      config.interpreter !== "binary" &&
+      config.interpreter !== "direct"
+    ) {
+      route = [config.interpreter];
+    } else {
+      route = await resolveScriptInterpreter(config.script);
+    }
+    if (commandRuntime(route) !== "node") {
+      // Defensive: the ProcessManager only sets nodeCluster after resolving
+      // the app runtime to Node. A config that reaches here anyway is a bug
+      // or a hand-edited dump — fail loudly instead of spawning a non-node
+      // primary for a node app.
+      throw new Error(
+        `node:cluster mode requires the app to run under Node (resolved: ${route.join(" ")}). ` +
+          "Remove nodeCluster from the saved process list or start the app with --interpreter node."
+      );
+    }
+
+    const [nodeBin, ...routeRest] = route;
+    const inheritedFlags: string[] = [];
+    let sawTsxCli = false;
+    for (const piece of routeRest) {
+      if (piece.startsWith("-")) {
+        inheritedFlags.push(piece); // --experimental-strip-types etc. — execArgv, propagates
+      } else {
+        sawTsxCli = true; // the tsx CLI is argv-based — cannot reach cluster workers
+      }
+    }
+    if (sawTsxCli) {
+      // tsx route: workers cannot inherit a CLI loader. Strip types covers
+      // every TS construct Node can strip when the Node supports it; full
+      // TS (enums, namespaces, decorators) needs the user's own execArgv:
+      //   pboss start app.ts --interpreter node --node-args "--import tsx"
+      if (await nodeSupportsTypeStripping(nodeBin!)) {
+        inheritedFlags.push("--experimental-strip-types");
+      } else {
+        throw new Error(
+          `Cannot cluster "${config.script}" under Node: the tsx loader cannot propagate to node:cluster workers ` +
+            "and this Node cannot strip types (Node < 22.6). " +
+            'Start it with --node-args "--import tsx" (Node 20.6+), a newer Node, or without cluster mode.'
+        );
+      }
+    }
+
+    const cmd = [nodeBin!];
+    if (config.interpreterArgs?.length) cmd.push(...config.interpreterArgs);
+    if (config.nodeArgs?.length) cmd.push(...config.nodeArgs);
+    cmd.push(...inheritedFlags);
+    cmd.push(wrapperPath);
+    return cmd;
+  }
+
+  async spawnWorker(
      config: ProcessDescription,
      workerId: number,
      totalWorkers: number,

@@ -30,6 +30,11 @@
  import { searchLogFiles, type LogSearchMatch } from "./log-manager";
  import { GracefulReload } from "./graceful-reload";
  import { parseMemory, DUMP_FILE } from "./utils";
+ import {
+   resolveScriptInterpreter,
+   commandRuntime,
+   isJsTsFile,
+ } from "./install-mode";
  import { ignore } from "./error-handling";
  import { EventEmitter } from "events";
  import {
@@ -603,6 +608,13 @@ const R = getRuntime();
 
     const resolvedInstances = this.clusterManager.resolveInstances(options.instances);
     const isCluster = options.execMode === "cluster" || resolvedInstances > 1;
+    // Owner rule (2026-09-29): a Node app in cluster mode / with instances > 1
+    // clusters through node:cluster — ONE supervised wrapper primary forks
+    // the N workers (shared port). Every other runtime keeps the
+    // process-based per-instance model. Only meaningful with more than one
+    // instance; a 1-instance "cluster" is just a fork.
+    const nodeCluster =
+      isCluster && resolvedInstances > 1 && (await this.usesNodeRuntime(options));
     const states: ProcessState[] = [];
 
     // Issue #31: validate the member-exit policy once, at the single
@@ -634,6 +646,23 @@ const R = getRuntime();
 
     const existing = this.findExistingProcesses(options, options.script);
     if (existing.length > 0) {
+      // node:cluster apps run as ONE wrapper container — a re-start with a
+      // different --instances resizes the worker count instead of adding
+      // sibling containers.
+      const nodeClusterApp = existing[0]!.config.nodeCluster === true;
+      const countChanged =
+        nodeClusterApp && existing[0]!.config.instances !== resolvedInstances;
+      // Whether the wrapper was already up BEFORE this invocation: a running
+      // app resized by a re-start must roll (below); a stopped one is simply
+      // (re)started by the resume loop at the new count — no second start.
+      const nodeClusterWasRunning = nodeClusterApp
+        ? (this.isRunningStatus(existing[0]!.status) ||
+           existing[0]!.status === "launching" ||
+           existing[0]!.status === "waiting-restart")
+        : false;
+      if (countChanged) {
+        existing[0]!.config.instances = resolvedInstances;
+      }
       // Issue #33: an all-running app keeps its no-op semantics — a
       // dependency check here would surprise-start unrelated stopped
       // dependencies on a resume no-op. Only a start that will ACTUALLY
@@ -680,7 +709,7 @@ const R = getRuntime();
         states.push(container.getState());
       }
 
-      if (isCluster && existing.length < resolvedInstances) {
+      if (isCluster && existing.length < resolvedInstances && !nodeClusterApp) {
         const baseName = options.name || path.basename(options.script).replace(/\.\w+$/, "") || `app-${this.nextId}`;
         for (let i = existing.length; i < resolvedInstances; i++) {
           const id = this.nextId++;
@@ -703,6 +732,15 @@ const R = getRuntime();
         }
       }
 
+      // A running node:cluster app resized by a re-start rolls its wrapper
+      // so the workers come back at the new count (v1: brief downtime during
+      // the roll — the wrapper respawns the new generation).
+      if (nodeClusterApp && countChanged && nodeClusterWasRunning) {
+        const target = existing[0]!;
+        await target.restart("user");
+        states[0] = target.getState();
+      }
+
       await this.persist();
       return states;
     }
@@ -715,31 +753,53 @@ const R = getRuntime();
     await this.dependencies.ensureForStart(targetName, dependsOn, inv);
 
     if (isCluster) {
-      // In cluster mode, each instance is a separate container
-      for (let i = 0; i < resolvedInstances; i++) {
-          
+      if (nodeCluster) {
+        // node:cluster model (owner rule, 2026-09-29): ONE container — the
+        // wrapper primary — carrying the instance count; the workers live
+        // under it, sharing the base port.
         const id = this.nextId++;
-        const name = resolvedInstances > 1 ? `${targetName}-${i}` : targetName;
-
-        const config = this.buildConfig(id, name, options, resolvedInstances, i);
-        
+        const config = this.buildConfig(id, targetName, options, resolvedInstances, 0);
+        config.nodeCluster = true;
         const container = this.attach(new ProcessContainer(
           id,
           config,
           this.logManager,
           this.clusterManager,
-          this.healthChecker, 
+          this.healthChecker,
           this.cronManager
         ));
-
         this.processes.set(id, container);
         await container.start();
         if (this.isRunningStatus(container.status)) {
           inv.startedByInvocation.push(container);
         }
         states.push(container.getState());
+      } else {
+        // Process-based model: in cluster mode, each instance is a separate container
+        for (let i = 0; i < resolvedInstances; i++) {
+
+          const id = this.nextId++;
+          const name = resolvedInstances > 1 ? `${targetName}-${i}` : targetName;
+
+          const config = this.buildConfig(id, name, options, resolvedInstances, i);
+
+          const container = this.attach(new ProcessContainer(
+            id,
+            config,
+            this.logManager,
+            this.clusterManager,
+            this.healthChecker,
+            this.cronManager
+          ));
+
+          this.processes.set(id, container);
+          await container.start();
+          if (this.isRunningStatus(container.status)) {
+            inv.startedByInvocation.push(container);
+          }
+          states.push(container.getState());
+        }
       }
-      
     } else {
       const id = this.nextId++;
       const name = targetName;
@@ -763,6 +823,31 @@ const R = getRuntime();
 
     await this.persist();
     return states;
+  }
+
+  /**
+   * Owner rule (2026-09-29): with cluster mode / instances > 1, an app whose
+   * runtime is Node must cluster through node:cluster. "The app's runtime is
+   * Node" means: stated (a node interpreter — "node", an absolute path,
+   * node.exe) or resolved — an unstated runtime inherits the main runtime
+   * running pboss first, then the machine chain on compiled installs, and
+   * lands on Node only when nothing earlier can run the script.
+   *
+   * Never true for non-JS/TS scripts (python/ruby/binaries): those keep the
+   * process-based per-instance model — node:cluster is meaningless to them.
+   */
+  private async usesNodeRuntime(options: StartOptions): Promise<boolean> {
+    if (options.interpreter) {
+      return commandRuntime([options.interpreter]) === "node";
+    }
+    if (!isJsTsFile(options.script)) return false;
+    try {
+      return commandRuntime(await resolveScriptInterpreter(options.script)) === "node";
+    } catch {
+      // Nothing on this machine can run the script — start() surfaces the
+      // actionable error at spawn time; nothing clusters meanwhile.
+      return false;
+    }
   }
 
   /**
@@ -1107,6 +1192,15 @@ const R = getRuntime();
      const first = containers[0]!;
      const baseName = first.name.replace(/-\d+$/, "");
      const currentCount = containers.length;
+   
+     // node:cluster apps are ONE wrapper container — "scale" sets the worker
+     // count and rolls the wrapper (v1: brief downtime during the roll).
+     if (first.config.nodeCluster) {
+       first.config.instances = Math.max(1, count);
+       await first.restart("user");
+       await this.persist();
+       return [first.getState()];
+     }
    
      if (count > currentCount) {
        // Scale up

@@ -111,6 +111,11 @@ describe("README.md: the untouched core contract survives removals", () => {
     expect(readme).toContain("**Node.js**\n\n```bash\nnpm install -g pboss\n```");
     expect(readme).toContain("**Bun**\n\n```bash\nbun install -g pboss\n```");
     expect(readme).toContain("**Deno**\n\n```bash\ndeno install -g -A npm:pboss\n```");
+    // 2026-09-29: the runtime-selection rule (node:cluster task) — unstated
+    // runtimes inherit the MAIN runtime running pboss; Node apps cluster
+    // through node:cluster with one shared port.
+    expect(readme).toContain("An unstated app runtime inherits the main runtime running pboss");
+    expect(readme).toContain("Node apps cluster through `node:cluster` with one shared port");
     expect(readme).toContain("## Quick Start");
     expect(readme).toContain("pboss start"); // the issue-#29 auto-detection story
     expect(readme).toContain("pboss upgrade --check");
