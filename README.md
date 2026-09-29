@@ -1,4 +1,4 @@
-# ⚡ ProcBoss (pboss)
+# ProcBoss (pboss)
 
 **A blazing-fast, runtime-agnostic process manager for Bun, Node.js, and Deno —
 native APIs per runtime, no compatibility layers — built for JavaScript and
