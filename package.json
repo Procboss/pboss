@@ -1,7 +1,7 @@
 {
         "name": "pboss",
         "version": "1.5.1",
-        "description": "A blazing-fast, runtime-agnostic process manager for Bun, Node.js, and Deno — native APIs per runtime, no compatibility layers — that also runs Go, Python, Rust, Ruby, PHP, Java, binaries, and shell scripts under one supervisor.",
+        "description": "A blazing-fast, runtime-agnostic process manager for Bun, Node.js, and Deno — native APIs per runtime, no compatibility layers — built for JavaScript and TypeScript backends.",
         "type": "module",
         "main": "dist/api.mjs",
         "module": "dist/api.mjs",

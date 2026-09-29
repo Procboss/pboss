@@ -64,6 +64,24 @@ describe("README.md: removed-at-the-owner's-request sections stay removed", () =
   });
 });
 
+describe("package.json: the npm-facing description matches the JS/TS focus", () => {
+  // 2026-09-29: the description still sold "that also runs Go, Python, Rust,
+  // Ruby, PHP, Java, binaries, and shell scripts under one supervisor" after
+  // the README/DOCS moved to the JS/TS backend focus — fixed before the 1.5.1
+  // publish. It now mirrors the README tagline verbatim.
+  const pkg = JSON.parse(
+    readFileSync(join(REPO, "package.json"), "utf8"),
+  ) as { description: string };
+
+  test("description is the README tagline (JS/TS focus, no multi-language copy)", () => {
+    expect(pkg.description).toBe(
+      "A blazing-fast, runtime-agnostic process manager for Bun, Node.js, and Deno — native APIs per runtime, no compatibility layers — built for JavaScript and TypeScript backends.",
+    );
+    expect(pkg.description).not.toContain("Go, Python");
+    expect(pkg.description).not.toContain("shell scripts under one supervisor");
+  });
+});
+
 describe("README.md: the untouched core contract survives removals", () => {
   test("Highlights keeps its head and tail — the removal was surgical", () => {
     expect(readme).toContain("## Highlights");
