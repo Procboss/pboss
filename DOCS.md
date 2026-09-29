@@ -1472,7 +1472,7 @@ Install the boot startup service:
 
 - **Linux:** writes and enables a **per-user systemd unit** (`~/.config/systemd/user/pboss.service`) and drives it with `systemctl --user` — no root, no sudo. After bring-up, pboss best-effort runs `loginctl enable-linger <user>` so the daemon starts at BOOT rather than at first login; where linger is refused, the install still succeeds and says so. The start is `--no-block` with a hard health deadline (unit state + socket ping), so `install` always returns — a failing daemon produces a diagnosis, never a hang. Under sudo it is rejected — root has no user systemd session.
 - **macOS:** writes and loads a `launchd` LaunchAgent (`~/Library/LaunchAgents/com.pboss.daemon.plist`). No root needed or wanted. The plist pins `PATH`, `HOME`, and `PBOSS_HOME` so the daemon resolves the same `~/.pboss` as your interactive commands.
-- **Windows:** registers a Scheduled Task (`PBOSS_Daemon`) starting the daemon at **this user's logon** via `Register-ScheduledTask` (RunLevel **Limited** — Highest would require an elevated shell to register; the daemon only needs the user's normal token). No elevation required. Hosts that deny even per-user task registration ("Access is denied") fall back to the **per-user Registry Run key** (`HKCU\Software\Microsoft\Windows\CurrentVersion\Run\PBOSS_Daemon`) — same logon trigger, zero Task Scheduler permissions; the install says which mechanism was used. Only when both fail does the command exit nonzero. The daemon is also started immediately (installers and `pboss upgrade` stop it before replacing the binary).
+- **Windows:** registers a Scheduled Task (`PBOSS_Daemon`) starting the daemon at **this user's logon** via `Register-ScheduledTask` (RunLevel **Limited** — Highest would require an elevated shell to register; the daemon only needs the user's normal token). No elevation required. Hosts that deny even per-user task registration ("Access is denied") fall back to the **per-user Registry Run key** (`HKCU\Software\Microsoft\Windows\CurrentVersion\Run\PBOSS_Daemon`) — same logon trigger, zero Task Scheduler permissions; the install says which mechanism was used. Only when both fail does the command exit nonzero. The daemon is also started immediately (`pboss upgrade` stops it before replacing the binary).
 
 The generated service runs as the invoking user and uses the same `~/.pboss` data as your daily `pboss` commands — never root's `/root/.pboss`.
 
@@ -1481,7 +1481,13 @@ The generated service runs as the invoking user and uses the same `~/.pboss` dat
 pboss startup install
 ```
 
-The generated file adapts to how pboss was installed: a **compiled standalone install** (one-line installer, built with `bun build --compile`) re-executes the pboss binary itself (`ExecStart=/home/you/.local/bin/pboss __daemon` — Bun is embedded, not required on the system); a **script install** (`bun add -g pboss`, npm) runs the source on the system Bun (`ExecStart=/home/you/.bun/bin/bun run .../daemon.ts`). The header comment states which mode was detected.
+The generated file adapts to how pboss was installed: a **script install** (`bun add -g pboss`, npm) runs the source on the system Bun (`ExecStart=/home/you/.bun/bin/bun run .../daemon.ts`). The header comment states which mode was detected.
+
+<!-- 2026-09-29: the compiled-standalone mode is hidden along with the universal
+     installer (JS/TS package-manager focus). Re-add when it returns: a **compiled
+     standalone install** (one-line installer, built with `bun build --compile`)
+     re-executes the pboss binary itself (`ExecStart=/home/you/.local/bin/pboss
+     __daemon` — Bun is embedded, not required on the system). -->
 
 The unit/agent `PATH` includes the target user's `~/.bun/bin` whenever it exists (workers that shell out to `bun` by name must resolve it), and the daemon self-heals its own `PATH` at startup — daemons started by **older** unit files also find Bun after an upgrade. See [Runtime discovery](#multi-language--runtime-support) for the full chain.
 
@@ -1716,21 +1722,25 @@ pboss logout                    # revokes the CLI token server-side (this device
 
 Revoking a server in the dashboard never logs you out of your CLI, and logging out never unlinks a server — each credential dies alone.
 
-The machine credential in `~/.pboss/cloud.json` is a **permanent cache**: it lives in the home directory, never inside the package, so reinstalls and upgrades leave it intact. Every daemon start resumes the link, installers report a detected link at install time, `pboss cloud status` picks one up even if it appeared after the daemon started, and `pboss upgrade` restarts the daemon and verifies the link came back before it exits.
+The machine credential in `~/.pboss/cloud.json` is a **permanent cache**: it lives in the home directory, never inside the package, so reinstalls and upgrades leave it intact. Every daemon start resumes the link, `pboss cloud status` picks one up even if it appeared after the daemon started, and `pboss upgrade` restarts the daemon and verifies the link came back before it exits.
 
 ### Updating pboss (pboss upgrade)
 
-`pboss upgrade` self-updates the CLI through the **same channel that installed it**, so a machine never accumulates two copies of pboss. The installers record their channel in `~/.pboss/channel.json` at install time, and the upgrade honors it:
+`pboss upgrade` self-updates the CLI through the **same channel that installed it**, so a machine never accumulates two copies of pboss. The channel is recorded in `~/.pboss/channel.json` at install time where the install method supports it, and the upgrade honors it:
 
 | Installed via | Upgrade runs |
 |---|---|
-| universal installer (curl \| bash / install.ps1) | the same installer, again — it's idempotent |
 | `npm i -g pboss` | `npm install -g pboss@latest` |
 | `bun add -g pboss` | `bun add -g pboss@latest` |
 | Homebrew | `brew upgrade pboss` |
 | snap | `sudo snap refresh pboss` |
 
-Machines installed before the stamp existed are covered by runtime detection from the executable's own location (`/usr/local/bin/pboss` or `~/.local/bin/pboss` → universal, `…/Cellar/pboss/…` → brew, `/snap/pboss/…` → snap, a `node_modules` path → npm/bun, a repo checkout → source). If the detection is wrong, `pboss upgrade --channel brew` repairs it and persists the answer.
+<!-- 2026-09-29: the universal-installer channel is hidden while the product focuses
+     on JS/TS package-manager installs. Re-add when it returns — the table row
+     `| universal installer (curl \| bash / install.ps1) | the same installer, again — it's idempotent |`
+     and the detection-map entries `/usr/local/bin/pboss` or `~/.local/bin/pboss` → universal. -->
+
+Machines installed before the stamp existed are covered by runtime detection from the executable's own location (`…/Cellar/pboss/…` → brew, `/snap/pboss/…` → snap, a `node_modules` path → npm/bun, a repo checkout → source). If the detection is wrong, `pboss upgrade --channel brew` repairs it and persists the answer.
 
 ```bash
 pboss upgrade --check       # dry run: current/latest/channel/command, changes nothing

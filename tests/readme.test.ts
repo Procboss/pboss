@@ -70,7 +70,9 @@ describe("README.md: the untouched core contract survives removals", () => {
     expect(readme).toContain("### Package-Manager Installs");
     expect(readme).toContain("bun install -g pboss");
     expect(readme).toContain("npm install -g pboss");
-    expect(readme).toContain("deno install -g npm:pboss");
+    // 2026-09-29: -A added at the owner's request — Deno is deny-by-default
+    // and a process manager needs the full grant set.
+    expect(readme).toContain("deno install -g -A npm:pboss");
     expect(readme).toContain("## Quick Start");
     expect(readme).toContain("pboss start"); // the issue-#29 auto-detection story
     expect(readme).toContain("pboss upgrade --check");

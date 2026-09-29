@@ -49,9 +49,9 @@ The full documentation lives at [docs.procboss.com](https://docs.procboss.com)
 ### Package-Manager Installs
 
 ```bash
-bun install -g pboss     # runs under Bun
+bun install -g pboss      # runs under Bun
 npm install -g pboss      # runs under Node
-deno install -g npm:pboss # runs under Deno
+deno install -g -A npm:pboss  # runs under Deno
 ```
 
 Deno is deny-by-default — grant what a process manager needs at install
@@ -179,12 +179,20 @@ pboss list
 
 ### Updating
 
-`pboss upgrade` self-updates through the channel that installed it (installer, npm, brew, snap) — one machine, one CLI. The installer downloads the exact version the command announces (pinned against the npm registry), and the command then verifies `pboss --version` on your PATH actually reports it:
+`pboss upgrade` self-updates through the channel that installed it (npm, bun,
+brew, snap) — one machine, one CLI — and verifies `pboss --version` on your
+PATH actually reports the new version:
 
 ```bash
 pboss upgrade --check    # see current → latest, the detected channel, and the exact command
 pboss upgrade            # do it (adds --channel <x> to repair a misdetected channel)
 ```
+
+<!-- 2026-09-29: the universal-installer channel is hidden while the product
+     focuses on JS/TS package-manager installs. Re-add when it returns: put
+     "installer" back in the channel list and restore the sentence
+     "The installer downloads the exact version the command announces
+     (pinned against the npm registry)." -->
 
 ---
 
