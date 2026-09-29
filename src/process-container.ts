@@ -29,8 +29,9 @@ import { HealthChecker } from "./health-checker";
 import { CronManager } from "./cron-manager";
 import { treeKill, readEnvFileOverrides } from "./utils";
 import { ignore, warn } from "./error-handling";
+import { ensureNodeClusterWrapper } from "./node-cluster";
 import type { PbossProcessEvent, ProcessEventKind, ProcessEventSource } from "./events";
-import { join } from "path";
+import { join, resolve as pathResolve } from "path";
 import {
   PID_DIR,
   MONITOR_INTERVAL,
@@ -274,6 +275,16 @@ export class ProcessContainer {
   }
 
   private async startCluster(logPaths: { outFile: string; errFile: string }) {
+    // node:cluster apps (owner rule, 2026-09-29): ONE supervised process —
+    // a Node primary wrapper that forks the N workers through node:cluster
+    // (the only clustering a Node script can use, and the only one that
+    // shares the listening port). The per-instance spawn below stays the
+    // model for every other runtime.
+    if (this.config.nodeCluster) {
+      await this.startNodeClusterWrapper(logPaths);
+      return;
+    }
+
     const workerId = parseInt(this.config.env?.PBOSS_INSTANCE_ID || this.config.env?.BM2_INSTANCE_ID || this.config.env?.NODE_APP_INSTANCE || "0") || 0;
     const proc = await this.clusterManager.spawnWorker(
       this.config,
@@ -293,6 +304,60 @@ export class ProcessContainer {
     }
 
     proc.exited.then((code) => {
+      if (!this.isRestarting) {
+        this.handleExit(code);
+      }
+    });
+  }
+
+  /**
+   * Spawn the node:cluster primary wrapper as this container's single
+   * process. The app's identity env flows to every worker through the
+   * wrapper's fork env; the wrapper handles worker respawn (crash), the
+   * zero-downtime rolling reload (SIGHUP), and group teardown (SIGTERM)
+   * while pboss supervises it exactly like any other process: restart
+   * policies, logs, health checks, events.
+   */
+  private async startNodeClusterWrapper(logPaths: { outFile: string; errFile: string }) {
+    const wrapperPath = await ensureNodeClusterWrapper();
+    const cmd = await this.clusterManager.buildNodeClusterCommand(this.config, wrapperPath);
+    const env: Record<string, string> = {
+      ...(process.env as Record<string, string>),
+      ...this.config.env,
+      // Same rule as fork mode: the app dir's .env is re-read on EVERY
+      // (re)spawn and wins over the start-time snapshot. pboss's own vars
+      // below stay on top so .env cannot hijack them.
+      ...await readEnvFileOverrides(this.config.cwd),
+      PBOSS_ID: String(this.id),
+      PBOSS_NAME: this.name,
+      PBOSS_EXEC_MODE: "cluster",
+      BM2_ID: String(this.id),
+      BM2_NAME: this.name,
+      BM2_EXEC_MODE: "cluster",
+      // The wrapper's contract — what it forks:
+      PBOSS_TARGET_SCRIPT: pathResolve(this.config.script),
+      PBOSS_TARGET_ARGS: JSON.stringify(this.config.args || []),
+      PBOSS_CLUSTER_INSTANCES: String(this.config.instances),
+      ...(this.config.port !== undefined ? { PBOSS_BASE_PORT: String(this.config.port) } : {}),
+      PBOSS_KILL_TIMEOUT: String(this.config.killTimeout ?? 5000),
+    };
+
+    this.process = R.process.spawn(cmd, {
+      cwd: this.config.cwd || process.cwd(),
+      env,
+      stdout: "pipe",
+      stderr: "pipe",
+      stdin: "ignore",
+      // Same windowsHide contract as fork mode and the per-instance model:
+      // hidden console, piped output, still supervised (workers are
+      // children of the wrapper, so a treeKill of this PID reaps them all).
+      windowsHide: true,
+    });
+
+    this.pid = this.process.pid;
+    this.pipeOutput(logPaths);
+
+    this.process.exited.then((code) => {
       if (!this.isRestarting) {
         this.handleExit(code);
       }

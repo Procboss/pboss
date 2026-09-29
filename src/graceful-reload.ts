@@ -33,7 +33,29 @@ export class GracefulReload {
     for (let i = 0; i < containers.length; i++) {
       const container = containers[i];
       if (!container) continue;
-      
+
+      // node:cluster apps (owner rule, 2026-09-29): the wrapper primary owns
+      // a zero-downtime rolling reload — SIGHUP replaces each worker with a
+      // confirmed-online replacement before retiring the old one. Nothing to
+      // stop/start here; pboss just signals. (Windows has no SIGHUP — those
+      // installs fall through to the stop/start cycle below.)
+      if (
+        container.config.nodeCluster &&
+        process.platform !== "win32" &&
+        container.pid
+      ) {
+        console.log(
+          `[pboss] Graceful reload: ${container.name} (${i + 1}/${containers.length}) — node:cluster rolling`
+        );
+        try {
+          process.kill(container.pid, "SIGHUP");
+        } catch (err) {
+          ignore("SIGHUP node:cluster wrapper", err);
+        }
+        await R.misc.sleep(delay);
+        continue;
+      }
+
       const oldPid = container.pid;
   
       console.log(`[pboss] Graceful reload: reloading ${container.name} (${i + 1}/${containers.length})`);

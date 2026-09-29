@@ -34,7 +34,7 @@
  * License: GPL-3.0-only
  */
 
-import { join, dirname, win32 as pathWin32 } from "path";
+import { join, dirname, win32 as pathWin32, basename } from "path";
 import { createRequire } from "node:module";
 import { stat, readFile } from "fs/promises";
 import { homedir } from "os";
@@ -69,7 +69,38 @@ export const RUNTIME_NAME: RuntimeName = getRuntime().name;
 /** True when the file is TypeScript (run through tsx/strip-types on Node). */
 export function isTypeScriptFile(script: string): boolean {
   const ext = script.slice(script.lastIndexOf(".") + 1).toLowerCase();
-  return ["ts", "tsx", "jsx", "mts"].includes(ext);
+  return ext === "ts" || ext === "tsx" || ext === "jsx" || ext === "mts";
+}
+
+/**
+ * True when the script is a JavaScript/TypeScript file — the only kind an
+ * app runtime (bun/node/deno) can execute, and therefore the only kind that
+ * can run as a node:cluster group. Mirrors the extension list
+ * buildWorkerCommand routes to interpreter resolution.
+ */
+export function isJsTsFile(script: string): boolean {
+  const ext = script.slice(script.lastIndexOf(".") + 1).toLowerCase();
+  return ["js", "mjs", "cjs", "ts", "tsx", "jsx", "mts", "cts"].includes(ext);
+}
+
+/**
+ * Which JS runtime does a command's interpreter run? Reads the FIRST token
+ * the way an OS would (basename, case-insensitive, .exe-tolerant) so both
+ * resolved routes (["/usr/local/bin/bun", "run"]) and stated interpreters
+ * (["node"], ["C:\\Program Files\\nodejs\\node.exe"]) classify. Anything
+ * else (python, "none", a custom binary) is not one of the three.
+ */
+export function commandRuntime(cmd: string[]): RuntimeName | null {
+  if (!cmd || !cmd[0]) return null;
+  // A path can carry EITHER separator style regardless of the host OS — a
+  // Windows-style "C:\...\node.exe" must classify on Linux too.
+  const bin = basename(cmd[0]).toLowerCase();
+  const winBin = pathWin32.basename(cmd[0]).toLowerCase();
+  const names = [bin, winBin];
+  if (names.includes("bun") || names.includes("bun.exe")) return "bun";
+  if (names.includes("deno") || names.includes("deno.exe")) return "deno";
+  if (names.some((n) => /^(node|nodejs)(\.exe)?$/.test(n))) return "node";
+  return null;
 }
 
 /**
@@ -384,20 +415,64 @@ export function decideScriptInterpreter(
 }
 
 /**
+ * The pure half of the unstated-runtime default (owner rule, 2026-09-29): an
+ * app whose runtime was not stated inherits the MAIN runtime running pboss.
+ * Returns null when there is no JS main runtime to inherit (a compiled
+ * standalone binary) — the machine-wide discovery chain takes over there.
+ * Separated from the I/O half (findTsx probing) for the same testability
+ * reason as decideScriptInterpreter.
+ */
+export function inheritMainRuntime(
+  script: string,
+  main: { name: RuntimeName; exec: string } | null,
+  tsx: TsxResolution | null
+): string[] | null {
+  if (!main) return null;
+  if (main.name === "bun") return [main.exec, "run"];
+  if (main.name === "deno") return [main.exec, "run", "-A"];
+  // node — TypeScript needs tsx (full TS) or type stripping
+  if (isTypeScriptFile(script)) {
+    return tsx ? tsx.cmd : [main.exec, "--experimental-strip-types"];
+  }
+  return [main.exec];
+}
+
+/**
  * The interpreter command prefix for a JS/TS worker script when the user did
- * not choose one explicitly. Preference order (the established pboss
- * behavior first, then every other TS-native runtime, then Node):
+ * not choose one explicitly (owner rule, 2026-09-29):
  *
- *   1. Bun   — `bun run` (TS-native; pboss's original worker runtime)
- *   2. Deno  — `deno run -A` (TS-native)
- *   3. Node  — plain for .js/.mjs/.cjs; for .ts/.tsx/.jsx/.mts, tsx when
- *              usable (app-local, on PATH, or shipped with pboss), else
- *              `--experimental-strip-types` on Node ≥ 22.6
+ *   1. UNSTATED → inherit the MAIN runtime running pboss — `bun run` when
+ *      pboss runs under Bun, `deno run -A` under Deno, and Node under Node
+ *      (TypeScript through tsx when usable, else --experimental-strip-types).
+ *      The app matches its supervisor by default.
+ *
+ *   2. Compiled install — no JS main runtime of its own, so the machine-wide
+ *      discovery chain picks one:
+ *        Bun   — `bun run` (TS-native; pboss's original worker runtime)
+ *        Deno  — `deno run -A` (TS-native)
+ *        Node  — plain for .js/.mjs/.cjs; for .ts/.tsx/.jsx/.mts, tsx when
+ *                usable (app-local, on PATH, or shipped with pboss), else
+ *                `--experimental-strip-types` on Node ≥ 22.6
  *
  * Throws an actionable error when nothing can run the script — the message
  * names what was searched, exactly like the old Bun-only error did.
  */
 export async function resolveScriptInterpreter(script: string): Promise<string[]> {
+  // 1. Inherit the main runtime (the owner's default). A compiled binary is
+  //    its own executable — PBOSS_EXECUTABLE would spawn the pboss binary,
+  //    not a JS runtime, so those installs fall through to discovery.
+  if (RUNTIME_NAME === "node") {
+    const tsx = isTypeScriptFile(script) ? await findTsx(PBOSS_EXECUTABLE, script) : null;
+    return inheritMainRuntime(script, { name: "node", exec: PBOSS_EXECUTABLE }, tsx)!;
+  }
+  if (RUNTIME_NAME === "deno") {
+    return inheritMainRuntime(script, { name: "deno", exec: PBOSS_EXECUTABLE }, null)!;
+  }
+  if (RUNTIME_NAME === "bun" && !IS_COMPILED) {
+    return inheritMainRuntime(script, { name: "bun", exec: PBOSS_EXECUTABLE }, null)!;
+  }
+
+  // 2. Compiled install — machine-wide discovery.
   const bun = await findBun();
   if (bun) return [bun, "run"];
 

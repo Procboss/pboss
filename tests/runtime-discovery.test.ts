@@ -235,16 +235,23 @@ describe("findBun: discovery beyond PATH (the daemon's view)", () => {
 
 describe("daemon with a systemd-style PATH still runs .ts workers", () => {
   test.skipIf(process.platform === "win32")(
-    "worker spawns via the bun found in ~/.bun/bin (the reported incident, e2e)",
+    "worker inherits the daemon's own bun — absolute path, no PATH needed (the reported incident, e2e)",
     async () => {
       const fakeHome = scratch("fakehome");
       const marker = join(fakeHome, "worker-marker");
-      fakeBun(fakeHome, marker);
 
-      // A .ts worker script — contents are irrelevant: the FAKE bun is the
-      // interpreter the daemon must resolve, and it records argv to marker.
+      // A .ts worker that records ITS OWN argv — the unstated runtime
+      // inherits the daemon's main runtime (owner rule, 2026-09-29), so the
+      // worker runs under the same absolute-path bun that runs the daemon
+      // and proves it through this marker.
       const worker = join(fakeHome, "index.ts");
-      writeFileSync(worker, "// placeholder — the fake bun does not execute this\n");
+      // The marker path is BAKED INTO the script (a literal) — the daemon
+      // process carries its own env and never sees the test's variables.
+      writeFileSync(
+        worker,
+        'const { writeFileSync } = require("node:fs");\n' +
+          `writeFileSync(${JSON.stringify(marker)}, process.argv.join(" "));\n`
+      );
 
       // Daemon spawned exactly like systemd would: explicit minimal env, no
       // inherited shell PATH. process.execPath (absolute) starts it, so the
@@ -268,10 +275,12 @@ describe("daemon with a systemd-style PATH still runs .ts workers", () => {
         const { PBoss } = await import("../src/api");
         const pboss = new PBoss();
 
-        // THE incident: this used to reject with "the Bun runtime was not
-        // found on this system". Now the worker is spawned with the bun
-        // discovered at ~/.bun/bin. autorestart off — the fake bun exits
-        // immediately, no restart loop.
+        // THE incident (2026-09): with a systemd-style PATH a .ts worker
+        // used to die with "the Bun runtime was not found on this system".
+        // Under the inheritance rule the fix is even more direct: the worker
+        // runs under the daemon's OWN bun (process.execPath, absolute) — no
+        // PATH, no discovery needed. (The discovery chain stays for compiled
+        // installs and is covered by the findBun/enrichPathWithBun probes.)
         const states = await pboss.start({
           name: "disc-app",
           script: worker,
@@ -280,13 +289,13 @@ describe("daemon with a systemd-style PATH still runs .ts workers", () => {
         expect(states.length).toBeGreaterThan(0);
         expect(states[0]?.name).toBe("disc-app");
 
-        // Proof the worker ran under the fake bun: marker written with the
-        // `run` argument and the resolved script path.
+        // Proof the worker inherited the daemon's runtime: its argv names
+        // the same absolute bun that started the daemon, plus the script.
         const deadline = Date.now() + 5_000;
         while (Date.now() < deadline && !existsSync(marker)) await Bun.sleep(100);
         expect(existsSync(marker)).toBe(true);
         const argv = readFileSync(marker, "utf-8");
-        expect(argv).toContain("run");
+        expect(argv).toContain(process.execPath);
         expect(argv).toContain(worker);
 
         await pboss.delete("disc-app");
