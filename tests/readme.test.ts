@@ -5,6 +5,11 @@ import { join, dirname } from "path";
 const REPO = join(dirname(import.meta.path), "..");
 const readme = readFileSync(join(REPO, "README.md"), "utf8");
 
+// 2026-09-29: HTML comments are not documentation — copy preserved for a
+// later re-add (the universal installer, multi-language support) must not
+// count as present. "Removed" checks run on the comment-stripped text.
+const visible = readme.replace(/<!--[\s\S]*?-->/g, "");
+
 /**
  * README content contract (owner request, 2026-09-10): two Highlights
  * bullets were removed on the owner's exact instruction —
@@ -19,34 +24,43 @@ const readme = readFileSync(join(REPO, "README.md"), "utf8");
 
 describe("README.md: removed-at-the-owner's-request sections stay removed", () => {
   test("no \"Remote deployment\" Highlights bullet", () => {
-    expect(readme).not.toContain("Remote deployment");
-    expect(readme).not.toContain("SSH deploys with release directories");
-    expect(readme).not.toContain("symlink rotation");
+    expect(visible).not.toContain("Remote deployment");
+    expect(visible).not.toContain("SSH deploys with release directories");
+    expect(visible).not.toContain("symlink rotation");
   });
 
   test("no \"ProcBoss Cloud (optional)\" Highlights bullet", () => {
-    expect(readme).not.toContain("**ProcBoss Cloud (optional)**");
-    expect(readme).not.toContain("Outbound-only connection");
-    expect(readme).not.toContain("Everything local works without it");
+    expect(visible).not.toContain("**ProcBoss Cloud (optional)**");
+    expect(visible).not.toContain("Outbound-only connection");
+    expect(visible).not.toContain("Everything local works without it");
   });
 
   test("the cloud-connect demo block (removed earlier the same way) stays gone", () => {
-    expect(readme).not.toContain("Waiting for authorization");
-    expect(readme).not.toContain("Server authorized and connected");
-    expect(readme).not.toContain("Open the URL anywhere");
+    expect(visible).not.toContain("Waiting for authorization");
+    expect(visible).not.toContain("Server authorized and connected");
+    expect(visible).not.toContain("Open the URL anywhere");
   });
 
   test("no One-Line Universal Install (removed 2026-09-29 — package managers only for now)", () => {
-    expect(readme).not.toContain("One-Line Universal Install");
-    expect(readme).not.toContain("curl -fsSL https://procboss.com/install.sh | bash");
-    expect(readme).not.toContain("install.ps1");
-    expect(readme).not.toContain("install.cmd");
+    expect(visible).not.toContain("One-Line Universal Install");
+    expect(visible).not.toContain("curl -fsSL https://procboss.com/install.sh | bash");
+    expect(visible).not.toContain("install.ps1");
+    expect(visible).not.toContain("install.cmd");
   });
 
   test("no Runtime-Agnostic Architecture section (moved to the main docs, 2026-09-29)", () => {
-    expect(readme).not.toContain("## Runtime-Agnostic Architecture");
-    expect(readme).not.toContain("Runtime Adapter"); // the ASCII diagram's node
-    expect(readme).not.toContain("### Which runtime is executing pboss?");
+    expect(visible).not.toContain("## Runtime-Agnostic Architecture");
+    expect(visible).not.toContain("Runtime Adapter"); // the ASCII diagram's node
+    expect(visible).not.toContain("### Which runtime is executing pboss?");
+  });
+
+  test("no multi-language marketing (removed 2026-09-29 — JS/TS backend focus)", () => {
+    // The tagline and the first Highlights bullet sold "everything else on the
+    // machine: Go, Python, Rust, Ruby, PHP, Java...". Hidden for the JS/TS
+    // focus; re-add with multi-language support when it returns.
+    expect(visible).not.toContain("Go, Python, Rust, Ruby, PHP");
+    expect(visible).not.toContain("Everything else is managed too");
+    expect(visible).not.toContain("universal production process manager");
   });
 });
 

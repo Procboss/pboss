@@ -1,10 +1,17 @@
 # ⚡ ProcBoss (pboss)
 
-**A blazing-fast, universal production process manager built on Bun native APIs.**
-Run, cluster, monitor, and manage any application — Node.js, Bun, Go, Python, Rust, Ruby, PHP, Java, native binaries, and shell scripts — with pure performance and zero overhead.
+**A blazing-fast, runtime-agnostic process manager for Bun, Node.js, and Deno —
+native APIs per runtime, no compatibility layers — built for JavaScript and
+TypeScript backends.**
+Run, cluster, monitor, and manage your JS/TS applications with pure performance and zero overhead.
 By [procboss.com](https://procboss.com).
 
-![Runtime](https://img.shields.io/badge/runtime-Bun-f472b6?style=flat-square)
+<!-- 2026-09-29: multi-language support is hidden while the product focuses on JS/TS
+     backends. Re-add when it returns: "Run, cluster, monitor, and manage any
+     application — Node.js, Bun, Go, Python, Rust, Ruby, PHP, Java, native binaries,
+     and shell scripts — with pure performance and zero overhead." -->
+
+![Runtime](https://img.shields.io/badge/runtimes-Bun%20%7C%20Node.js%20%7C%20Deno-8b5cf6?style=flat-square)
 ![Language](https://img.shields.io/badge/language-TypeScript-3178c6?style=flat-square)
 ![License](https://img.shields.io/badge/license-GPLv3-green?style=flat-square)
 [![Tests](https://github.com/procboss/pboss/actions/workflows/test.yml/badge.svg)](https://github.com/procboss/pboss/actions/workflows/test.yml)
@@ -26,7 +33,7 @@ ProcBoss is free and open-source. If it saves you time, star it on [GitHub](http
 - [Features](#features)
 - [Installation](#installation)
 - [Quick Start](#quick-start)
-- [Multi-Language & Runtime Support](#multi-language--runtime-support)
+- [Runtime Support](#runtime-support)
 - [CLI Reference](#cli-reference)
   - [Process Management](#process-management)
   - [Cluster Mode](#cluster-mode)
@@ -89,13 +96,16 @@ ProcBoss is free and open-source. If it saves you time, star it on [GitHub](http
 
 ## Why ProcBoss?
 
-ProcBoss (pboss) is a production-grade, runtime-agnostic process manager built on native Bun APIs — it manages any program, language, or stack. `Bun.spawn` for orchestration, `Bun.serve` for the dashboard and IPC, native `WebSocket` over Unix sockets, `Bun.file` for I/O, `Bun.gzipSync` for log compression. One daemon: <50ms start, ~12MB RAM.
+ProcBoss (pboss) is a production-grade, runtime-agnostic process manager for Bun, Node.js, and Deno — built for JavaScript and TypeScript backends. Each runtime's native APIs do the work: process spawning, the dashboard and IPC servers, native WebSockets over Unix sockets, file I/O, log compression. One daemon: <50ms start, ~12MB RAM.
 
 ---
 
 ## Features
 
-**Universal Multi-Language Support** — Auto-detected execution: Node.js, Bun, Go, Python, Rust, Ruby, PHP, Java JARs, shell and Windows scripts, compiled binaries.
+<!-- 2026-09-29: multi-language support is hidden while the product focuses on JS/TS
+     backends. Re-add when it returns: "**Universal Multi-Language Support** —
+     Auto-detected execution: Node.js, Bun, Go, Python, Rust, Ruby, PHP, Java JARs,
+     shell and Windows scripts, compiled binaries." -->
 
 **Core Process Management** — Start, stop, restart, reload, delete, and scale with automatic restart on crash, configurable restart strategies, memory-limit restarts, and tree killing.
 
@@ -266,20 +276,26 @@ pboss startup install
 
 ---
 
-## Multi-Language & Runtime Support
+## Runtime Support
 
 ProcBoss gives **Bun, Node.js, and Deno first-class support** — it runs natively
 on all three, and JS/TS apps resolve their runner per machine in the order
 `bun run` → `deno run -A` → `node` (TypeScript under Node through
 [tsx](https://github.com/privatenumber/tsx), which pboss ships as an optional
 dependency; `--experimental-strip-types` on Node ≥ 22.6 is the zero-dependency
-fallback). Beyond that trio it manages everything else on the machine:
+fallback).
 
 | Runtime / Language | File Extension | Auto-detected Runner | Example |
 |---|---|---|---|
 | **TypeScript / JSX** | `.ts`, `.tsx`, `.jsx`, `.mts` | `bun run <file>` → `deno run -A` → `node` via tsx / `--experimental-strip-types` | `pboss start server.ts` |
 | **JavaScript** | `.js`, `.mjs`, `.cjs` | `bun run <file>` → `deno run -A` → `node <file>` | `pboss start app.js` |
 | **Node.js (pinned)** | `.js` | `node <file>` (via `--interpreter`) | `pboss start app.js --interpreter node` |
+| **Custom Interpreter** | *any* | Custom runtime via `--interpreter` | `pboss start app.ts --interpreter "deno run -A"` |
+
+<!-- 2026-09-29: multi-language support is hidden while the product focuses on JS/TS
+     backends. Re-add when it returns: append "Beyond that trio it manages everything
+     else on the machine:" to the chapter intro and restore these table rows —
+
 | **Python** | `.py` | `python3 <file>` (or `python`) | `pboss start worker.py` |
 | **Go** | `.go` | `go run <file>` | `pboss start main.go` |
 | **Compiled Binaries (Go / Rust / C / C++)** | *(no ext)*, `.bin`, `.exe` | Direct binary execution | `pboss start ./my-go-server` |
@@ -288,11 +304,8 @@ fallback). Beyond that trio it manages everything else on the machine:
 | **Java** | `.jar` | `java -jar <file>` | `pboss start app.jar` |
 | **Shell / Bash** | `.sh`, `.bash` | `sh <file>` / `bash <file>` | `pboss start job.sh` |
 | **Windows Scripts** | `.bat`, `.cmd`, `.ps1` | `cmd.exe` / `powershell.exe` | `pboss start script.bat` |
-| **Custom Interpreter** | *any* | Custom runtime via `--interpreter` | `pboss start app.ts --interpreter "deno run -A"` |
 
-### Running Native Binaries (Go, Rust, C/C++)
-
-Compiled executables are executed directly with zero interpreter wrapper:
+### Running Native Binaries (Go, Rust, C/C++) — hidden 2026-09-29, re-add with multi-language
 
 ```bash
 # Start a compiled Go or Rust binary
@@ -301,6 +314,17 @@ pboss start ./dist/my-go-api --name api --instances 4
 # Run with explicit direct binary mode
 pboss start ./my-binary --interpreter none
 ```
+
+### Running Python Services — hidden 2026-09-29, re-add with multi-language
+
+```bash
+# Auto-detects python3 on Linux/macOS or python on Windows
+pboss start worker.py --name py-worker
+
+# Custom virtualenv Python interpreter
+pboss start worker.py --interpreter ./venv/bin/python
+```
+-->
 
 ### Runtime discovery — how pboss finds `bun` (and why it matters)
 
@@ -313,16 +337,6 @@ JavaScript/TypeScript workers are spawned by the **daemon**, and the daemon ofte
 5. `/opt/homebrew/bin` (macOS Homebrew on Apple Silicon — not on a launchd PATH)
 
 Three layers make this work everywhere: the absolute resolved path is used for the worker spawn (surviving any PATH), the generated boot service's `PATH` includes the target user's `~/.bun/bin` when present (workers that call `bun` by name), and the daemon prepends the discovered bun directory to its own `PATH` at startup (healing daemons started by older unit files). If no Bun exists at all, the error message lists every location that was checked before suggesting `--interpreter node` or `--interpreter none`.
-
-### Running Python Services
-
-```bash
-# Auto-detects python3 on Linux/macOS or python on Windows
-pboss start worker.py --name py-worker
-
-# Custom virtualenv Python interpreter
-pboss start worker.py --interpreter ./venv/bin/python
-```
 
 ### Running Node.js Applications
 
@@ -368,7 +382,7 @@ pboss start server.ts --name api --max-memory-restart 512M
 ```
 
 ```
-pboss start script.py --interpreter python3
+pboss start server.ts --interpreter "deno run -A"
 ```
 
 ```
@@ -1489,7 +1503,7 @@ The generated file adapts to how pboss was installed: a **script install** (`bun
      re-executes the pboss binary itself (`ExecStart=/home/you/.local/bin/pboss
      __daemon` — Bun is embedded, not required on the system). -->
 
-The unit/agent `PATH` includes the target user's `~/.bun/bin` whenever it exists (workers that shell out to `bun` by name must resolve it), and the daemon self-heals its own `PATH` at startup — daemons started by **older** unit files also find Bun after an upgrade. See [Runtime discovery](#multi-language--runtime-support) for the full chain.
+The unit/agent `PATH` includes the target user's `~/.bun/bin` whenever it exists (workers that shell out to `bun` by name must resolve it), and the daemon self-heals its own `PATH` at startup — daemons started by **older** unit files also find Bun after an upgrade. See [Runtime discovery](#runtime-support) for the full chain.
 
 #### pboss startup status
 
@@ -2995,6 +3009,9 @@ pboss start server.ts --name bun-api
 pboss start server.js --interpreter node --name node-api
 ```
 
+<!-- 2026-09-29: multi-language recipes are hidden while the product focuses on JS/TS
+     backends. Re-add when it returns:
+
 ### Go Application (Source or Compiled)
 
 ```bash
@@ -3016,6 +3033,8 @@ pboss start worker.py --name py-worker
 ```bash
 pboss start app.jar --name java-service
 ```
+
+-->
 
 ### Production API with Clustering and Health Checks
 
