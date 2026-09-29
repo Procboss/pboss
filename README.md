@@ -51,16 +51,30 @@ The full documentation lives at [docs.procboss.com](https://docs.procboss.com)
 
 ### Package-Manager Installs
 
+One package, three runtimes — install pboss with the package manager of the
+runtime it should run under:
+
+**Node.js**
+
 ```bash
-bun install -g pboss      # runs under Bun
-npm install -g pboss      # runs under Node
-deno install -g -A npm:pboss  # runs under Deno
+npm install -g pboss
 ```
 
-Deno is deny-by-default — grant what a process manager needs at install
-(`deno install -g -A npm:pboss`, or the explicit
-`--allow-run --allow-read --allow-write --allow-net --allow-env --allow-sys`
-set). The full permission table lives in the
+**Bun**
+
+```bash
+bun install -g pboss
+```
+
+**Deno**
+
+```bash
+deno install -g -A npm:pboss
+```
+
+Deno is deny-by-default — `-A` grants what a process manager needs. The
+explicit equivalent (`--allow-run --allow-read --allow-write --allow-net
+--allow-env --allow-sys`) and the full permission table live in the
 [installation docs](https://docs.procboss.com/installation#denos-permission-system).
 
 ### Verify Installation

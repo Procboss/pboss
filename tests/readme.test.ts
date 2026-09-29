@@ -87,6 +87,12 @@ describe("README.md: the untouched core contract survives removals", () => {
     // 2026-09-29: -A added at the owner's request — Deno is deny-by-default
     // and a process manager needs the full grant set.
     expect(readme).toContain("deno install -g -A npm:pboss");
+    // 2026-09-29: per-runtime install blocks at the owner's request — a bold
+    // runtime label above its own fenced single-command block, so GitHub's
+    // copy button copies exactly one install command.
+    expect(readme).toContain("**Node.js**\n\n```bash\nnpm install -g pboss\n```");
+    expect(readme).toContain("**Bun**\n\n```bash\nbun install -g pboss\n```");
+    expect(readme).toContain("**Deno**\n\n```bash\ndeno install -g -A npm:pboss\n```");
     expect(readme).toContain("## Quick Start");
     expect(readme).toContain("pboss start"); // the issue-#29 auto-detection story
     expect(readme).toContain("pboss upgrade --check");
