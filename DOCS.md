@@ -347,14 +347,13 @@ pboss startup install
 
 ProcBoss gives **Bun, Node.js, and Deno first-class support** — it runs natively
 on all three, and an app whose runtime is **not stated** inherits the main
-runtime running pboss (owner rule, 2026-09-29): pboss under Bun runs the app
-with `bun run`, pboss under Node with `node` (TypeScript through
-[tsx](https://github.com/privatenumber/tsx), which pboss ships as an optional
-dependency; `--experimental-strip-types` on Node ≥ 22.6 is the zero-dependency
-fallback), pboss under Deno with `deno run -A`. A compiled standalone install
-has no JS runtime of its own, so those discover one per machine in the order
-`bun run` → `deno run -A` → `node`. Stating a runtime with `--interpreter`
-always wins.
+runtime running pboss (owner rule, 2026-09-29): Bun runs the app with
+`bun run`, Node with `node` (TypeScript through
+[tsx](https://github.com/privatenumber/tsx), shipped as an optional dependency;
+`--experimental-strip-types` on Node ≥ 22.6 is the fallback), Deno with
+`deno run -A`. A compiled standalone install has no JS runtime, so those
+discover one per machine: `bun run` → `deno run -A` → `node`. Stating a
+runtime with `--interpreter` always wins.
 
 | Runtime / Language | File Extension | Runner when unstated | Example |
 |---|---|---|---|
