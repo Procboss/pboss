@@ -22,7 +22,7 @@
  * ties for machines that predate it.
  */
 
-import { mkdir, readFile, writeFile } from "fs/promises";
+import { mkdir, readFile, writeFile, stat } from "fs/promises";
 import { join, dirname } from "path";
 import { PBOSS_HOME } from "./constants";
 import { getRuntime } from "./runtime";
@@ -103,6 +103,11 @@ export type ChannelContext = {
   /** Directory of this module — reveals npm/bun global installs. */
   moduleDir: string;
   platform: NodeJS.Platform;
+  /** True when the directory ABOVE this module is a git repo (a checkout
+   *  cloned under ANY name — `git clone … pboss my-fork` — is still a
+   *  source run; the path heuristic alone would miss it). Optional so
+   *  injected test contexts keep their old shape. */
+  parentHasGit?: boolean;
 };
 
 export async function currentChannelContext(): Promise<ChannelContext> {
@@ -116,7 +121,19 @@ export async function currentChannelContext(): Promise<ChannelContext> {
       false,
     moduleDir: import.meta.dir,
     platform: process.platform,
+    parentHasGit: await isGitRoot(join(import.meta.dir, "..")),
   };
+}
+
+/** `.git` next door — the marker of a working checkout (npm tarballs ship
+ *  none, so the node_modules rule below always wins for real installs). */
+async function isGitRoot(dir: string): Promise<boolean> {
+  try {
+    await stat(join(dir, ".git"));
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -174,8 +191,10 @@ export function detectChannel(ctx: ChannelContext): InstallChannel {
     return "npm";
   }
 
-  // 7. Running from source (bun run src/index.ts inside a checkout).
-  if (moduleDir.endsWith("/pboss/src")) {
+  // 7. Running from source (bun run src/index.ts inside a checkout) — by
+  //    path shape (the classic clone) OR by the git marker (a checkout
+  //    cloned under any name; rule 6 already claimed node_modules).
+  if (moduleDir.endsWith("/pboss/src") || ctx.parentHasGit === true) {
     return "source";
   }
 

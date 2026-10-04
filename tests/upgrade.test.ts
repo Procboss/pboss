@@ -190,6 +190,38 @@ describe("detectChannel: runtime heuristics (stamp-less machines)", () => {
       detectChannel(ctx({ execPath: "/opt/mystery/pboss", isCompiled: true, moduleDir: "/opt/mystery" }))
     ).toBe("unknown");
   });
+
+  test("a checkout cloned under ANY name is a source install (the .git marker)", () => {
+    // `git clone https://github.com/procboss/pboss my-fork` — the path does
+    // not end in /pboss/src, but the repo is right there.
+    expect(
+      detectChannel(
+        ctx({ moduleDir: "/tmp/my-pboss-fork/src", parentHasGit: true })
+      )
+    ).toBe("source");
+    // The bundled layout of the same checkout (bun run dist/cli.js).
+    expect(
+      detectChannel(
+        ctx({ moduleDir: "/tmp/my-pboss-fork/dist", parentHasGit: true })
+      )
+    ).toBe("source");
+    // Without the marker, the unrecognized path stays honest (no guessing).
+    expect(detectChannel(ctx({ moduleDir: "/tmp/my-pboss-fork/src" }))).toBe("unknown");
+  });
+
+  test("an npm global with a stray .git still maps to npm (rule order)", () => {
+    // The node_modules rule runs BEFORE the git marker — an npm-installed
+    // pboss (whose tarball ships no .git, but be robust anyway) upgrades
+    // through npm, never as a source checkout.
+    expect(
+      detectChannel(
+        ctx({
+          moduleDir: "/home/alice/.npm-global/lib/node_modules/pboss/src",
+          parentHasGit: true,
+        })
+      )
+    ).toBe("npm");
+  });
 });
 
 describe("buildUpgradePlan: each channel upgrades through itself", () => {
