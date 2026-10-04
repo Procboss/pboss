@@ -80,7 +80,7 @@ if ($runtimeFlag) {
               "(or run `pboss` in an interactive terminal once — the choice is saved to`n" +
               "~\.pboss\.runtime and never asked again)")
     }
-    Write-Host "Kindly select your runtime:" 
+    Write-Host "Kindly select your runtime:"
     Write-Host ""
     Write-Host "  1. Node"
     Write-Host "  2. Bun"
