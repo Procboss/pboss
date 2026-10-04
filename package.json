@@ -22,7 +22,8 @@
     "./deno-entry": "./dist/cli.deno.js"
   },
   "bin": {
-    "pboss": "bin/pboss.sh"
+    "pboss": "bin/pboss.sh",
+    "pboss.ps1": "bin/pboss.ps1"
   },
   "files": [
     "bin/",
