@@ -159,6 +159,73 @@ On Windows, a regular `bun add -g pboss` is fine too — the scheduled task is r
 
 ---
 
+### The Runtime Selection (the wrapper architecture)
+
+`pboss` never guesses a runtime from whatever happens to be installed —
+the runtime is your explicit, persistent choice, stored in
+`~/.pboss/.runtime` (one lowercase word: `node`, `bun`, or `deno`).
+
+The `pboss` command npm/bun link is a small **shell wrapper**
+(`bin/pboss.sh`; `bin/pboss.ps1` on Windows) that resolves the runtime and
+**dispatches to that runtime's own entrypoint** —
+`node dist/cli.node.js`, `bun dist/cli.bun.js`, or
+`deno run -A dist/cli.deno.js`. Because the wrapper is POSIX shell, it needs
+no JavaScript runtime to start: a Bun-only machine works with Node nowhere
+on the system (issue #38), and a Node-only machine works with Bun nowhere.
+
+Resolution order, every `pboss` invocation:
+
+1. `--runtime=<node|bun|deno>` anywhere before `--` — one invocation under
+   that runtime. When `~/.pboss/.runtime` does not exist yet it **initializes**
+   the persistent selection; when a different runtime is configured it
+   overrides for that invocation only and tells you how to change it
+   permanently.
+2. `~/.pboss/.runtime` — the persistent selection (survives upgrades and
+   reinstalls; written by `pboss --runtime=<x>`, `pboss runtime change`, the
+   first-run prompt, and the installers).
+3. Interactive selection on first run (Node is the default; Enter picks it).
+   Non-interactive environments with no selection fail honestly with the
+   `--runtime=` options — never a guess from PATH.
+
+```bash
+pboss runtime           # configured runtime + executing engine + install mode
+pboss runtime change    # switch permanently (installs runtime + package, atomically)
+pboss --runtime=bun     # one invocation under Bun
+```
+
+Deno installs the published **entry subpath**
+(`deno install -g -A --name pboss npm:pboss/deno-entry`) because deno
+executes npm package bins as modules — a shell wrapper cannot serve that
+path; the deno command runs `dist/cli.deno.js` directly, and
+`pboss --runtime=deno` (which the installer and `runtime change` run for
+you) persists the selection the wrapper architecture reads.
+
+---
+
+### Universal Installer
+
+```bash
+curl -fsSL https://procboss.com/install.sh | sh
+```
+
+Asks which runtime to run under (Node is the default), installs the runtime
+when missing, installs the published package through that runtime's own
+package ecosystem, and saves the selection:
+
+```bash
+curl -fsSL https://procboss.com/install.sh | sh -s -- --runtime=node
+curl -fsSL https://procboss.com/install.sh | sh -s -- --runtime=bun
+curl -fsSL https://procboss.com/install.sh | sh -s -- --runtime=deno
+```
+
+Windows (PowerShell, no Administrator needed):
+
+```powershell
+powershell -c "irm https://procboss.com/install.ps1 | iex"
+```
+
+---
+
 ### npm Global Install
 
 ```bash
@@ -172,7 +239,7 @@ Update later with `npm install -g pboss@latest`.
 ### Deno Global Install
 
 ```bash
-deno install -g -A npm:pboss
+deno install -g -A --name pboss npm:pboss/deno-entry
 ```
 
 Deno is deny-by-default — `-A` grants what a process manager needs. The explicit equivalent is `--allow-run --allow-read --allow-write --allow-net --allow-env --allow-sys`.
@@ -1762,19 +1829,19 @@ The machine credential in `~/.pboss/cloud.json` is a **permanent cache**: it liv
 
 ### Updating pboss (pboss upgrade)
 
-`pboss upgrade` self-updates the CLI through the **same channel that installed it**, so a machine never accumulates two copies of pboss. The channel is recorded in `~/.pboss/channel.json` at install time where the install method supports it, and the upgrade honors it:
+`pboss upgrade` self-updates the CLI through the **same channel that installed it**, so a machine never accumulates two copies of pboss. The channel is recorded in `~/.pboss/channel.json` at install time where the install method supports it, and the upgrade honors it — **and the runtime selection in `~/.pboss/.runtime` decides which package ecosystem upgrades the package** (node → npm, bun → bun, deno → deno; the selection survives every upgrade):
 
 | Installed via | Upgrade runs |
 |---|---|
 | `npm i -g pboss` | `npm install -g pboss@latest` |
 | `bun add -g pboss` | `bun add -g pboss@latest` |
+| `deno install -g … npm:pboss/deno-entry` | `deno install -g -f -A --name pboss npm:pboss/deno-entry` |
 | Homebrew | `brew upgrade pboss` |
 | snap | `sudo snap refresh pboss` |
+| universal installer (curl \| sh / install.ps1) | the selected runtime's ecosystem — the installer again is idempotent |
 
-<!-- 2026-09-29: the universal-installer channel is hidden while the product focuses
-     on JS/TS package-manager installs. Re-add when it returns — the table row
-     `| universal installer (curl \| bash / install.ps1) | the same installer, again — it's idempotent |`
-     and the detection-map entries `/usr/local/bin/pboss` or `~/.local/bin/pboss` → universal. -->
+<!-- 2026-10-04: the universal installer is back (runtime-aware) — the table
+     row above reflects the .runtime-driven channel. -->
 
 Machines installed before the stamp existed are covered by runtime detection from the executable's own location (`…/Cellar/pboss/…` → brew, `/snap/pboss/…` → snap, a `node_modules` path → npm/bun, a repo checkout → source). If the detection is wrong, `pboss upgrade --channel brew` repairs it and persists the answer.
 

@@ -502,7 +502,16 @@ describe("Windows Support & Cross-Platform Compatibility", () => {
       const ps1 = readFileSync(join(import.meta.dir, "..", "scripts", "install.ps1"), "utf8");
       expect(ps1).toContain("npm install -g");
       expect(ps1).not.toContain("--ignore-scripts");
-      expect(ps1).not.toContain("Expand-Archive");
+      // Expand-Archive is ALLOWED only in the runTIME install path (the
+      // rootless Node.js dist zip, when the user selected node and it is
+      // missing) — it must never appear after the package-install section
+      // starts (that would mean building pboss itself from an archive).
+      const archiveIdx = ps1.indexOf("Expand-Archive");
+      if (archiveIdx !== -1) {
+        const npmIdx = ps1.indexOf("npm install -g");
+        expect(npmIdx).toBeGreaterThan(0);
+        expect(archiveIdx).toBeLessThan(npmIdx); // runtime section precedes the package install
+      }
     });
 
     test("package.json postinstall carries no shell redirect tokens", () => {

@@ -1,8 +1,4 @@
 /**
- * ProcBoss (pboss) — Bun Process Manager
- * https://procboss.com
- * License: GPL-3.0-only
- *
  * Self-update (`pboss upgrade`).
  *
  * The rule the owner cares about: whatever channel installed pboss must also
@@ -18,6 +14,12 @@
  *      truth — /snap/pboss is snap, /opt/homebrew/Cellar/pboss is brew,
  *      a compiled binary in /usr/local/bin is the universal install, a
  *      node_modules path is a package-manager install.
+ *
+ * ABOVE BOTH (the runtime-aware architecture): the persistent user-selected
+ * runtime in `~/.pboss/.runtime` decides WHICH package ecosystem upgrades
+ * the package — node → npm, bun → bun, deno → deno (spec §14). The runtime
+ * is the user's explicit, persistent choice; the channel stamp only breaks
+ * ties for machines that predate it.
  */
 
 import { mkdir, readFile, writeFile } from "fs/promises";
@@ -33,6 +35,7 @@ export type InstallChannel =
   | "universal" // curl | bash (linux/macOS) or install.ps1 (windows)
   | "npm" // npm install -g pboss
   | "bun" // bun add -g pboss
+  | "deno" // deno install -g npm:pboss/deno-entry
   | "brew" // brew install pboss
   | "snap" // snap install pboss
   | "source" // git checkout run through bun directly
@@ -233,6 +236,27 @@ export function buildUpgradePlan(
         manual: false,
         note: "The postinstall hook re-checks boot persistence automatically.",
       };
+    case "deno":
+      return {
+        channel,
+        label: "deno (global)",
+        // -f replaces the existing global install (deno refuses otherwise);
+        // --name pins the command; /deno-entry is the published subpath
+        // (deno executes package bins as modules, so the .sh wrapper cannot
+        // serve it — see src/runtime-config.ts).
+        command: [
+          "deno",
+          "install",
+          "-g",
+          "-f",
+          "-A",
+          "--name",
+          "pboss",
+          "npm:pboss/deno-entry",
+        ],
+        manual: false,
+        note: "Deno re-links the global command to the new release in place.",
+      };
     case "brew":
       return {
         channel,
@@ -301,6 +325,33 @@ export function buildUpgradePlan(
         note: "pboss could not tell how it was installed, so it refuses to guess: re-install through one channel (curl | bash, npm i -g, brew, snap) and `pboss upgrade` will track it from then on.",
       };
   }
+}
+
+/* ── runtime-driven channel resolution (spec §14: .runtime is the truth) ── */
+
+/** The channel a configured runtime upgrades through. */
+export function channelForRuntime(runtime: "node" | "bun" | "deno"): InstallChannel {
+  return runtime === "node" ? "npm" : runtime;
+}
+
+/**
+ * Read the persistent runtime selection as a channel hint. Invalid content
+ * is NOT swallowed (spec §20) — it propagates as an error so `pboss upgrade`
+ * can tell the user to fix their config instead of guessing an ecosystem.
+ */
+export async function configuredRuntimeChannel(): Promise<InstallChannel | null> {
+  let raw: string;
+  try {
+    raw = await readFile(join(PBOSS_HOME, ".runtime"), "utf8");
+  } catch {
+    return null;
+  }
+  const value = raw.trim().toLowerCase();
+  if (value === "node" || value === "bun" || value === "deno") return channelForRuntime(value);
+  throw new Error(
+    `Invalid ProcBoss runtime configuration: ${raw.trim()}\n\n` +
+      "Supported runtimes:\n  node\n  bun\n  deno"
+  );
 }
 
 /* ── version checks ───────────────────────────────────────────────────── */

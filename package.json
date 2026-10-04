@@ -1,102 +1,104 @@
 {
-        "name": "pboss",
-        "version": "1.5.3",
-        "description": "A blazing-fast, runtime-agnostic process manager for Bun, Node.js, and Deno — native APIs per runtime, no compatibility layers — built for JavaScript and TypeScript backends.",
-        "type": "module",
-        "main": "dist/api.mjs",
-        "module": "dist/api.mjs",
-        "types": "src/api.ts",
-        "exports": {
-                ".": {
-                        "types": "./src/api.ts",
-                        "bun": "./src/api.ts",
-                        "default": "./dist/api.mjs"
-                },
-                "./cli": {
-                        "types": "./src/index.ts",
-                        "bun": "./src/index.ts",
-                        "default": "./dist/cli.js"
-                },
-                "./types": "./src/types.ts",
-                "./dist/cli.js": "./dist/cli.js"
-        },
-        "bin": {
-                "pboss": "dist/cli.js"
-        },
-        "files": [
-                "dist/",
-                "src/",
-                "README.md",
-                "LICENSE"
-        ],
-        "scripts": {
-                "start": "bun run src/main.ts",
-                "dev": "bun run --watch src/main.ts",
-                "test": "bun test --timeout=60000",
-                "lint": "bun x tsc --noEmit --noUnusedLocals",
-                "prepublishOnly": "bun run ./scripts/build-dist.ts && bun test --timeout=60000"
-        },
-        "keywords": [
-                "process-manager",
-                "universal-process-manager",
-                "bun",
-                "deno",
-                "nodejs",
-                "python",
-                "cluster",
-                "daemon",
-                "production",
-                "deployment",
-                "monitoring",
-                "prometheus",
-                "zero-downtime",
-                "reload",
-                "log-management",
-                "health-check",
-                "pboss",
-                "procboss",
-                "cron",
-                "cron-job",
-                "cron-job-manager",
-                "deployer",
-                "node-deployer"
-        ],
-        "author": "procboss.com",
-        "license": "GPL-3.0",
-        "repository": {
-                "type": "git",
-                "url": "git+https://github.com/procboss/pboss.git"
-        },
-        "bugs": {
-                "url": "https://github.com/procboss/pboss/issues"
-        },
-        "homepage": "https://procboss.com",
-        "engines": {
-                "bun": ">=1.0.0",
-                "node": ">=20.19.0"
-        },
-        "os": [
-                "linux",
-                "darwin",
-                "win32"
-        ],
-        "dependencies": {
-                "chalk": "^5.6.2",
-                "cli-table3": "^0.6.5",
-                "cron-parser": "^5",
-                "pboss": "^1.5.2",
-                "pidusage": "^4.0.1",
-                "ws": "^8.18.0"
-        },
-        "optionalDependencies": {
-                "tsx": "^4.23.0"
-        },
-        "devDependencies": {
-                "@types/bun": "^1.4.2",
-                "@types/node": "22.20.2",
-                "@types/pidusage": "^2.0.5",
-                "@types/ws": "^8.18.1",
-                "bun-types": "^1.4.2",
-                "typescript": "^5.9.3"
-        }
+  "name": "pboss",
+  "version": "1.6.0",
+  "description": "A blazing-fast, runtime-agnostic process manager for Bun, Node.js, and Deno \u2014 native APIs per runtime, no compatibility layers \u2014 built for JavaScript and TypeScript backends.",
+  "type": "module",
+  "main": "dist/api.mjs",
+  "module": "dist/api.mjs",
+  "types": "src/api.ts",
+  "exports": {
+    ".": {
+      "types": "./src/api.ts",
+      "bun": "./src/api.ts",
+      "default": "./dist/api.mjs"
+    },
+    "./cli": {
+      "types": "./src/index.ts",
+      "bun": "./src/index.ts",
+      "default": "./dist/cli.js"
+    },
+    "./types": "./src/types.ts",
+    "./dist/cli.js": "./dist/cli.js",
+    "./deno-entry": "./dist/cli.deno.js"
+  },
+  "bin": {
+    "pboss": "bin/pboss.sh"
+  },
+  "files": [
+    "bin/",
+    "dist/",
+    "src/",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "start": "bun run src/main.ts",
+    "dev": "bun run --watch src/main.ts",
+    "test": "bun test --timeout=60000",
+    "lint": "bun x tsc --noEmit --noUnusedLocals",
+    "prepublishOnly": "bun run ./scripts/build-dist.ts && bun test --timeout=60000"
+  },
+  "keywords": [
+    "process-manager",
+    "universal-process-manager",
+    "bun",
+    "deno",
+    "nodejs",
+    "python",
+    "cluster",
+    "daemon",
+    "production",
+    "deployment",
+    "monitoring",
+    "prometheus",
+    "zero-downtime",
+    "reload",
+    "log-management",
+    "health-check",
+    "pboss",
+    "procboss",
+    "cron",
+    "cron-job",
+    "cron-job-manager",
+    "deployer",
+    "node-deployer"
+  ],
+  "author": "procboss.com",
+  "license": "GPL-3.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/procboss/pboss.git"
+  },
+  "bugs": {
+    "url": "https://github.com/procboss/pboss/issues"
+  },
+  "homepage": "https://procboss.com",
+  "engines": {
+    "bun": ">=1.0.0",
+    "node": ">=20.19.0"
+  },
+  "os": [
+    "linux",
+    "darwin",
+    "win32"
+  ],
+  "dependencies": {
+    "chalk": "^5.6.2",
+    "cli-table3": "^0.6.5",
+    "cron-parser": "^5",
+    "pboss": "^1.5.2",
+    "pidusage": "^4.0.1",
+    "ws": "^8.18.0"
+  },
+  "optionalDependencies": {
+    "tsx": "^4.23.0"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.2",
+    "@types/node": "22.20.2",
+    "@types/pidusage": "^2.0.5",
+    "@types/ws": "^8.18.1",
+    "bun-types": "^1.4.2",
+    "typescript": "^5.9.3"
+  }
 }

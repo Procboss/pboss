@@ -49,6 +49,31 @@ The full documentation lives at [docs.procboss.com](https://docs.procboss.com)
 
 ## Installation
 
+### Universal Installer (recommended)
+
+One command — it asks which runtime pboss should run under (Node is the
+default; press Enter), installs the runtime when it is missing, installs the
+published package through that runtime's own package ecosystem, and saves
+your choice so every later `pboss` — including upgrades — uses it:
+
+```bash
+curl -fsSL https://procboss.com/install.sh | sh
+```
+
+Select the runtime up front instead of being asked:
+
+```bash
+curl -fsSL https://procboss.com/install.sh | sh -s -- --runtime=node
+curl -fsSL https://procboss.com/install.sh | sh -s -- --runtime=bun
+curl -fsSL https://procboss.com/install.sh | sh -s -- --runtime=deno
+```
+
+Windows (PowerShell, no Administrator needed):
+
+```powershell
+powershell -c "irm https://procboss.com/install.ps1 | iex"
+```
+
 ### Package-Manager Installs
 
 One package, three runtimes — install pboss with the package manager of the
@@ -69,7 +94,7 @@ bun install -g pboss
 **Deno**
 
 ```bash
-deno install -g -A npm:pboss
+deno install -g -A --name pboss npm:pboss/deno-entry
 ```
 
 Deno is deny-by-default — `-A` grants what a process manager needs. The
@@ -77,11 +102,37 @@ explicit equivalent (`--allow-run --allow-read --allow-write --allow-net
 --allow-env --allow-sys`) and the full permission table live in the
 [installation docs](https://docs.procboss.com/installation#denos-permission-system).
 
+### The Runtime Selection
+
+`pboss` never guesses a runtime from whatever happens to be installed —
+the runtime is **your** explicit, persistent choice, stored in
+`~/.pboss/.runtime`:
+
+- **First run** — if nothing is configured yet, `pboss` asks once
+  (interactive terminals only) and saves the answer. On a machine with no
+  selection and no terminal, pass the flag explicitly: `pboss --runtime=bun`.
+- **`--runtime=<node|bun|deno>`** — run one invocation under a runtime.
+  When nothing is configured yet it *initializes* the persistent selection;
+  when a different runtime is configured it overrides for that invocation
+  only and tells you how to change it permanently.
+- **`pboss runtime`** — show the configured runtime, the executing engine,
+  and how pboss was installed.
+- **`pboss runtime change`** — switch permanently: interactive, installs the
+  new runtime when missing, installs/updates the published pboss package
+  for it, and only then flips the selection (a failure keeps the old one).
+
+The `pboss` command itself is a small shell/PowerShell wrapper
+(`bin/pboss.sh` / `bin/pboss.ps1`) that reads the selection and dispatches
+to that runtime's own entrypoint — so a Bun-only machine works without
+Node anywhere, and `pboss runtime change` is all it takes to switch.
+The wrapper needs no JavaScript runtime to start, which is exactly how
+it can be the one binary npm links for every runtime mix.
+
 ### Verify Installation
 
 ```bash
 pboss --version
-pboss --runtime    # which runtime is executing pboss right now
+pboss runtime      # the configured runtime + the engine executing pboss
 ```
 
 The `pboss` command lands in the package manager's bin directory
@@ -197,19 +248,20 @@ pboss list
 ### Updating
 
 `pboss upgrade` self-updates through the channel that installed it (npm, bun,
-brew, snap) — one machine, one CLI — and verifies `pboss --version` on your
-PATH actually reports the new version:
+deno, brew, snap) — one machine, one CLI — and verifies `pboss --version` on
+your PATH actually reports the new version. Upgrades follow the runtime you
+selected: `~/.pboss/.runtime` says node → npm, bun → bun, deno → deno — your
+choice survives every upgrade:
 
 ```bash
 pboss upgrade --check    # see current → latest, the detected channel, and the exact command
 pboss upgrade            # do it (adds --channel <x> to repair a misdetected channel)
 ```
 
-<!-- 2026-09-29: the universal-installer channel is hidden while the product
-     focuses on JS/TS package-manager installs. Re-add when it returns: put
-     "installer" back in the channel list and restore the sentence
-     "The installer downloads the exact version the command announces
-     (pinned against the npm registry)." -->
+<!-- 2026-10-04: the universal-installer channel installs through the selected
+     runtime's package ecosystem now, so the .runtime selection decides the
+     upgrade command — the "installer" channel and the runtime channels are
+     the same thing. -->
 
 ---
 

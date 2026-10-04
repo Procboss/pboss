@@ -41,11 +41,8 @@ describe("README.md: removed-at-the-owner's-request sections stay removed", () =
     expect(visible).not.toContain("Open the URL anywhere");
   });
 
-  test("no One-Line Universal Install (removed 2026-09-29 — package managers only for now)", () => {
+  test("no One-Line Universal Install heading (the installer is a section now, 2026-10-04)", () => {
     expect(visible).not.toContain("One-Line Universal Install");
-    expect(visible).not.toContain("curl -fsSL https://procboss.com/install.sh | bash");
-    expect(visible).not.toContain("install.ps1");
-    expect(visible).not.toContain("install.cmd");
   });
 
   test("no Runtime-Agnostic Architecture section (moved to the main docs, 2026-09-29)", () => {
@@ -103,14 +100,28 @@ describe("README.md: the untouched core contract survives removals", () => {
     expect(readme).toContain("bun install -g pboss");
     expect(readme).toContain("npm install -g pboss");
     // 2026-09-29: -A added at the owner's request — Deno is deny-by-default
-    // and a process manager needs the full grant set.
-    expect(readme).toContain("deno install -g -A npm:pboss");
+    // and a process manager needs the full grant set. 2026-10-04: the runtime
+    // wrapper architecture — deno installs the published ENTRY subpath
+    // (--name pins the command; deno runs package bins as modules).
+    expect(readme).toContain("deno install -g -A --name pboss npm:pboss/deno-entry");
     // 2026-09-29: per-runtime install blocks at the owner's request — a bold
     // runtime label above its own fenced single-command block, so GitHub's
     // copy button copies exactly one install command.
     expect(readme).toContain("**Node.js**\n\n```bash\nnpm install -g pboss\n```");
     expect(readme).toContain("**Bun**\n\n```bash\nbun install -g pboss\n```");
-    expect(readme).toContain("**Deno**\n\n```bash\ndeno install -g -A npm:pboss\n```");
+    expect(readme).toContain("**Deno**\n\n```bash\ndeno install -g -A --name pboss npm:pboss/deno-entry\n```");
+    // 2026-10-04: the universal installer is BACK (runtime-aware): the
+    // one-liner prompts for a runtime (Node default), --runtime=<x> pins it,
+    // and the PowerShell twin serves Windows.
+    expect(readme).toContain("### Universal Installer (recommended)");
+    expect(readme).toContain("curl -fsSL https://procboss.com/install.sh | sh");
+    expect(readme).toContain("curl -fsSL https://procboss.com/install.sh | sh -s -- --runtime=bun");
+    expect(readme).toContain("powershell -c \"irm https://procboss.com/install.ps1 | iex\"");
+    // The runtime-selection contract: .runtime, --runtime, pboss runtime change.
+    expect(readme).toContain("### The Runtime Selection");
+    expect(readme).toContain("~/.pboss/.runtime");
+    expect(readme).toContain("pboss runtime change");
+    expect(readme).toContain("pboss --runtime=bun");
     // 2026-09-29: the runtime-selection rule (node:cluster task) — unstated
     // runtimes inherit the MAIN runtime running pboss; Node apps cluster
     // through node:cluster with one shared port.

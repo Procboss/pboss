@@ -307,7 +307,7 @@ describe("the same dist bundle runs under Node (execution e2e)", () => {
     });
   }
 
-  test("node executes the bundle: --version and --runtime report honestly", async () => {
+  test("node executes the bundle: --version and `runtime` report honestly", async () => {
     if (!haveNode || !haveDist) return;
     const home = mkdtempSync(join(tmpdir(), "pboss-node-e2e-"));
     try {
@@ -315,10 +315,14 @@ describe("the same dist bundle runs under Node (execution e2e)", () => {
       expect(v.exitCode).toBe(0);
       expect(v.stdout.toString().trim()).toMatch(/^pboss v\d/);
 
-      const rt = nodeCli(["--runtime"], home);
+      // `pboss runtime` (the status command) shows the executing engine —
+      // Node under node (not the test host's runtime). The bare
+      // `--runtime` info flag is gone: --runtime is a VALUE flag now.
+      const rt = nodeCli(["runtime"], home);
       expect(rt.exitCode).toBe(0);
-      expect(rt.stdout.toString()).toContain("Runtime: Node.js");
-      expect(rt.stdout.toString()).not.toContain("Bun"); // it IS node — not the test host's runtime
+      expect(rt.stdout.toString()).toContain("Executing engine:");
+      expect(rt.stdout.toString()).toContain("Node");
+      expect(rt.stdout.toString()).not.toContain("Executing engine:   Bun");
     } finally {
       rmSync(home, { recursive: true, force: true });
     }

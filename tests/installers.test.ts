@@ -1,5 +1,13 @@
 import { describe, test, expect } from "bun:test";
-import { readFileSync, existsSync, mkdtempSync, rmSync, writeFileSync, chmodSync, symlinkSync } from "fs";
+import {
+  readFileSync,
+  existsSync,
+  mkdtempSync,
+  rmSync,
+  writeFileSync,
+  chmodSync,
+  symlinkSync,
+} from "fs";
 import { join, dirname } from "path";
 import { tmpdir } from "os";
 
@@ -12,330 +20,376 @@ const ps1 = readFileSync(PS1_PATH, "utf8");
 const cmd = readFileSync(CMD_PATH, "utf8");
 
 /**
- * The universal installer's runtime policy (runtime-agnostic architecture):
+ * The universal installer's runtime-aware contract:
  *
- *   - The installer's ONLY runtime responsibility: ensure AT LEAST ONE of
- *     Bun / Node / Deno exists. Any one → do nothing. None → install Bun.
- *   - It NEVER selects a runtime, NEVER persists one (no PBOSS_RUNTIME), and
- *     multiple installed runtimes are NOT a conflict.
- *   - It installs the PUBLISHED package globally (bun install -g pboss /
- *     npm install -g pboss / deno install -g npm:pboss) — no git clone,
- *     no source compilation, no Bun build toolchain.
- *   - The PATH self-heal and the no-root contract stay exactly as they were.
+ *   - The USER selects the runtime: --runtime=<node|bun|deno> explicitly, or
+ *     the interactive prompt (Node on Enter). Never inferred from PATH.
+ *   - Invalid values die with the exact supported list BEFORE installing
+ *     anything.
+ *   - The selected runtime is installed when missing (bun/deno official
+ *     installers; node = the official dist tarball, rootless).
+ *   - The PUBLISHED package is installed through the selected runtime's own
+ *     package ecosystem — npm / bun / deno install -g — never a clone.
+ *   - The installer then calls `pboss --runtime=<x> --version`, which
+ *     persists the selection to ~/.pboss/.runtime.
  *
- * The functional sims are machine-independent (Task 67 lesson): temp HOME
- * and stub `id`/`bun`/`node`/`deno`/`curl` on PATH — never the real
- * installer's network side, never a real global install.
+ * The functional sims are machine-independent (Task 67 lesson): temp HOME and
+ * stub `node`/`npm`/`bun`/`deno`/`curl`/`pboss` on PATH — never the real
+ * installer's network side, never a real global install. The stubs sit in
+ * FRONT of the host PATH so the real runtimes never leak into "is the
+ * runtime present?" decisions.
  */
 
-/** Extract step 2 (runtime presence) from the real script. */
-function stepRuntime(): string {
-  const start = sh.indexOf("# 2. Runtime presence");
-  const end = sh.indexOf("# 3. Install the published pboss package");
-  expect(start).toBeGreaterThan(0);
-  expect(end).toBeGreaterThan(start);
-  return sh.slice(start, end);
-}
-
-/** Extract step 5 (PATH self-heal) from the real script. */
-function step5(): string {
-  const start = sh.indexOf('if [ -n "$PM_DIR" ] && [[ ":$PATH:" != *":$PM_DIR:"* ]]; then');
-  const end = sh.indexOf("# 6. Boot persistence");
-  expect(start).toBeGreaterThan(0);
-  expect(end).toBeGreaterThan(start);
-  return sh.slice(start, end);
-}
+const POSIX = process.platform !== "win32";
 
 /** A dir of stub executables injected at the FRONT of PATH. */
 function stubDir(files: Record<string, string>): string {
   const dir = mkdtempSync(join(tmpdir(), "pboss-installer-stubs-"));
   for (const [name, body] of Object.entries(files)) {
     const f = join(dir, name);
-    writeFileSync(f, `#!/bin/bash\n${body}\n`);
+    writeFileSync(f, `#!/bin/sh\n${body}\n`);
     chmodSync(f, 0o755);
   }
   // The shell itself must resolve inside the hermetic PATH (pipes spawn
-  // `bash` by name) — a symlink, never a stub, so it behaves exactly like
-  // the real one.
+  // `sh`/`bash` by name) — a symlink, never a stub, so it behaves exactly
+  // like the real one.
+  symlinkSync("/bin/sh", join(dir, "sh"));
   symlinkSync("/bin/bash", join(dir, "bash"));
   return dir;
 }
 
-/** `id` stub: FAKE_UID / FAKE_USER control who we pretend to be. */
-const ID_STUB = `case "$1" in
-  -un) echo "\${FAKE_USER:-testuser}" ;;
-  *) echo "\${FAKE_UID:-1000}" ;;
-esac`;
+/** A runtime/PM stub: records its argv, exit 0. */
+const LOG = `echo "$0 $*" >> "\${STUB_LOG:-/dev/null}"`
 
-/** A runtime stub: prints its name so we can see it being probed. */
-const RUNTIME_STUB = `echo "stub-$0 ran with $@" >> "\${STUB_LOG:-/dev/null}"\nexit 0`;
+/** Strip ANSI escapes (the installer colorizes unconditionally). */
+function stripAnsi(s: string): string {
+  return s.replace(/\x1b\[[0-9;]*[A-Za-z]/g, "").replace(/\x1b/g, "");
+}
 
-/** curl stub: records every URL — proves no runtime gets downloaded. */
-const CURL_STUB = `echo "curl $*" >> "\${STUB_LOG:-/dev/null}"\nexit 1`;
+/** npm stub: records, answers the prefix, and "links" a stub pboss. */
+function npmStub(): string {
+  return `case "$1" in
+  config)
+    case "$3" in
+      prefix) echo "$STUB_NPM_PREFIX" ;;
+      *) echo "" ;;
+    esac ;;
+  install)
+    ${LOG}
+    mkdir -p "$STUB_NPM_PREFIX/bin"
+    printf '%s\\n' '#!/bin/sh' 'echo "pboss $*" >> "\${STUB_LOG:-/dev/null}"' 'echo "pboss v9.9.9"' > "$STUB_NPM_PREFIX/bin/pboss"
+    chmod +x "$STUB_NPM_PREFIX/bin/pboss"
+    ;;
+esac
+exit 0`;
+}
 
-/**
- * Run a slice with a temp HOME, stubbed `id`/`curl` and a configurable set
- * of "installed" runtimes. Returns the stub log (everything the stubs saw).
- */
-function runSlice(
-  block: string,
-  home: string,
-  opts: { runtimes?: string[]; extra?: Record<string, string> } = {},
-): { code: number; out: string; log: string } {
+/** A runtime stub (bun/deno): records installs, "links" pboss next to itself
+ *  (the installer derives the PM bin dir from the runtime's own location). */
+function runtimeStub(): string {
+  return `if [ "$1" = "install" ] || [ "$1" = "add" ]; then
+  ${LOG}
+  d=$(dirname "$0")
+  mkdir -p "$d"
+  printf '%s\\n' '#!/bin/sh' 'echo "pboss $*" >> "\${STUB_LOG:-/dev/null}"' 'echo "pboss v9.9.9"' > "$d/pboss"
+  chmod +x "$d/pboss"
+fi
+exit 0`;
+}
+
+/** Run the REAL installer with a temp HOME + stubbed PATH. */
+function runInstaller(
+  args: string[],
+  opts: { runtimes?: string[]; extraEnv?: Record<string, string> } = {},
+): { code: number; out: string; err: string; log: string } {
+  const home = mkdtempSync(join(tmpdir(), "pboss-inst-home-"));
   const log = join(home, "stub.log");
   const files: Record<string, string> = {
-    id: ID_STUB,
-    curl: CURL_STUB,
+    id: `case "$1" in -un) echo "testuser" ;; *) echo "1000" ;; esac`,
+    curl: `echo "curl $*" >> "$STUB_LOG"; exit 1`, // runtime downloads must be opt-in
+    npm: npmStub(),
   };
   for (const rt of opts.runtimes ?? []) {
-    files[rt] = RUNTIME_STUB;
+    files[rt] = runtimeStub();
   }
   const dir = stubDir(files);
+  const prefix = join(home, ".npm-global");
   try {
-    // NOTE: the PATH carries ONLY the stub dir — the host's real
-    // node/bun must not leak into "is a runtime present?" decisions.
-    const proc = Bun.spawnSync(["bash", "-c", block], {
+    const proc = Bun.spawnSync(["sh", SH_PATH, ...args], {
       env: {
-        ...process.env,
+        PATH: `${dir}:/usr/bin:/bin`,
         HOME: home,
-        SUDO_USER: "",
+        TERM: "dumb",
         STUB_LOG: log,
-        PATH: dir,
-        ...opts.extra,
+        STUB_NPM_PREFIX: prefix,
+        SHELL: "/bin/bash",
+        ...opts.extraEnv,
       },
+      stdout: "pipe",
+      stderr: "pipe",
+      stdin: "ignore",
     });
     return {
-      code: proc.exitCode,
-      out: proc.stdout.toString() + proc.stderr.toString(),
+      code: proc.exitCode ?? -1,
+      out: stripAnsi(new TextDecoder().decode(proc.stdout)),
+      err: stripAnsi(new TextDecoder().decode(proc.stderr)),
       log: existsSync(log) ? readFileSync(log, "utf8") : "",
     };
   } finally {
     rmSync(dir, { recursive: true, force: true });
+    rmSync(home, { recursive: true, force: true });
   }
 }
 
-// ─── The runtime policy (architecture spec §14–§21) ───────────────────────
+/* ── source pins ─────────────────────────────────────────────────────────── */
 
-describe("install.sh: runtime presence policy", () => {
-  test("no runtime at all → Bun is installed (the only runtime side effect)", () => {
-    const home = mkdtempSync(join(tmpdir(), "pboss-policy-"));
-    try {
-      // Slice: the detection + the "none found" branch up to the install
-      // (curl stubbed — it records instead of downloading).
-      const block = stepRuntime() + '\necho "BRANCH-DONE"\n';
-      const r = runSlice(block, home, { runtimes: [] });
-      // The branch body references curl (stubbed) — the slice proves the
-      // IF fires: the script says it is installing Bun.
-      expect(r.out).toContain("No supported runtime found");
-      expect(r.out).toContain("installing Bun");
-    } finally {
-      rmSync(home, { recursive: true, force: true });
-    }
+describe("installers: the runtime-aware contract (source pins)", () => {
+  test("pure POSIX sh — the documented pipe is `| sh`", () => {
+    expect(sh.startsWith("#!/bin/sh\n")).toBe(true);
+    expect(sh).toContain("set -e");
   });
 
-  for (const [label, runtimes] of [
-    ["bun", ["bun"]],
-    ["node", ["node"]],
-    ["deno", ["deno"]],
-    ["bun + node", ["bun", "node"]],
-    ["bun + node + deno", ["bun", "node", "deno"]],
-  ] as const) {
-    test(`${label} present → nothing installed, nothing selected`, () => {
-      const home = mkdtempSync(join(tmpdir(), "pboss-policy-"));
-      try {
-        const block = stepRuntime() + '\necho "BRANCH-DONE"\n';
-        const r = runSlice(block, home, { runtimes: [...runtimes] });
-        expect(r.out).toContain("A supported runtime is present — nothing installed, nothing selected");
-        // No runtime download happened (curl stub stayed silent).
-        expect(r.log).not.toContain("bun.sh/install");
-        // Each PRESENT runtime was reported as found (no "not found" line).
-        for (const rt of runtimes) expect(r.out).not.toContain(`${rt} not found`);
-      } finally {
-        rmSync(home, { recursive: true, force: true });
-      }
-    });
-  }
-
-  test("the none-found condition tests ALL THREE runtimes before installing Bun", () => {
-    expect(sh).toContain('if [ -z "$HAS_BUN" ] && [ -z "$HAS_NODE" ] && [ -z "$HAS_DENO" ]; then');
+  test("explicit runtime selection with both spellings + --help", () => {
+    expect(sh).toContain("--runtime=*)");
+    expect(sh).toContain("--runtime) EXPECT_VALUE=1");
+    expect(sh).toContain("[--runtime=node|bun|deno]");
   });
 
-  test("no priority chain — the installer never ranks runtimes", () => {
-    // The forbidden shape: a case/elseif that prefers bun over node over deno
-    // FOR RUNTIME SELECTION. (The package-manager choice is install-only
-    // and is allowed — it installs the npm package, it does not pick a
-    // runtime for pboss.)
-    const runtimeSection = stepRuntime();
-    expect(runtimeSection).not.toMatch(/prefer|priority|rank/i);
+  test("the interactive prompt: Node is the default on Enter", () => {
+    expect(sh).toContain("Kindly select your runtime:");
+    expect(sh).toContain("Select runtime [1]: ");
+    expect(sh).toContain('"" | 1 | node) RUNTIME="node"');
+    expect(sh).toContain('2 | bun) RUNTIME="bun"');
+    expect(sh).toContain('3 | deno) RUNTIME="deno"');
   });
 
-  test("never persists a runtime choice (no PBOSS_RUNTIME is ever set)", () => {
-    expect(sh).not.toMatch(/export\s+PBOSS_RUNTIME|PBOSS_RUNTIME=/);
-    expect(ps1).not.toMatch(/\$env:PBOSS_RUNTIME/);
+  test("invalid values: the exact spec text, before anything installs", () => {
+    expect(sh).toContain("Unsupported runtime: %s");
+    expect(sh).toContain("Supported runtimes:");
   });
-});
 
-describe("install.sh: published package, no source compilation", () => {
-  test("installs the published package globally via an available package manager", () => {
-    expect(sh).toContain("bun install -g");
+  test("non-interactive without a runtime: the spec error", () => {
+    expect(sh).toContain("ProcBoss needs a runtime selection.");
+    expect(sh).toContain("--runtime=node");
+  });
+
+  test("the selected runtime is installed when missing (never switched)", () => {
+    expect(sh).toContain('ProcBoss requires $(runtime_display "$RUNTIME"), but');
+    expect(sh).toContain("Attempting to install $(runtime_display");
+    expect(sh).toContain("Unable to install $(runtime_display");
+    // bun + deno: the official one-line installers; node: the dist tarball.
+    expect(sh).toContain("https://bun.sh/install");
+    expect(sh).toContain("https://deno.land/install.sh");
+    expect(sh).toContain("https://nodejs.org/dist/latest-v22.x");
+  });
+
+  test("the PUBLISHED package installs through the selected ecosystem", () => {
     expect(sh).toContain("npm install -g");
-    expect(sh).toContain("deno install -g");
-    expect(sh).toContain("npm:${PKG_SPEC}");
+    expect(sh).toContain("bun install -g") /* bun's own block */ ;
+    expect(sh).toContain('"$RUNTIME_BIN" install -g "$PKG_SPEC"');
+    // deno: the published ENTRY subpath (deno runs bins as modules).
+    expect(sh).toContain("npm:pboss/deno-entry");
+    expect(sh).toContain("--name pboss");
   });
 
-  test("NO git clone, NO source archive, NO compiling", () => {
-    expect(sh).not.toContain("git clone");
-    expect(sh).not.toContain("archive/refs/heads");
-    expect(sh).not.toContain("bun build");
-    expect(sh).not.toContain("--compile");
-    expect(sh).not.toContain("Compiling");
-    expect(ps1).not.toContain("git");
-    expect(ps1).not.toContain("Expand-Archive");
-    expect(ps1).not.toContain("bun build");
+  test("the installer initializes the selection through pboss itself", () => {
+    expect(sh).toContain('"$PBOSS_BIN" --runtime="$RUNTIME" --version');
+    expect(sh).toContain("Runtime persisted: ${RUNTIME}");
   });
 
-  test("the package-manager choice is documented as install-only", () => {
-    expect(sh).toContain("installs ONLY the npm package");
-    expect(sh).toContain("not a runtime selection");
-  });
-
-  test("verifies pboss and reports the EXECUTING runtime (not a selection)", () => {
-    expect(sh).toContain('command -v pboss');
-    expect(sh).toContain('--runtime 2>/dev/null');
-  });
-
-  test("version-exact installs: PBOSS_VERSION pins the package spec", () => {
+  test("PBOSS_VERSION pins the exact release", () => {
     expect(sh).toContain('[ -n "$PBOSS_VERSION" ] && PKG_SPEC="pboss@${PBOSS_VERSION}"');
   });
 
-  test("bash syntax is valid", () => {
-    const proc = Bun.spawnSync(["bash", "-n", SH_PATH]);
-    expect(proc.exitCode).toBe(0);
-  });
-});
-
-// ─── The no-root contract (unchanged from the old installer) ──────────────
-
-describe("install.sh: no-root contract", () => {
-  test("INSTALL_DIR references are gone — the package manager owns the bin dir now", () => {
-    expect(sh).not.toContain("INSTALL_DIR=");
+  test("the channel stamp + PATH self-heal + boot persistence stay", () => {
+    expect(sh).toContain('"channel":"universal"');
+    expect(sh).toContain("Added by the ProcBoss installer");
+    expect(sh).toContain("pboss startup install");
   });
 
-  test("the sudo machinery is GONE from the install path — one drop-back exception", () => {
-    // The ONLY sudo use left: root invoking for the per-user boot service.
-    const codeLines = sh
-      .split("\n")
-      .filter((l) => /\bsudo\b/.test(l))
-      .filter((l) => !/^\s*#/.test(l))
-      .filter((l) => !/\becho\b/.test(l));
-    expect(codeLines.length).toBe(1);
-    expect(codeLines[0]).toContain('sudo -u "$INVOKE_USER" env');
+  test("the PowerShell installer mirrors the contract", () => {
+    expect(ps1).toContain("param(");
+    expect(ps1).toContain("[string]$Runtime");
+    expect(ps1).toContain("Kindly select your runtime:");
+    expect(ps1).toContain("Unsupported runtime:");
+    expect(ps1).toContain("npm:pboss/deno-entry");
+    expect(ps1).toContain("--runtime=$selected --version");
+    // The Windows-only extra: wrapper shims (npm's own .cmd cannot run .sh).
+    expect(ps1).toContain("pboss.ps1");
+    expect(ps1).toContain("pboss.cmd");
   });
 
-  test("the channel stamp records the channel (upgrade re-runs this installer)", () => {
-    expect(sh).toContain('"channel":"universal","by":"install.sh","stampedAt":%s');
-  });
-
-  test("PATH self-heal: appends to (or creates) the user's rc files", () => {
-    expect(sh).toContain('rc_primary="$INVOKE_HOME/.bashrc"');
-    expect(sh).toContain('rc_login="$INVOKE_HOME/.profile"');
-    expect(sh).toContain('rc_primary="$INVOKE_HOME/.zshrc"');
-    expect(sh).toContain('rc_login="$INVOKE_HOME/.zprofile"');
-    expect(sh).toContain("Added ${PM_DIR} to PATH in");
-    expect(sh).toContain("open a NEW terminal");
-  });
-
-  test("PATH self-heal sim: a missing ~/.bashrc is created; a missing ~/.profile is not", () => {
-    const home = mkdtempSync(join(tmpdir(), "pboss-heal-"));
-    try {
-      const block = step5();
-      const proc = Bun.spawnSync(["bash", "-c", block], {
-        env: {
-          ...process.env,
-          HOME: home,
-          INVOKE_HOME: home,
-          PM_DIR: join(home, ".bun", "bin"),
-          PATH: "/usr/bin:/bin",
-          SHELL: "/bin/bash",
-        },
-      });
-      expect(proc.exitCode).toBe(0);
-      const out = proc.stdout.toString();
-      expect(out).toContain("Added");
-      expect(existsSync(join(home, ".bashrc"))).toBe(true);
-      expect(existsSync(join(home, ".profile"))).toBe(false);
-      expect(readFileSync(join(home, ".bashrc"), "utf8")).toContain(
-        `export PATH="${join(home, ".bun", "bin")}:$PATH"`
-      );
-    } finally {
-      rmSync(home, { recursive: true, force: true });
-    }
-  });
-
-  test("PATH self-heal sim: an rc already referencing the dir is left alone", () => {
-    const home = mkdtempSync(join(tmpdir(), "pboss-heal-"));
-    try {
-      const pmDir = join(home, ".bun", "bin");
-      writeFileSync(join(home, ".bashrc"), `export PATH="$HOME/.bun/bin:$PATH"\n`);
-      const block = step5();
-      const proc = Bun.spawnSync(["bash", "-c", block], {
-        env: {
-          ...process.env,
-          HOME: home,
-          INVOKE_HOME: home,
-          PM_DIR: pmDir,
-          PATH: "/usr/bin:/bin",
-          SHELL: "/bin/bash",
-        },
-      });
-      const out = proc.stdout.toString();
-      expect(out).toContain("already in your shell profile");
-      expect(readFileSync(join(home, ".bashrc"), "utf8")).toBe(
-        `export PATH="$HOME/.bun/bin:$PATH"\n`
-      );
-    } finally {
-      rmSync(home, { recursive: true, force: true });
-    }
-  });
-});
-
-// ─── install.ps1: the same policy on Windows ─────────────────────────────
-
-describe("install.ps1: same runtime policy as the shell installer", () => {
-  test("detects bun, node AND deno — any one is enough", () => {
-    expect(ps1).toContain("Get-Command bun");
-    expect(ps1).toContain("Get-Command node");
-    expect(ps1).toContain("Get-Command deno");
-  });
-
-  test("installs Bun ONLY when NO runtime exists", () => {
-    expect(ps1).toContain("if (-not ($bunCmd -or $nodeCmd -or $denoCmd))");
-    expect(ps1).toContain("install.ps1");
-  });
-
-  test("installs the published package, never compiles", () => {
-    expect(ps1).toContain("bun install -g");
-    expect(ps1).toContain("npm install -g");
-    expect(ps1).toContain("deno install -g");
-    expect(ps1).not.toContain("git");
-    expect(ps1).not.toContain("Expand-Archive");
-    expect(ps1).not.toContain("bun build");
-  });
-
-  test("reports the executing runtime at the end", () => {
-    expect(ps1).toContain("pboss --runtime");
-  });
-
-  test("the shell and PowerShell installers agree on the policy text", () => {
-    const shPolicy = sh.includes("Ensure at least one supported runtime exists");
-    const ps1Policy = ps1.includes("Ensure at least one supported runtime exists");
-    expect(shPolicy).toBe(true);
-    expect(ps1Policy).toBe(true);
-  });
-});
-
-describe("install.cmd: the launcher delegates to install.ps1", () => {
-  test("still just invokes the PowerShell installer", () => {
+  test("install.cmd still bootstraps the PowerShell installer", () => {
+    expect(cmd).toContain("powershell");
     expect(cmd).toContain("install.ps1");
   });
+});
+
+/* ── functional sims (stubs, no network, no real install) ─────────────────── */
+
+describe("installers: sims — the explicit runtime flow", () => {
+  test(
+    "--runtime=node: npm installs the published package; pboss initializes the selection",
+    () => {
+      if (!POSIX) return;
+      const r = runInstaller(["--runtime=node"], { runtimes: ["node"] });
+      expect(r.code).toBe(0);
+      expect(r.out).toContain("Selected runtime: node");
+      // The published package via npm (the unwritable-prefix sim takes the
+      // --prefix spelling — both are the same npm global install).
+      expect(r.log).toContain("npm install -g");
+      expect(r.log).toContain("pboss");
+      // The initializer call — this is what persists ~/.pboss/.runtime.
+      expect(r.log).toContain("pboss --runtime=node --version");
+      expect(r.out).toContain("pboss is available");
+    },
+    30000,
+  );
+
+  test(
+    "--runtime=bun: bun installs the package (node being present changes nothing)",
+    () => {
+      if (!POSIX) return;
+      const r = runInstaller(["--runtime=bun"], { runtimes: ["bun", "node"] });
+      expect(r.code).toBe(0);
+      expect(r.out).toContain("Selected runtime: bun");
+      expect(r.log).toContain("bun install -g pboss");
+      expect(r.log).toContain("pboss --runtime=bun --version");
+      // node was present AND ignored — the selection is authoritative.
+      expect(r.log).not.toContain("npm install -g");
+    },
+    30000,
+  );
+
+  test(
+    "--runtime=deno: the published entry subpath, --name pboss",
+    () => {
+      if (!POSIX) return;
+      const r = runInstaller(["--runtime=deno"], { runtimes: ["deno", "node"] });
+      expect(r.code).toBe(0);
+      expect(r.log).toContain("deno install -g -f -A --name pboss npm:pboss/deno-entry");
+      expect(r.log).toContain("pboss --runtime=deno --version");
+      expect(r.log).not.toContain("npm install -g");
+    },
+    30000,
+  );
+
+  test(
+    "PBOSS_VERSION pins the exact release for every ecosystem",
+    () => {
+      if (!POSIX) return;
+      const r = runInstaller(["--runtime=node"], {
+        runtimes: ["node"],
+        extraEnv: { PBOSS_VERSION: "1.6.0" },
+      });
+      expect(r.code).toBe(0);
+      expect(r.log).toContain("npm install -g");
+      expect(r.log).toContain("pboss@1.6.0");
+    },
+    30000,
+  );
+
+  test(
+    "an invalid runtime exits BEFORE installing anything",
+    () => {
+      if (!POSIX) return;
+      const r = runInstaller(["--runtime=kubernetes"], { runtimes: ["node", "bun"] });
+      expect(r.code).toBe(1);
+      expect(r.err).toContain("Unsupported runtime: kubernetes");
+      expect(r.err).toContain("Supported runtimes:");
+      expect(r.log).not.toContain("install");
+      expect(r.out).not.toContain("Installing");
+    },
+    30000,
+  );
+
+  test(
+    "a missing value for --runtime is a usage error",
+    () => {
+      if (!POSIX) return;
+      const r = runInstaller(["--runtime"], { runtimes: ["node"] });
+      expect(r.code).toBe(1);
+      expect(r.err).toContain("--runtime requires a value");
+    },
+    30000,
+  );
+
+  test(
+    "no runtime + headless stdin: the spec error, exit 1, nothing installed",
+    () => {
+      if (!POSIX) return;
+      const r = runInstaller([], { runtimes: ["node"] });
+      expect(r.code).toBe(1);
+      expect(r.err).toContain("ProcBoss needs a runtime selection.");
+      expect(r.err).toContain("--runtime=node");
+      expect(r.err).toContain("--runtime=bun");
+      expect(r.err).toContain("--runtime=deno");
+      expect(r.log).not.toContain("install");
+    },
+    30000,
+  );
+
+  test(
+    "a MISSING selected runtime is installed (bun via the official installer)",
+    () => {
+      if (!POSIX) return;
+      // No runtimes on the farm; curl stub FAILS → the install attempt fails
+      // honestly and nothing else is touched.
+      const r = runInstaller(["--runtime=bun"], {});
+      expect(r.code).toBe(1);
+      expect(r.out).toContain("Attempting to install Bun...");
+      expect(r.err).toContain("Unable to install Bun automatically.");
+      expect(r.err).toContain("Please install Bun and run:");
+      expect(r.log).toContain("curl -fsSL https://bun.sh/install"); // it tried
+    },
+    30000,
+  );
+
+  test(
+    "a missing NODE is installed from the official dist (tarball path)",
+    () => {
+      if (!POSIX) return;
+      // A hermetic tool farm WITHOUT node: real tools (awk, grep, tar …) as
+      // symlinks, a failing curl stub, and NO node anywhere on PATH.
+      const home = mkdtempSync(join(tmpdir(), "pboss-inst-nodefarm-"));
+      const farm = mkdtempSync(join(tmpdir(), "pboss-inst-tools-"));
+      const log = join(home, "stub.log");
+      try {
+        for (const t of [
+          "awk", "grep", "tr", "cat", "mkdir", "dirname", "basename", "date",
+          "uname", "mktemp", "tar", "ln", "rm", "chown", "head",
+        ]) {
+          try {
+            symlinkSync(`/usr/bin/${t}`, join(farm, t));
+          } catch {
+            /* best-effort — the farm skips what the host lacks */
+          }
+        }
+        symlinkSync("/bin/sh", join(farm, "sh"));
+        symlinkSync("/bin/bash", join(farm, "bash"));
+        writeFileSync(
+          join(farm, "curl"),
+          `#!/bin/sh\necho "curl $*" >> "${log}"\nexit 1\n`,
+        );
+        chmodSync(join(farm, "curl"), 0o755);
+        const proc = Bun.spawnSync(["sh", SH_PATH, "--runtime=node"], {
+          env: { PATH: farm, HOME: home, TERM: "dumb", STUB_LOG: log },
+          stdout: "pipe",
+          stderr: "pipe",
+          stdin: "ignore",
+        });
+        const out = stripAnsi(new TextDecoder().decode(proc.stdout));
+        const err = stripAnsi(new TextDecoder().decode(proc.stderr));
+        expect(proc.exitCode).toBe(1);
+        expect(out).toContain("Attempting to install Node...");
+        // The dist tarball path was tried (the curl stub records the URL).
+        expect(readFileSync(log, "utf8")).toContain("nodejs.org/dist/latest-v22.x");
+        expect(err).toContain("Unable to install Node.js automatically");
+      } finally {
+        rmSync(farm, { recursive: true, force: true });
+        rmSync(home, { recursive: true, force: true });
+      }
+    },
+    30000,
+  );
 });

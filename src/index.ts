@@ -15,9 +15,24 @@
  * License: GPL-3.0-only
  */
 
-import path, { resolve, extname } from "path";
+import path, { resolve, extname, join } from "path";
 import { getRuntime, runtimeDescription, runtimeDisplayName } from "./runtime";
 import { installModeDescription } from "./install-mode";
+import {
+  handleRuntimeFlag,
+  isValidRuntime,
+  normalizeRuntime,
+  pbossInstallArgv,
+  promptRuntimeSelection,
+  readRuntimeFileRaw,
+  runtimeChangePromptText,
+  runtimeInstallCommand,
+  runtimeLabel,
+  installNodeRootless,
+  writeRuntimeSelection,
+  RUNTIME_FILE,
+  type RuntimeChoice,
+} from "./runtime-config";
 
 const R = getRuntime();
 import readline from "node:readline";
@@ -65,6 +80,7 @@ import {
 import {
   currentChannelContext,
   detectChannel,
+  configuredRuntimeChannel,
   buildUpgradePlan,
   compareVersions,
   fetchLatestVersion,
@@ -2306,7 +2322,17 @@ ${colorize("Notes:", "dim")}
       ctx = { ...ctx, stamp: { channel: channelOverride as InstallChannel } };
     }
 
-    const channel = detectChannel(ctx);
+    // The runtime-aware architecture (spec §14): the persistent user-selected
+    // runtime in ~/.pboss/.runtime decides which package ecosystem upgrades
+    // pboss — node→npm, bun→bun, deno→deno. The channel stamp/heuristics only
+    // cover machines that predate a selection. brew/snap keep owning their
+    // own installs (their package manager IS the ecosystem).
+    const runtimeChannel = await configuredRuntimeChannel();
+    const detected = detectChannel(ctx);
+    const channel: InstallChannel =
+      runtimeChannel && (detected === "npm" || detected === "bun" || detected === "deno" || detected === "universal")
+        ? runtimeChannel
+        : detected;
 
     // The registry's latest is known BEFORE the plan is built, because the
     // universal channel pins it into the installer command
@@ -2464,6 +2490,163 @@ ${colorize("Notes:", "dim")}
         colorize("  ☁  cloud link state unknown — check with: pboss cloud status", "dim")
       );
     }
+  }
+
+  /**
+   * `pboss runtime` — the runtime status: the persistent selection, the
+   * executing engine, and how this pboss was installed.
+   */
+  async cmdRuntimeStatus() {
+    const raw = await readRuntimeFileRaw();
+    if (raw === null) {
+      console.log("Configured runtime: none — run `pboss runtime change`, or pass --runtime=<x>");
+    } else if (isValidRuntime(raw)) {
+      console.log(`Configured runtime: ${runtimeLabel(normalizeRuntime(raw) as RuntimeChoice)}  (${RUNTIME_FILE})`);
+    } else {
+      // Broken config is reported, never silently guessed (spec §20).
+      console.error(`Invalid ProcBoss runtime configuration: ${raw}`);
+      console.error("Supported runtimes: node, bun, deno");
+      console.error(`Fix it:  pboss runtime change`);
+      process.exit(1);
+    }
+    console.log(`Executing engine:   ${runtimeDisplayName(R.name)} ${R.misc.runtimeVersion()}`);
+    console.log(`Runtime CLI:        ${runtimeDescription()}`);
+    console.log(`Install:            ${await installModeDescription()}`);
+  }
+
+  /**
+   * `pboss runtime change` — the interactive switcher (spec §12/§13).
+   *
+   * Atomic by construction: the persistent .runtime is written only AFTER
+   * the new runtime exists AND the published package is installed and
+   * verified for it. Any failure leaves the previous selection untouched.
+   */
+  async cmdRuntimeChange(args: string[]) {
+    // An explicit non-interactive answer keeps scripts honest (spec §12's
+    // selector is interactive; automation pins it instead of guessing).
+    const answer = args.find((a) => a.startsWith("--answer="));
+    let selected: RuntimeChoice;
+    if (answer !== undefined) {
+      const value = answer.slice("--answer=".length);
+      const candidate = normalizeRuntime(value);
+      if (!isValidRuntime(candidate)) {
+        console.error(`Unsupported runtime: ${value}\n\nSupported runtimes:\n  node\n  bun\n  deno`);
+        process.exit(1);
+      }
+      selected = candidate;
+    } else {
+      let current: RuntimeChoice | null = null;
+      const raw = await readRuntimeFileRaw();
+      if (raw !== null && isValidRuntime(raw)) current = normalizeRuntime(raw) as RuntimeChoice;
+      try {
+        selected = await promptRuntimeSelection(runtimeChangePromptText(current));
+      } catch (err) {
+        console.error((err as Error).message);
+        process.exit(1);
+      }
+    }
+
+    const previous = await readRuntimeFileRaw();
+    if (previous !== null && isValidRuntime(previous) && normalizeRuntime(previous) === selected) {
+      console.log(`Runtime already set to ${selected} — nothing to change.`);
+      return;
+    }
+
+    // 1. Ensure the runtime exists (install it when missing — spec §3/§20).
+    const ensure = await this.ensureRuntimeInstalled(selected);
+    if (!ensure) process.exit(1);
+
+    // 2. Install/update the published package for the new runtime (spec §13).
+    console.log(`Installing the published pboss package for ${runtimeLabel(selected)} …`);
+    const install = R.process.spawn(pbossInstallArgv(selected), {
+      stdout: "inherit",
+      stderr: "inherit",
+    });
+    const installCode = (await install.exited) ?? -1;
+    if (installCode !== 0) {
+      console.error(`✗ Could not install pboss for ${runtimeLabel(selected)} — the runtime selection is unchanged.`);
+      if (previous !== null && isValidRuntime(previous)) {
+        console.error(`  Configured runtime remains: ${previous}`);
+      }
+      process.exit(1);
+    }
+
+    // 3. Verify: the new runtime must answer before the selection moves.
+    const runtimeBin = R.misc.which(selected);
+    if (!runtimeBin) {
+      console.error(`✗ ${runtimeLabel(selected)} did not stay available after installation — selection unchanged.`);
+      process.exit(1);
+    }
+
+    // 4. Commit the selection (atomic write; upgrades keep it, spec §15).
+    await writeRuntimeSelection(selected);
+
+    // 5. Confirm — exactly the spec §12 receipt.
+    console.log(`ProcBoss runtime changed successfully.`);
+    console.log("");
+    console.log(`Previous runtime: ${previous ?? "none"}`);
+    console.log(`New runtime: ${selected}`);
+    console.log("");
+    const pbossBin = R.misc.which("pboss");
+    if (pbossBin) {
+      console.log(`pboss on PATH:      ${pbossBin}`);
+    } else {
+      console.log(`Note: pboss is not on this shell's PATH yet — open a new terminal.`);
+    }
+    // The boot service may still reference the previous runtime's entry;
+    // refreshing it is one command, done deliberately (never silently).
+    console.log(
+      `Boot service:       re-run ${colorize("pboss startup install", "cyan")} so the boot unit follows the new runtime.`
+    );
+  }
+
+  /**
+   * Ensure a runtime exists, installing it when missing (spec §3/§20).
+   * Returns true when the runtime is available; false after an honest
+   * failure (the caller keeps the old selection).
+   */
+  async ensureRuntimeInstalled(runtime: RuntimeChoice): Promise<boolean> {
+    const R2 = getRuntime();
+    if (R2.misc.which(runtime)) return true;
+    // Well-known per-user locations (a PATH not yet healed by the shell).
+    const { homedir } = await import("node:os");
+    const { existsSync } = await import("node:fs");
+    const candidates: Record<RuntimeChoice, string[]> = {
+      bun: [join(homedir(), ".bun", "bin", "bun")],
+      deno: [join(homedir(), ".deno", "bin", "deno")],
+      node: [join(homedir(), ".local", "bin", "node")],
+    };
+    if (candidates[runtime].some((c) => existsSync(c))) return true;
+
+    console.log(`ProcBoss requires ${runtimeLabel(runtime)}, but ${runtimeLabel(runtime)} was not found.`);
+    console.log("");
+    console.log(`Attempting to install ${runtimeLabel(runtime)}...`);
+    console.log("");
+
+    let ok = false;
+    if (runtime === "node") {
+      const binDir = await installNodeRootless();
+      if (binDir) {
+        ok = true;
+        console.log(`✓ Node.js installed — add ${binDir} to PATH (or open a new terminal).`);
+      }
+    } else {
+      const cmd = runtimeInstallCommand(runtime);
+      const proc = R2.process.spawn(cmd, { stdout: "inherit", stderr: "inherit" });
+      ok = ((await proc.exited) ?? -1) === 0;
+    }
+    if (!ok || !R2.misc.which(runtime)) {
+      // A freshly installed runtime often is not on THIS shell's PATH yet —
+      // accept the well-known locations too before declaring failure.
+      if (candidates[runtime].some((c) => existsSync(c))) return true;
+      console.error(`Unable to install ${runtimeLabel(runtime)} automatically.`);
+      console.error("");
+      console.error(`Please install ${runtimeLabel(runtime)} and run:`);
+      console.error("");
+      console.error(`  pboss runtime change`);
+      return false;
+    }
+    return true;
   }
 
   async cmdEnv(args: string[]) {
@@ -2736,9 +2919,13 @@ ${colorize("Notes:", "dim")}
     daemon reload                 Reloads the daemon
     
     ${colorize("Other:", "cyan")}
-    --runtime                     Print the runtime executing pboss
-                                  (Bun, Node.js or Deno — detected at
-                                  execution time, never configured)
+    runtime                       Show the configured + executing runtimes
+    runtime change                Switch the persistent runtime choice
+                                  (interactive; installs the runtime and the
+                                  pboss package for it if needed)
+    --runtime=<node|bun|deno>     Run this invocation under a runtime; with
+                                  no ~/.pboss/.runtime yet it initializes
+                                  the persistent selection
     ping                          Check if daemon is alive
     kill                          Kill the daemon and all processes
     sendSignal <sig> <id|name>    Send OS signal to process
@@ -2938,13 +3125,18 @@ ${colorize("Notes:", "dim")}
         console.log(`${APP_NAME} v${VERSION}`);
         break;
       case "--runtime":
-        // The ACTUAL executing runtime — not what the installer detected.
-        console.log(`Runtime: ${runtimeDescription()}`);
+        // `--runtime=<x>` is a VALUE flag now (handled before the CLI runs
+        // — src/runtime-config.ts). Reaching this case means a bare
+        // `--runtime` without a value: an honest usage error, not a guess.
+        console.error("--runtime requires a value: node | bun | deno");
+        process.exit(1);
         break;
       case "runtime":
-        console.log(`Runtime: ${runtimeDisplayName(R.name)}`);
-        console.log(`Version: ${R.misc.runtimeVersion()}`);
-        console.log(`Install: ${await installModeDescription()}`);
+        if (commandArgs[0] === "change") {
+          await this.cmdRuntimeChange(commandArgs.slice(1));
+        } else {
+          await this.cmdRuntimeStatus();
+        }
         break;
       case "__daemon":
       case "daemon-server": {
@@ -2998,8 +3190,9 @@ ${colorize("Notes:", "dim")}
 
 async function main() {
   await ensureDirs();
+  const argv = await handleRuntimeFlag(process.argv.slice(2));
   const cli = new PBossCLI();
-  await cli.run(process.argv.slice(2));
+  await cli.run(argv);
 }
 
 // Runs when this file is the EXECUTED SCRIPT (bun run src/index.ts). The
