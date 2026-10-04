@@ -30,6 +30,54 @@ mkdirSync(join(ROOT, "dist"), { recursive: true });
 
 const NODE_SHEBANG = "#!/usr/bin/env node\n";
 
+/*
+ * One bundle, three runtimes — and Deno is strict about builtins.
+ *
+ * Node and Bun accept BOTH `from "events"` and `from "node:events"` in ESM;
+ * Deno accepts ONLY the prefixed form (bare specifiers are "not a
+ * dependency" — a hard error). Our sources and the bundled CJS deps
+ * (through __require) both end up with bare forms, so every emitted bundle
+ * is rewritten to the always-valid `node:` form before it ships. This is
+ * what makes dist/cli.js run under bun, node AND `deno run -A` unchanged.
+ */
+const NODE_BUILTINS = new Set([
+  "assert", "assert/strict", "async_hooks", "buffer", "child_process", "cluster",
+  "console", "constants", "crypto", "dgram", "diagnostics_channel", "dns",
+  "dns/promises", "domain", "events", "fs", "fs/promises", "http", "http2",
+  "https", "inspector", "module", "net", "os", "path", "path/posix",
+  "path/win32", "perf_hooks", "process", "punycode", "querystring", "readline",
+  "readline/promises", "repl", "stream", "stream/consumers", "stream/promises",
+  "stream/web", "string_decoder", "sys", "timers", "timers/promises", "tls",
+  "trace_events", "tty", "url", "util", "util/types", "v8", "vm", "wasi",
+  "worker_threads", "zlib",
+]);
+
+/** Rewrite bare builtin specifiers in static import/export statements to
+ *  `node:`-prefixed. Bun's bundler emits single-line import statements, so a
+ *  line-anchored scan is exact — and idempotent (already-prefixed specifiers
+ *  like `node:module` contain a colon and cannot match a bare name). */
+function prefixNodeBuiltins(body: string): string {
+  return body.replace(
+    /^(\s*(?:import|export)\b[^;\n]*?\bfrom\s*|\s*import\s+)(["'])([^"'\s;]+)\2/gm,
+    (match, prefix: string, quote: string, spec: string) =>
+      NODE_BUILTINS.has(spec) ? `${prefix}${quote}node:${spec}${quote}` : match,
+  );
+}
+
+/** The guard: after the rewrite, no static import may name a bare builtin —
+ *  a miss here means the emitter's shape changed and the rewrite above (or
+ *  the regex) must be updated, never shipped broken for Deno. */
+function assertNoBareBuiltins(rel: string, body: string) {
+  const offenders = body.match(
+    /^(\s*(?:import|export)\b[^;\n]*?\bfrom\s*|\s*import\s+)(["'])(assert|async_hooks|buffer|child_process|cluster|console|constants|crypto|dgram|diagnostics_channel|dns|domain|events|fs|http|http2|https|inspector|module|net|os|path|perf_hooks|process|punycode|querystring|readline|repl|stream|string_decoder|sys|timers|tls|trace_events|tty|url|util|v8|vm|wasi|worker_threads|zlib)(\2)/gm,
+  );
+  if (offenders) {
+    console.error(`✗ ${rel}: bare Node builtin imports remain after the rewrite:`);
+    for (const line of offenders.slice(0, 5)) console.error(`    ${line.trim()}`);
+    process.exit(1);
+  }
+}
+
 /** Run a command at the repo root, inheriting stdio. */
 function run(cmd: string[]) {
   const r = spawnSync(cmd[0]!, cmd.slice(1), { cwd: ROOT, stdio: "inherit" });
@@ -49,15 +97,27 @@ function addShebang(rel: string) {
   chmodSync(abs, 0o755);
 }
 
+/** Apply the bare-builtin rewrite to a built file, then prove it took. */
+function rewrite(rel: string) {
+  const abs = join(ROOT, rel);
+  const body = readFileSync(abs, "utf8");
+  writeFileSync(abs, prefixNodeBuiltins(body));
+  assertNoBareBuiltins(rel, readFileSync(abs, "utf8"));
+}
+
 // 1. The CLI — target node so node: builtins resolve; Bun.* / Deno.* stay
 //    as globals the adapter branches reach only under their own runtime.
+//    The bare-builtin rewrite below is what lets the SAME file run under
+//    `deno run -A` (Deno refuses `from "events"` — node: only).
 console.log("Building dist/cli.js …");
 run(["bun", "build", "--target=node", "--format=esm", `--outfile=${join(ROOT, "dist/cli.js")}`, "./src/main.ts"]);
+rewrite("dist/cli.js");
 addShebang("dist/cli.js");
 
 // 2. The library entry — same treatment, .mjs for unambiguous ESM.
 console.log("Building dist/api.mjs …");
 run(["bun", "build", "--target=node", "--format=esm", `--outfile=${join(ROOT, "dist/api.mjs")}`, "./src/api.ts"]);
+rewrite("dist/api.mjs");
 
 // 3. The postinstall hook — built from the source that guards on
 //    import.meta.main; the built file IS the entry, so run it unconditionally
@@ -79,6 +139,7 @@ try {
 } finally {
   rmSync(wrapper, { force: true });
 }
+rewrite("dist/postinstall.js");
 addShebang("dist/postinstall.js");
 
 // Sanity: the outputs exist and are non-empty, the per-runtime entries

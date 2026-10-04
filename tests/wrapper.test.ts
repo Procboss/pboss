@@ -14,7 +14,14 @@
  * E2E cases run the REAL wrapper through a fake package layout on scrubbed
  * PATH farms — the bun-only machine of issue #38, a node-only machine, a
  * deno-only machine — plus byte-exact argument-forwarding checks and the
- * interactive first-run prompt over a real pty.
+ * interactive first-run prompt over a real pty. A final block dispatches the
+ * REAL built entries (dist/cli.*.js) per runtime when dist/ exists — that is
+ * the layer that catches bundle breakage the echo probes cannot see.
+ *
+ * Host runtimes are resolved ONCE, up front, and every farm test declares its
+ * needs via test.skipIf — a machine without deno REPORTS the deno tests as
+ * skipped instead of silently passing them (the Task 227 lesson: a silent
+ * skip shipped a broken deno entry as green).
  */
 import { describe, test, expect } from "bun:test";
 import {
@@ -25,6 +32,7 @@ import {
   mkdirSync,
   symlinkSync,
   chmodSync,
+  existsSync,
 } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -38,6 +46,14 @@ const INSTALL_PS1 = readFileSync(join(ROOT, "scripts", "install.ps1"), "utf8");
 const POSIX = process.platform !== "win32";
 /** `script` (util-linux) gives the interactive tests a real pty. */
 const HAS_SCRIPT = POSIX && !!Bun.which("script");
+/** The host's runtimes — resolved once; skipIf gates every farm on its needs. */
+const BUN_BIN = Bun.which("bun");
+const NODE_BIN = Bun.which("node");
+const DENO_BIN = Bun.which("deno");
+/** dist/ is a BUILD ARTIFACT (gitignored): `bun run ./scripts/build-dist.ts`.
+ *  The real-entry block below runs when it exists; the issue-38 suite builds
+ *  and packs it for the registry install path. */
+const DIST_BUILT = existsSync(join(ROOT, "dist", "cli.js"));
 
 /* ── source pins: the wrapper IS the architecture ──────────────────────── */
 
@@ -192,33 +208,28 @@ if (rt) {
 console.log(JSON.stringify(out));
 `;
 
-/** A fake package layout with the REAL wrapper + probe entries. */
-function probePackage(kind: "echo" | "real") {
+/** A fake package layout with the REAL wrapper + echo-probe entries. */
+function probePackage() {
   const farm = mkdtempSync(join(tmpdir(), "pboss-wrap-"));
   const pkg = join(farm, "pkg");
   mkdirSync(join(pkg, "bin"), { recursive: true });
   mkdirSync(join(pkg, "dist"), { recursive: true });
   writeFileSync(join(pkg, "package.json"), JSON.stringify({ name: "probe", version: "1.0.0", type: "module" }));
-  if (kind === "echo") {
-    // Echo argv as JSON — proves byte-exact forwarding through the wrapper.
-    // The --runtime flag is stripped the same way the real entry strips it.
-    writeFileSync(join(pkg, "dist", "cli.node.js"), `#!/usr/bin/env node\n${PROBE_STRIP}`);
-    writeFileSync(join(pkg, "dist", "cli.bun.js"), `#!/usr/bin/env bun\n${PROBE_STRIP}`);
-    writeFileSync(
-      join(pkg, "dist", "cli.deno.js"),
-      `const a = Deno.args; const out = [];\nfor (let i = 0; i < a.length; i++) {\n  if (a[i] === "--") { out.push(...a.slice(i)); break; }\n  if (a[i] === "--runtime") { i++; continue; }\n  if (a[i].startsWith("--runtime=")) continue;\n  out.push(a[i]);\n}\nconsole.log(JSON.stringify(out));\n`,
-    );
-  } else {
-    // The REAL built entries (dispatch to the shared core).
-    for (const f of ["cli.node.js", "cli.bun.js", "cli.deno.js", "cli.js", "api.mjs"]) {
-      try {
-        const body = readFileSync(join(ROOT, "dist", f), "utf8");
-        writeFileSync(join(pkg, "dist", f), body);
-      } catch {
-        /* dist may not be built in this checkout — the echo probes still run */
-      }
-    }
-  }
+  // Echo argv as JSON — proves byte-exact forwarding through the wrapper.
+  // The --runtime flag is stripped the same way the real entry strips it.
+  // (The REAL built entries are exercised by their own describe block below;
+  //  the registry install path — build, pack, install, run — lives in
+  //  tests/issue-38.test.ts.)
+  writeFileSync(join(pkg, "dist", "cli.node.js"), `#!/usr/bin/env node\n${PROBE_STRIP}`);
+  writeFileSync(join(pkg, "dist", "cli.bun.js"), `#!/usr/bin/env bun\n${PROBE_STRIP}`);
+  writeFileSync(
+    join(pkg, "dist", "cli.deno.js"),
+    // The same --runtime contract as the node/bun probes, in Deno-native
+    // APIs: strip the flag, and INITIALIZE ~/.pboss/.runtime when none
+    // exists (the save the real entry performs — the assertion the deno
+    // farm reads back after dispatch).
+    `const a = Deno.args; const out = [];\nlet rt = null;\nfor (let i = 0; i < a.length; i++) {\n  if (a[i] === "--") { out.push(...a.slice(i)); break; }\n  if (a[i] === "--runtime") { rt = a[i + 1]; i++; continue; }\n  if (a[i].startsWith("--runtime=")) { rt = a[i].slice(10); continue; }\n  out.push(a[i]);\n}\nif (rt) {\n  const home = Deno.env.get("PBOSS_HOME") || (Deno.env.get("HOME") + "/.pboss");\n  const file = home + "/.runtime";\n  let exists = true;\n  try { Deno.readTextFileSync(file); } catch { exists = false; }\n  if (!exists) { Deno.mkdirSync(home, { recursive: true }); Deno.writeTextFileSync(file, rt.trim().toLowerCase() + "\\n"); }\n}\nconsole.log(JSON.stringify(out));\n`,
+  );
   writeFileSync(join(pkg, "bin", "pboss.sh"), SH);
   chmodSync(join(pkg, "bin", "pboss.sh"), 0o755);
   const bin = join(farm, "bin");
@@ -230,21 +241,19 @@ function probePackage(kind: "echo" | "real") {
 /** A scrubbed PATH dir holding ONLY the given runtime + the POSIX tools. */
 function runtimeFarm(runtimes: string[]) {
   const dir = mkdtempSync(join(tmpdir(), "pboss-rtfarm-"));
-  const bunBin = Bun.which("bun");
-  const nodeBin = Bun.which("node");
-  const denoBin = Bun.which("deno");
   for (const rt of runtimes) {
-    const target = rt === "bun" ? bunBin : rt === "node" ? nodeBin : rt === "deno" ? denoBin : null;
-    if (!target) return null; // host lacks it — the scenario cannot be built
+    const target = rt === "bun" ? BUN_BIN : rt === "node" ? NODE_BIN : rt === "deno" ? DENO_BIN : null;
+    // Unreachable in practice: every farm test skipIf-gates on the runtimes
+    // it needs — a miss here is a wiring bug, so fail loudly, never pass.
+    if (!target) throw new Error(`host lacks ${rt} — the farm cannot be built`);
     symlinkSync(target, join(dir, rt));
   }
   // The wrapper's own toolbox (sh itself comes from the kernel's /bin/sh).
+  // Resolved through PATH, not a hardcoded /bin: on macOS tr, readlink and
+  // dirname live in /usr/bin — a /bin-only farm would starve the wrapper.
   for (const t of ["cat", "tr", "readlink", "dirname", "mkdir"]) {
-    try {
-      symlinkSync(`/bin/${t}`, join(dir, t));
-    } catch {
-      /* non-Linux hosts — POSIX tests skip below anyway */
-    }
+    const tool = Bun.which(t);
+    if (tool) symlinkSync(tool, join(dir, t));
   }
   return dir;
 }
@@ -269,13 +278,11 @@ function runWrapper(
 }
 
 describe("wrapper: e2e — runtime farms", () => {
-  test(
+  test.skipIf(!POSIX || !BUN_BIN)(
     "bun-ONLY machine (issue #38's report): flag init, persist, dispatch",
     () => {
-      if (!POSIX) return;
-      const farm = probePackage("echo");
+      const farm = probePackage();
       const scrub = runtimeFarm(["bun"]);
-      if (!scrub) return;
       const home = join(farm.farm, "home");
       mkdirSync(home, { recursive: true });
       try {
@@ -286,7 +293,7 @@ describe("wrapper: e2e — runtime farms", () => {
 
         // The flag initializes the selection and dispatches — NO node needed.
         const init = runWrapper(farm.bin + "/pboss", ["--runtime=bun", "a", "b"], scrub, home);
-        expect(init.code).toBe(0);
+        expect(init.code, `wrapper stderr:\n${init.err}`).toBe(0);
         expect(init.out.trim()).toBe('["a","b"]');
         expect(readFileSync(join(home, ".runtime"), "utf8")).toBe("bun\n");
         // Plain invocation now dispatches without asking.
@@ -301,18 +308,16 @@ describe("wrapper: e2e — runtime farms", () => {
     30000,
   );
 
-  test(
+  test.skipIf(!POSIX || !NODE_BIN)(
     "node-ONLY machine: same flow under node",
     () => {
-      if (!POSIX) return;
-      const farm = probePackage("echo");
+      const farm = probePackage();
       const scrub = runtimeFarm(["node"]);
-      if (!scrub) return;
       const home = join(farm.farm, "home");
       mkdirSync(home, { recursive: true });
       try {
         const init = runWrapper(farm.bin + "/pboss", ["--runtime=node", "hello"], scrub, home);
-        expect(init.code).toBe(0);
+        expect(init.code, `wrapper stderr:\n${init.err}`).toBe(0);
         expect(init.out.trim()).toBe('["hello"]');
         expect(readFileSync(join(home, ".runtime"), "utf8")).toBe("node\n");
       } finally {
@@ -323,18 +328,16 @@ describe("wrapper: e2e — runtime farms", () => {
     30000,
   );
 
-  test(
+  test.skipIf(!POSIX || !DENO_BIN)(
     "deno-ONLY machine: deno run -A dispatch with args",
     () => {
-      if (!POSIX) return;
-      const farm = probePackage("echo");
+      const farm = probePackage();
       const scrub = runtimeFarm(["deno"]);
-      if (!scrub) return;
       const home = join(farm.farm, "home");
       mkdirSync(home, { recursive: true });
       try {
         const init = runWrapper(farm.bin + "/pboss", ["--runtime=deno", "d1", "d2"], scrub, home);
-        expect(init.code).toBe(0);
+        expect(init.code, `wrapper stderr:\n${init.err}`).toBe(0);
         expect(init.out.trim()).toBe('["d1","d2"]');
         expect(readFileSync(join(home, ".runtime"), "utf8")).toBe("deno\n");
       } finally {
@@ -345,13 +348,11 @@ describe("wrapper: e2e — runtime farms", () => {
     30000,
   );
 
-  test(
+  test.skipIf(!POSIX || !BUN_BIN)(
     "invalid .runtime → the spec-20 error, exit 1 (never a guess)",
     () => {
-      if (!POSIX) return;
-      const farm = probePackage("echo");
+      const farm = probePackage();
       const scrub = runtimeFarm(["bun"]);
-      if (!scrub) return;
       const home = join(farm.farm, "home");
       mkdirSync(home, { recursive: true });
       writeFileSync(join(home, ".runtime"), "xyz\n", "utf8");
@@ -368,13 +369,11 @@ describe("wrapper: e2e — runtime farms", () => {
     30000,
   );
 
-  test(
+  test.skipIf(!POSIX || !BUN_BIN)(
     "invalid --runtime → the unsupported-runtime error, exit 1",
     () => {
-      if (!POSIX) return;
-      const farm = probePackage("echo");
+      const farm = probePackage();
       const scrub = runtimeFarm(["bun"]);
-      if (!scrub) return;
       const home = join(farm.farm, "home");
       mkdirSync(home, { recursive: true });
       try {
@@ -389,13 +388,11 @@ describe("wrapper: e2e — runtime farms", () => {
     30000,
   );
 
-  test(
+  test.skipIf(!POSIX || !BUN_BIN || !NODE_BIN)(
     "argument forwarding is BYTE-EXACT: spaces, quotes, empty, --, unicode",
     () => {
-      if (!POSIX) return;
-      const farm = probePackage("echo");
+      const farm = probePackage();
       const scrub = runtimeFarm(["bun", "node"]);
-      if (!scrub) return;
       const home = join(farm.farm, "home");
       mkdirSync(home, { recursive: true });
       writeFileSync(join(home, ".runtime"), "bun\n", "utf8");
@@ -414,7 +411,7 @@ describe("wrapper: e2e — runtime farms", () => {
           "ünïcode",
         ];
         const r = runWrapper(farm.bin + "/pboss", args, scrub, home);
-        expect(r.code).toBe(0);
+        expect(r.code, `wrapper stderr:\n${r.err}`).toBe(0);
         // The post-`--` --runtime is the APP's flag — never consumed.
         expect(JSON.parse(r.out.trim())).toEqual(args);
       } finally {
@@ -425,13 +422,11 @@ describe("wrapper: e2e — runtime farms", () => {
     30000,
   );
 
-  test(
+  test.skipIf(!POSIX || !BUN_BIN || !NODE_BIN)(
     "flag override beats the persisted selection (dispatch follows the flag)",
     () => {
-      if (!POSIX) return;
-      const farm = probePackage("echo");
+      const farm = probePackage();
       const scrub = runtimeFarm(["bun", "node"]);
-      if (!scrub) return;
       const home = join(farm.farm, "home");
       mkdirSync(home, { recursive: true });
       writeFileSync(join(home, ".runtime"), "bun\n", "utf8");
@@ -443,7 +438,7 @@ describe("wrapper: e2e — runtime farms", () => {
           `#!/usr/bin/env node\nconsole.log("ENTRY-NODE ");\n${PROBE_STRIP}`,
         );
         const r = runWrapper(farm.bin + "/pboss", ["--runtime=node", "q"], scrub, home);
-        expect(r.code).toBe(0);
+        expect(r.code, `wrapper stderr:\n${r.err}`).toBe(0);
         expect(r.out).toContain("ENTRY-NODE");
         expect(r.out).toContain('["q"]');
         expect(readFileSync(join(home, ".runtime"), "utf8")).toBe("bun\n"); // untouched
@@ -455,13 +450,11 @@ describe("wrapper: e2e — runtime farms", () => {
     30000,
   );
 
-  test(
+  test.skipIf(!POSIX || !NODE_BIN)(
     "missing runtime at dispatch → the escape-hatch error names them",
     () => {
-      if (!POSIX) return;
-      const farm = probePackage("echo");
+      const farm = probePackage();
       const scrub = runtimeFarm(["node"]); // bun NOT on this farm
-      if (!scrub) return;
       const home = join(farm.farm, "home");
       mkdirSync(home, { recursive: true });
       writeFileSync(join(home, ".runtime"), "bun\n", "utf8");
@@ -497,13 +490,11 @@ describe("wrapper: e2e — interactive first-run (pty)", () => {
     return { out, code: code ?? -1 };
   }
 
-  test(
+  test.skipIf(!POSIX || !HAS_SCRIPT || !BUN_BIN)(
     "selecting 2 persists bun and dispatches",
     async () => {
-      if (!POSIX || !HAS_SCRIPT) return;
-      const farm = probePackage("echo");
+      const farm = probePackage();
       const scrub = runtimeFarm(["bun"]);
-      if (!scrub) return;
       const home = join(farm.farm, "home");
       mkdirSync(home, { recursive: true });
       try {
@@ -524,13 +515,11 @@ describe("wrapper: e2e — interactive first-run (pty)", () => {
     60000,
   );
 
-  test(
+  test.skipIf(!POSIX || !HAS_SCRIPT || !BUN_BIN || !NODE_BIN)(
     "Enter defaults to Node (the spec default)",
     async () => {
-      if (!POSIX || !HAS_SCRIPT) return;
-      const farm = probePackage("echo");
+      const farm = probePackage();
       const scrub = runtimeFarm(["node", "bun"]);
-      if (!scrub) return;
       const home = join(farm.farm, "home");
       mkdirSync(home, { recursive: true });
       try {
@@ -548,13 +537,11 @@ describe("wrapper: e2e — interactive first-run (pty)", () => {
     60000,
   );
 
-  test(
+  test.skipIf(!POSIX || !HAS_SCRIPT || !BUN_BIN || !NODE_BIN)(
     "an invalid interactive answer re-reports the supported list",
     async () => {
-      if (!POSIX || !HAS_SCRIPT) return;
-      const farm = probePackage("echo");
+      const farm = probePackage();
       const scrub = runtimeFarm(["node", "bun"]);
-      if (!scrub) return;
       const home = join(farm.farm, "home");
       mkdirSync(home, { recursive: true });
       try {
@@ -571,4 +558,65 @@ describe("wrapper: e2e — interactive first-run (pty)", () => {
     },
     60000,
   );
+});
+
+/* ── e2e: the REAL built entries, dispatched per runtime ─────────────────
+ *
+ * The echo probes above prove the WRAPPER (resolution, forwarding, saves)
+ * but never import the shared core — they cannot see bundle-level breakage.
+ * This block dispatches the REAL dist/cli.*.js entries under each available
+ * runtime on a scrubbed PATH, asserting the full product path: entry →
+ * core → --runtime save → version answer. It is the layer that catches
+ * Deno's ESM strictness (bare `from "events"` is a hard error there, while
+ * Node and Bun accept it — the 1.6.0 deno entry shipped broken until the
+ * build gained the node:-prefix rewrite).
+ *
+ * dist/ is a build artifact: on a fresh clone run
+ * `bun run ./scripts/build-dist.ts` (the issue-38 suite builds it too when
+ * it packs). Without dist the block REPORTS as skipped, never passes. */
+describe("wrapper: e2e — the REAL built entries (needs dist/)", () => {
+  function runEntry(bin: string, args: string[], path: string, home: string) {
+    const proc = Bun.spawnSync([bin, ...args], {
+      env: { PATH: path, HOME: home, PBOSS_HOME: home },
+      stdout: "pipe",
+      stderr: "pipe",
+      stdin: "ignore",
+    });
+    return {
+      code: proc.exitCode ?? -1,
+      out: new TextDecoder().decode(proc.stdout),
+      err: new TextDecoder().decode(proc.stderr),
+    };
+  }
+
+  const cases: [runtime: string, bin: string | null, entryArgs: (entry: string) => string[]][] = [
+    ["node", NODE_BIN, (e) => [e, "--runtime=node", "--version"]],
+    ["bun", BUN_BIN, (e) => [e, "--runtime=bun", "--version"]],
+    // deno's entry always runs through `deno run -A` (no shebang can carry
+    // the permission flags) — exactly how bin/pboss.sh dispatches it.
+    ["deno", DENO_BIN, (e) => ["run", "-A", e, "--runtime=deno", "--version"]],
+  ];
+
+  for (const [runtime, bin, entryArgs] of cases) {
+    test.skipIf(!POSIX || !DIST_BUILT || !bin)(
+      `real ${runtime} entry: answers --version and saves the selection`,
+      () => {
+        const farm = mkdtempSync(join(tmpdir(), "pboss-realfarm-"));
+        const scrub = runtimeFarm([runtime]);
+        const home = join(farm, "home");
+        mkdirSync(home, { recursive: true });
+        try {
+          const entry = join(ROOT, "dist", `cli.${runtime}.js`);
+          const r = runEntry(bin!, entryArgs(entry), scrub, home);
+          expect(r.code, `entry stderr:\n${r.err}`).toBe(0);
+          expect(r.out).toMatch(/pboss v\d+\.\d+\.\d+/);
+          expect(readFileSync(join(home, ".runtime"), "utf8")).toBe(`${runtime}\n`);
+        } finally {
+          rmSync(farm, { recursive: true, force: true });
+          rmSync(scrub, { recursive: true, force: true });
+        }
+      },
+      30000,
+    );
+  }
 });
