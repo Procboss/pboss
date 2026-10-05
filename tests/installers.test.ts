@@ -3,6 +3,7 @@ import {
   readFileSync,
   existsSync,
   mkdtempSync,
+  mkdirSync,
   rmSync,
   writeFileSync,
   chmodSync,
@@ -97,10 +98,42 @@ fi
 exit 0`;
 }
 
+/** A bun stub that mirrors real Bun >= 1.4: it refuses to install when its
+ * global state holds a nameless ("") dependency entry — the exact poison a
+ * `bun add -g .` inside a package directory leaves behind. */
+function bunPoisonAwareStub(): string {
+  return `gp="\${BUN_INSTALL:-\$HOME/.bun}/install/global/package.json"
+if [ -f "\$gp" ] && grep -q '^[[:space:]]*""[[:space:]]*:' "\$gp" 2>/dev/null; then
+  echo "error: refusing to install dependency with unsafe name" >&2
+  exit 1
+fi
+if [ "\$1" = "install" ] || [ "\$1" = "add" ]; then
+  ${LOG}
+  d=\$(dirname "\$0")
+  mkdir -p "\$d"
+  printf '%s\\n' '#!/bin/sh' 'echo "pboss \$*" >> "\${STUB_LOG:-/dev/null}"' 'echo "pboss v9.9.9"' > "\$d/pboss"
+  chmod +x "\$d/pboss"
+fi
+exit 0`;
+}
+
+/** A bun stub that always fails (any install attempt). */
+function bunFailingStub(): string {
+  return `if [ "\$1" = "install" ] || [ "\$1" = "add" ]; then
+  echo "bun \$*" >> "\${STUB_LOG:-/dev/null}"
+fi
+echo "error: refusing to install dependency with unsafe name" >&2
+exit 1`;
+}
+
 /** Run the REAL installer with a temp HOME + stubbed PATH. */
 function runInstaller(
   args: string[],
-  opts: { runtimes?: string[]; extraEnv?: Record<string, string> } = {},
+  opts: {
+    runtimes?: string[];
+    extraEnv?: Record<string, string>;
+    customStubs?: Record<string, string>;
+  } = {},
 ): { code: number; out: string; err: string; log: string } {
   const home = mkdtempSync(join(tmpdir(), "pboss-inst-home-"));
   const log = join(home, "stub.log");
@@ -111,6 +144,9 @@ function runInstaller(
   };
   for (const rt of opts.runtimes ?? []) {
     files[rt] = runtimeStub();
+  }
+  for (const [name, body] of Object.entries(opts.customStubs ?? {})) {
+    files[name] = body; // custom stubs win over the generic ones
   }
   const dir = stubDir(files);
   const prefix = join(home, ".npm-global");
@@ -385,6 +421,145 @@ describe("installers: sims — the explicit runtime flow", () => {
         // The dist tarball path was tried (the curl stub records the URL).
         expect(readFileSync(log, "utf8")).toContain("nodejs.org/dist/latest-v22.x");
         expect(err).toContain("Unable to install Node.js automatically");
+      } finally {
+        rmSync(farm, { recursive: true, force: true });
+        rmSync(home, { recursive: true, force: true });
+      }
+    },
+    30000,
+  );
+});
+
+/* ── the Bun global-state heal + the npm fallback ────────────────────────── */
+
+describe("installers: the Bun global-state heal + npm fallback (source pins)", () => {
+  test("both installers name the Bun failure and its cure", () => {
+    // The exact Bun >= 1.4 error the heal answers:
+    expect(sh).toContain("refusing to install dependency with unsafe name");
+    expect(ps1).toContain("refusing to install dependency with unsafe name");
+    // The cause, stated for the user:
+    expect(sh).toContain("bun add -g .");
+    expect(ps1).toContain("bun add -g .");
+    // The heal itself: drop the nameless entry + the stale lockfile.
+    expect(sh).toContain("heal_bun_global_state");
+    expect(sh).toContain('rm -f "$_BH/install/global/bun.lock"');
+    expect(ps1).toContain('PSObject.Properties.Remove("")');
+    expect(ps1).toContain("Remove-Item $bunGlobalLock -Force");
+  });
+
+  test("a failed bun install falls back to npm — channel-faithfully", () => {
+    expect(sh).toContain("falling back to npm");
+    expect(ps1).toContain("falling back to npm");
+    // The channel stamp records what can actually upgrade pboss here.
+    expect(sh).toContain('PM_CHOICE="npm"');
+    expect(ps1).toContain('$pmChoice = "npm"');
+  });
+
+  test("no npm to fall back on: the manual recovery steps", () => {
+    expect(sh).toContain("npm was not found to fall back on");
+    expect(ps1).toContain("npm was not found to fall back on");
+    expect(sh).toContain("Re-run this installer");
+    expect(ps1).toContain("Re-run this installer");
+  });
+
+  test("the upgrade rule is stated at the end: pboss upgrade only", () => {
+    expect(sh).toContain("Upgrade ONLY through pboss itself");
+    expect(ps1).toContain("upgrade ONLY through pboss itself");
+    expect(sh).toContain("never npm/bun update -g");
+    expect(ps1).toContain("never npm/bun update -g");
+  });
+});
+
+describe("installers: sims — the Bun heal + fallback", () => {
+  test(
+    "--runtime=bun: a poisoned Bun global state is healed, then installs",
+    () => {
+      if (!POSIX) return;
+      const bunHome = mkdtempSync(join(tmpdir(), "pboss-bun-poison-"));
+      const globalDir = join(bunHome, "install", "global");
+      mkdirSync(globalDir, { recursive: true });
+      const globalPkg = join(globalDir, "package.json");
+      // The poison (a nameless entry) + a legitimate entry that must survive.
+      writeFileSync(
+        globalPkg,
+        JSON.stringify({ dependencies: { "": "./", "left-alone": "^1.0.0" } }, null, 2) + "\n",
+      );
+      writeFileSync(join(globalDir, "bun.lock"), '{ "stale": true }\n');
+      try {
+        const r = runInstaller(["--runtime=bun"], {
+          customStubs: { bun: bunPoisonAwareStub() },
+          extraEnv: { BUN_INSTALL: bunHome },
+        });
+        expect(r.code).toBe(0);
+        expect(r.out).toContain("Bun global state healed");
+        // The poison is gone; the legitimate entry survives; the lock was removed.
+        const healed = readFileSync(globalPkg, "utf8");
+        expect(healed).not.toMatch(/^\s*""\s*:/m);
+        expect(healed).toContain("left-alone");
+        expect(existsSync(join(globalDir, "bun.lock"))).toBe(false);
+        // ... and the install itself ran on the healed state.
+        expect(r.log).toContain("bun install -g pboss");
+        expect(r.log).toContain("pboss --runtime=bun --version");
+      } finally {
+        rmSync(bunHome, { recursive: true, force: true });
+      }
+    },
+    30000,
+  );
+
+  test(
+    "--runtime=bun: a hard bun failure falls back to npm",
+    () => {
+      if (!POSIX) return;
+      const r = runInstaller(["--runtime=bun"], {
+        customStubs: { bun: bunFailingStub() },
+        runtimes: ["node"],
+      });
+      expect(r.code).toBe(0);
+      expect(r.out).toContain("falling back to npm");
+      // It tried bun first; npm delivered; the runtime selection is intact.
+      expect(r.log).toContain("bun install -g pboss");
+      expect(r.log).toContain("npm install -g pboss");
+      expect(r.log).toContain("pboss --runtime=bun --version");
+    },
+    30000,
+  );
+
+  test(
+    "--runtime=bun: no npm to fall back on — the manual hint, exit 1",
+    () => {
+      if (!POSIX) return;
+      // A tool farm WITHOUT node/npm anywhere on PATH (the "missing NODE"
+      // pattern): real utilities, a bun that hard-fails, nothing to fall
+      // back on.
+      const home = mkdtempSync(join(tmpdir(), "pboss-inst-nofallback-"));
+      const farm = mkdtempSync(join(tmpdir(), "pboss-inst-tools2-"));
+      const log = join(home, "stub.log");
+      try {
+        for (const t of [
+          "awk", "grep", "tr", "cat", "mkdir", "dirname", "basename", "date",
+          "uname", "mktemp", "ln", "rm", "chown", "head", "id",
+        ]) {
+          try {
+            symlinkSync(`/usr/bin/${t}`, join(farm, t));
+          } catch {
+            /* best-effort — the farm skips what the host lacks */
+          }
+        }
+        symlinkSync("/bin/sh", join(farm, "sh"));
+        symlinkSync("/bin/bash", join(farm, "bash"));
+        writeFileSync(join(farm, "bun"), `#!/bin/sh\n${bunFailingStub()}\n`);
+        chmodSync(join(farm, "bun"), 0o755);
+        const proc = Bun.spawnSync(["sh", SH_PATH, "--runtime=bun"], {
+          env: { PATH: farm, HOME: home, TERM: "dumb", STUB_LOG: log },
+          stdout: "pipe",
+          stderr: "pipe",
+          stdin: "ignore",
+        });
+        const err = stripAnsi(new TextDecoder().decode(proc.stderr));
+        expect(proc.exitCode).toBe(1);
+        expect(err).toContain("npm was not found to fall back on");
+        expect(err).toContain("Re-run this installer");
       } finally {
         rmSync(farm, { recursive: true, force: true });
         rmSync(home, { recursive: true, force: true });

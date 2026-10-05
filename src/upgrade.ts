@@ -23,6 +23,8 @@
  */
 
 import { mkdir, readFile, writeFile, stat } from "fs/promises";
+import { existsSync, copyFileSync, writeFileSync } from "fs";
+import { homedir } from "os";
 import { join, dirname } from "path";
 import { PBOSS_HOME } from "./constants";
 import { getRuntime } from "./runtime";
@@ -245,7 +247,8 @@ export function buildUpgradePlan(
         label: "npm (global)",
         command: ["npm", "install", "-g", "pboss@latest"],
         manual: false,
-        note: "The npm postinstall re-checks boot persistence automatically.",
+        note: "The npm postinstall re-checks boot persistence automatically" +
+          (platform === "win32" ? "; the native pboss.cmd / pboss.ps1 shims are re-healed" : ""),
       };
     case "bun":
       return {
@@ -253,7 +256,8 @@ export function buildUpgradePlan(
         label: "bun (global)",
         command: ["bun", "add", "-g", "pboss@latest"],
         manual: false,
-        note: "The postinstall hook re-checks boot persistence automatically.",
+        note: "The postinstall hook re-checks boot persistence automatically" +
+          (platform === "win32" ? "; the native pboss.cmd / pboss.ps1 shims are re-healed" : ""),
       };
     case "deno":
       return {
@@ -426,13 +430,71 @@ export async function fetchLatestVersion(
 
 /* ── execution ────────────────────────────────────────────────────────── */
 
+/* ── Windows shim healing after package-manager upgrades ────────────────── */
+
+/**
+ * npm and Bun link pboss's bin as a shell-script wrapper — and every time
+ * they (re)install or update the package, they regenerate their OWN shims:
+ * a pboss.cmd that invokes `sh`, which cmd and PowerShell cannot run on a
+ * plain Windows machine. The one-line installer overwrites those with a
+ * pboss.cmd that runs the PowerShell twin (bin/pboss.ps1). `pboss upgrade`
+ * must do the same after an npm/bun-channel update — otherwise the upgrade
+ * breaks the very command that performed it. (The universal channel runs
+ * install.ps1, which heals itself; deno re-links its own command.)
+ *
+ * Best-effort and never fatal: returns the healed bin directory, or null
+ * when there was nothing to do. Everything is injectable for tests.
+ */
+export async function healWindowsShims(
+  plan: UpgradePlan,
+  opts: {
+    platform?: NodeJS.Platform;
+    which?: (cmd: string) => string | null;
+    moduleDir?: string;
+  } = {},
+): Promise<string | null> {
+  const platform = opts.platform ?? process.platform;
+  if (platform !== "win32") return null;
+  if (plan.channel !== "npm" && plan.channel !== "bun") return null;
+  const which = opts.which ?? ((cmd: string) => R.misc.which(cmd));
+  const pbossBin = which("pboss");
+  if (!pbossBin) return null;
+  const binDir = dirname(pbossBin);
+  // Where the just-updated package lives. The running module sits inside
+  // it (.../pboss/src or .../pboss/dist), and npm/bun update in place —
+  // same directory, new files — so the wrapper twin beside this source is
+  // the NEW one. Known-layout fallbacks cover exotic resolutions.
+  const moduleDir = opts.moduleDir ?? import.meta.dir;
+  const candidates = [
+    join(dirname(moduleDir), "bin", "pboss.ps1"),
+    join(homedir(), ".bun", "install", "global", "node_modules", "pboss", "bin", "pboss.ps1"),
+    join(binDir, "node_modules", "pboss", "bin", "pboss.ps1"),
+  ];
+  const wrapper = candidates.find((c) => existsSync(c));
+  if (!wrapper) return null;
+  copyFileSync(wrapper, join(binDir, "pboss.ps1"));
+  // The same two-line bootstrap the PowerShell installer writes: run the
+  // wrapper twin under powershell, forward every argument verbatim.
+  writeFileSync(
+    join(binDir, "pboss.cmd"),
+    "@echo off\r\npowershell -NoProfile -ExecutionPolicy Bypass -File \"%~dp0pboss.ps1\" %*\r\n",
+  );
+  return binDir;
+}
+
 /** Run an upgrade plan's command with stdio inherited (password prompts — snap's — work). */
 export async function runUpgradePlan(
   plan: UpgradePlan,
   spawnFn: (cmd: string[]) => Promise<number> = defaultSpawn,
+  healShims: (plan: UpgradePlan) => Promise<string | null> = (p) => healWindowsShims(p),
 ): Promise<boolean> {
   const code = await spawnFn(plan.command);
-  return code === 0;
+  if (code !== 0) return false;
+  // Windows, npm/bun channel: the package manager just regenerated its own
+  // shims for the .sh bin — re-heal them (best-effort; never fails the
+  // upgrade) or the next `pboss` invocation would die.
+  await healShims(plan).catch(() => null);
+  return true;
 }
 
 /* ── post-upgrade verification ─────────────────────────────────────────── */

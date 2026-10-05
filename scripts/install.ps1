@@ -207,10 +207,58 @@ switch ($selected) {
     }
     "bun" {
         $pmChoice = "bun"
+        # Heal Bun's global state FIRST: a `bun add -g .` run inside a
+        # package directory leaves a nameless ("") entry in Bun's global
+        # package.json, and from Bun 1.4 on every later `bun install -g`
+        # (any package) dies with "refusing to install dependency with
+        # unsafe name". The machine looks broken; only this state is.
+        $bunHome = if ($env:BUN_INSTALL) { $env:BUN_INSTALL } else { Join-Path $env:USERPROFILE ".bun" }
+        $bunGlobalPkg = Join-Path $bunHome "install\global\package.json"
+        if (Test-Path $bunGlobalPkg) {
+            $bunGlobalRaw = Get-Content $bunGlobalPkg -Raw
+            if ($bunGlobalRaw -match '""\s*:') {
+                Write-Host "Detected a corrupted Bun global state: $bunGlobalPkg has a nameless (`"`") entry." -ForegroundColor Yellow
+                Write-Host "(It comes from a 'bun add -g .' inside a package directory — every later 'bun install -g' fails with 'refusing to install dependency with unsafe name' until healed.)" -ForegroundColor Yellow
+                try {
+                    $bunPkgJson = $bunGlobalRaw | ConvertFrom-Json
+                    if ($bunPkgJson.dependencies -and $bunPkgJson.dependencies.PSObject.Properties[""]) {
+                        $bunPkgJson.dependencies.PSObject.Properties.Remove("")
+                    }
+                    $bunPkgJson | ConvertTo-Json -Depth 10 | Set-Content -Path $bunGlobalPkg -Encoding utf8
+                    $bunGlobalLock = Join-Path $bunHome "install\global\bun.lock"
+                    if (Test-Path $bunGlobalLock) { Remove-Item $bunGlobalLock -Force }
+                    Write-Host "✓ Bun global state healed (the invalid entry and the stale lockfile are gone)." -ForegroundColor Green
+                } catch {
+                    Write-Host "⚠ Could not heal it automatically ($($_.Exception.Message))." -ForegroundColor Yellow
+                    Write-Host "  Fix it manually: edit $bunGlobalPkg, delete the `"`" line, delete bun.lock beside it, re-run." -ForegroundColor Yellow
+                }
+            }
+        }
         Write-Host "Installing the published pboss package globally (bun install -g $pkgSpec)..." -ForegroundColor Cyan
         & bun install -g $pkgSpec
-        if ($LASTEXITCODE -ne 0) { Write-Host "✗ bun install -g failed." -ForegroundColor Red; exit 1 }
-        $pmBinDir = Join-Path $env:USERPROFILE ".bun\bin"
+        if ($LASTEXITCODE -ne 0) {
+            # npm fallback — the wrapper still dispatches to Bun at run time;
+            # npm is only the delivery vehicle. The channel stamp records npm
+            # because that is what can upgrade pboss on this machine.
+            $npmCmd = Get-Command npm -ErrorAction SilentlyContinue
+            if ($npmCmd) {
+                Write-Host "⚠ bun install -g failed — falling back to npm (pboss still runs on Bun; the runtime selection is unchanged)." -ForegroundColor Yellow
+                & npm install -g $pkgSpec
+                if ($LASTEXITCODE -ne 0) { Write-Host "✗ npm install -g failed." -ForegroundColor Red; exit 1 }
+                $pmChoice = "npm"
+                $pmBinDir = (& npm config get prefix)
+            } else {
+                Write-Host "✗ bun install -g failed, and npm was not found to fall back on." -ForegroundColor Red
+                Write-Host ""
+                Write-Host "Bun's global state may still be corrupted. Fix it manually and re-run:"
+                Write-Host "  1. Edit  $bunGlobalPkg  and delete the nameless (`"`") line"
+                Write-Host "  2. Delete  $(Join-Path $bunHome 'install\global\bun.lock')"
+                Write-Host "  3. Re-run this installer"
+                exit 1
+            }
+        } else {
+            $pmBinDir = Join-Path $env:USERPROFILE ".bun\bin"
+        }
     }
     "deno" {
         $pmChoice = "deno"
@@ -343,5 +391,7 @@ if ($installedV) {
 }
 Write-Host "Runtime:  $selected (persisted to $runtimeFile)" -ForegroundColor Cyan
 Write-Host "Change it any time:  pboss runtime change" -ForegroundColor Cyan
+Write-Host "Windows rule: install through this installer, and upgrade ONLY through pboss itself —" -ForegroundColor Cyan
+Write-Host "             pboss upgrade   (never npm/bun update -g: the channel that installed pboss upgrades it)" -ForegroundColor Cyan
 Write-Host "Open a NEW terminal (so the PATH refreshes) and run 'pboss --version' to verify." -ForegroundColor Cyan
 Write-Host ""

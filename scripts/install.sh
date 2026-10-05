@@ -241,6 +241,37 @@ case ":$PATH:" in
   *) export PATH="$RUNTIME_BIN_DIR:$PATH" ;;
 esac
 
+# ── 3b. Heal Bun's global state (pre-install) ───────────────────────────
+# A `bun add -g .` run from inside a package directory leaves a nameless
+# ("") entry in Bun's global package.json — and from Bun 1.4 on, EVERY
+# later `bun add -g` (any package) then dies with "refusing to install
+# dependency with unsafe name". The machine looks broken; only this state
+# is. Heal it before installing: drop the invalid entry + the stale lock.
+# $1 = bun home (default: $BUN_INSTALL or ~/.bun).
+heal_bun_global_state() {
+  _BH="${1:-${BUN_INSTALL:-$HOME/.bun}}"
+  _BGP="$_BH/install/global/package.json"
+  [ -f "$_BGP" ] || return 0
+  grep -q '^[[:space:]]*""[[:space:]]*:' "$_BGP" 2>/dev/null || return 0
+  printf '%s\n' "${YELLOW}⚠ Detected a corrupted Bun global state: $_BGP has a nameless (\"\") entry.${RESET}"
+  printf '%s\n' "${YELLOW}  (It comes from a \`bun add -g .\` inside a package directory — every later \`bun add -g\` fails with \"refusing to install dependency with unsafe name\" until healed.)${RESET}"
+  # Drop the "" line; if it was the last entry, also strip the previous
+  # line's now-trailing comma. Pure POSIX awk — no runtime needed.
+  awk '
+    /^[ \t]*""[ \t]*:/ { next }
+    {
+      if (pending != "") {
+        if ($0 ~ /^[ \t]*[}]/ && pending ~ /,[ \t]*$/) sub(/,[ \t]*$/, "", pending)
+        print pending
+      }
+      pending = $0
+    }
+    END { if (pending != "") print pending }
+  ' "$_BGP" > "${_BGP}.pboss-heal" 2>/dev/null && cat "${_BGP}.pboss-heal" > "$_BGP" && rm -f "${_BGP}.pboss-heal"
+  rm -f "$_BH/install/global/bun.lock"
+  printf '%s\n' "${GREEN}✓ Bun global state healed (the invalid entry and the stale lockfile are gone).${RESET}"
+}
+
 # ── 4. Install the PUBLISHED pboss package through the runtime's own ─────
 #    package ecosystem (spec: never a clone, never a source build).
 PKG_SPEC="pboss"
@@ -267,18 +298,45 @@ case "$RUNTIME" in
     ;;
   bun)
     PM_CHOICE="bun"
-    printf '%s\n' "${CYAN}Installing the published pboss package globally (bun install -g ${PKG_SPEC})…${RESET}"
-    if [ "$IS_ROOT" -eq 0 ]; then
-      "$RUNTIME_BIN" install -g "$PKG_SPEC" || die "bun install -g failed."
-    else
-      # Root: install into the invoking user's bun (the per-user layout).
-      if [ -n "$INVOKE_USER" ]; then
-        sudo -u "$INVOKE_USER" env BUN_INSTALL="$INVOKE_HOME/.bun" PATH="$PATH" "$RUNTIME_BIN" install -g "$PKG_SPEC" || die "bun install -g failed."
-      else
-        "$RUNTIME_BIN" install -g "$PKG_SPEC" || die "bun install -g failed."
-      fi
+    heal_bun_global_state
+    if [ "$(id -u)" -eq 0 ] && [ -n "$INVOKE_USER" ]; then
+      heal_bun_global_state "$INVOKE_HOME/.bun"
     fi
-    PM_DIR="$(dirname "$(command -v bun 2>/dev/null || printf '%s' "$INVOKE_HOME/.bun/bin/bun")")"
+    printf '%s\n' "${CYAN}Installing the published pboss package globally (bun install -g ${PKG_SPEC})…${RESET}"
+    BUN_INSTALL_OK=1
+    if [ "$(id -u)" -eq 0 ]; then
+      if [ -n "$INVOKE_USER" ]; then
+        # Root: install into the invoking user's bun (the per-user layout).
+        sudo -u "$INVOKE_USER" env BUN_INSTALL="$INVOKE_HOME/.bun" PATH="$PATH" "$RUNTIME_BIN" install -g "$PKG_SPEC" || BUN_INSTALL_OK=0
+      else
+        "$RUNTIME_BIN" install -g "$PKG_SPEC" || BUN_INSTALL_OK=0
+      fi
+    else
+      "$RUNTIME_BIN" install -g "$PKG_SPEC" || BUN_INSTALL_OK=0
+    fi
+    if [ "$BUN_INSTALL_OK" -eq 1 ]; then
+      PM_DIR="$(dirname "$(command -v bun 2>/dev/null || printf '%s' "$INVOKE_HOME/.bun/bin/bun")")"
+    elif command -v npm >/dev/null 2>&1; then
+      # npm fallback — the wrapper still dispatches to Bun at run time; npm
+      # is only the delivery vehicle. The channel stamp records npm because
+      # that is what can upgrade pboss on this machine.
+      printf '%s\n' "${YELLOW}⚠ bun install -g failed — falling back to npm (pboss still runs on ${RUNTIME}; the runtime selection is unchanged).${RESET}"
+      PM_CHOICE="npm"
+      NPM_PREFIX="$(npm config get prefix 2>/dev/null || echo "")"
+      npm install -g "$PKG_SPEC" || die "npm install -g failed."
+      PM_DIR="$([ -n "$NPM_PREFIX" ] && printf '%s' "$NPM_PREFIX" || npm config get prefix)/bin"
+      [ -d "$PM_DIR" ] || PM_DIR="$(npm config get prefix)"
+    else
+      die "bun install -g failed, and npm was not found to fall back on.
+
+Bun's global state may still be corrupted. Fix it manually and re-run:
+  1. Edit  ${BUN_INSTALL:-$HOME/.bun}/install/global/package.json
+     and delete the nameless entry (the line starting with \"\")
+  2. Delete  ${BUN_INSTALL:-$HOME/.bun}/install/global/bun.lock
+  3. Re-run this installer
+(That state is poisoned by a \`bun add -g .\` inside a package directory —
+Bun refuses every later global install until it is healed.)"
+    fi
     ;;
   deno)
     PM_CHOICE="deno"
@@ -412,4 +470,5 @@ printf '%s' "Runtime:  ${CYAN}${RUNTIME}"
 [ -n "$("$PBOSS_BIN" --version 2>/dev/null)" ] && printf '%s' " (persisted to ${RUNTIME_FILE})"
 printf '\n'
 printf '%s\n' "Change it any time:  ${CYAN}pboss runtime change${RESET}"
+printf '%s\n' "Upgrade ONLY through pboss itself:  ${CYAN}pboss upgrade${RESET}  (never npm/bun update -g — the channel that installed pboss upgrades it)"
 printf '%s\n' "Run ${CYAN}pboss --version${RESET} to re-check, then ${CYAN}pboss --help${RESET} to get started."

@@ -1,6 +1,6 @@
 {
   "name": "pboss",
-  "version": "1.6.0",
+  "version": "1.6.1",
   "description": "A blazing-fast, runtime-agnostic process manager for Bun, Node.js, and Deno \u2014 native APIs per runtime, no compatibility layers \u2014 built for JavaScript and TypeScript backends.",
   "type": "module",
   "main": "dist/api.mjs",
@@ -86,7 +86,6 @@
     "chalk": "^5.6.2",
     "cli-table3": "^0.6.5",
     "cron-parser": "^5",
-    "pboss": "^1.5.2",
     "pidusage": "^4.0.1",
     "ws": "^8.18.0"
   },

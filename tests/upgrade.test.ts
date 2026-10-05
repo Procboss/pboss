@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "fs";
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync, mkdirSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import {
@@ -11,6 +11,7 @@ import {
   compareVersions,
   fetchLatestVersion,
   runUpgradePlan,
+  healWindowsShims,
   isSafeVersion,
   parseVersionOutput,
   verifyInstalledVersion,
@@ -510,5 +511,133 @@ describe("CLI surface", () => {
     const code = await proc.exited;
     expect(code).toBe(1);
     expect(err).toContain('Unknown channel "bogus"');
+  });
+});
+
+/* ── the Windows shim heal — `pboss upgrade` must not break pboss ────────── */
+
+describe("upgrade: healWindowsShims (the Windows shim re-heal)", () => {
+  const npmPlan = buildUpgradePlan("npm");
+  const bunPlan = buildUpgradePlan("bun");
+  const denoPlan = buildUpgradePlan("deno");
+
+  /** A sandbox that fakes a Windows npm/bun layout with POSIX-safe paths:
+   * <tmp>/pkg/bin/pboss.ps1 (the wrapper twin, inside the package) and a
+   * bin dir on "PATH" holding a broken pboss.cmd. */
+  function fakeWindowsLayout() {
+    const tmp = mkdtempSync(join(tmpdir(), "pboss-shim-heal-"));
+    mkdirSync(join(tmp, "pkg", "bin"), { recursive: true });
+    mkdirSync(join(tmp, "binDir"), { recursive: true });
+    writeFileSync(join(tmp, "pkg", "bin", "pboss.ps1"), "# the PowerShell twin\n");
+    writeFileSync(join(tmp, "binDir", "pboss.cmd"), "@echo off\r\nsh pboss.sh %*\r\n"); // npm's broken shim
+    return {
+      tmp,
+      which: () => join(tmp, "binDir", "pboss.CMD"),
+      moduleDir: join(tmp, "pkg", "src"),
+      binDir: join(tmp, "binDir"),
+    };
+  }
+
+  test("npm plan on win32 rewrites the broken shims with the PowerShell bootstrap", async () => {
+    const layout = fakeWindowsLayout();
+    try {
+      const healed = await healWindowsShims(npmPlan, {
+        platform: "win32",
+        which: layout.which,
+        moduleDir: layout.moduleDir,
+      });
+      expect(healed).toBe(layout.binDir);
+      const cmd = readFileSync(join(layout.binDir, "pboss.cmd"), "utf8");
+      expect(cmd).toContain("powershell -NoProfile -ExecutionPolicy Bypass -File \"%~dp0pboss.ps1\" %*");
+      expect(cmd).not.toContain("sh pboss.sh");
+      expect(existsSync(join(layout.binDir, "pboss.ps1"))).toBe(true); // the twin was copied
+      expect(readFileSync(join(layout.binDir, "pboss.ps1"), "utf8")).toContain("PowerShell twin");
+    } finally {
+      rmSync(layout.tmp, { recursive: true, force: true });
+    }
+  });
+
+  test("bun plan on win32 heals identically (same shims, same bootstrap)", async () => {
+    const layout = fakeWindowsLayout();
+    try {
+      const healed = await healWindowsShims(bunPlan, {
+        platform: "win32",
+        which: layout.which,
+        moduleDir: layout.moduleDir,
+      });
+      expect(healed).toBe(layout.binDir);
+      expect(readFileSync(join(layout.binDir, "pboss.cmd"), "utf8")).toContain("powershell -NoProfile");
+    } finally {
+      rmSync(layout.tmp, { recursive: true, force: true });
+    }
+  });
+
+  test("not Windows → nothing to do (the heal is a no-op)", async () => {
+    const layout = fakeWindowsLayout();
+    try {
+      expect(
+        await healWindowsShims(npmPlan, {
+          platform: "linux",
+          which: layout.which,
+          moduleDir: layout.moduleDir,
+        }),
+      ).toBeNull();
+      // The broken shim was left exactly as it was.
+      expect(readFileSync(join(layout.binDir, "pboss.cmd"), "utf8")).toContain("sh pboss.sh");
+    } finally {
+      rmSync(layout.tmp, { recursive: true, force: true });
+    }
+  });
+
+  test("deno plan on win32 → nothing to do (deno re-links its own command)", async () => {
+    const layout = fakeWindowsLayout();
+    try {
+      expect(
+        await healWindowsShims(denoPlan, {
+          platform: "win32",
+          which: layout.which,
+          moduleDir: layout.moduleDir,
+        }),
+      ).toBeNull();
+    } finally {
+      rmSync(layout.tmp, { recursive: true, force: true });
+    }
+  });
+
+  test("runUpgradePlan heals after a successful npm/bun upgrade (and never fails on heal errors)", async () => {
+    let healed = false;
+    const ok = await runUpgradePlan(
+      buildUpgradePlan("npm"),
+      async () => 0,
+      async () => {
+        healed = true;
+        return "C:/bin";
+      },
+    );
+    expect(ok).toBe(true);
+    expect(healed).toBe(true);
+
+    // A heal that THROWS must not fail the upgrade.
+    const ok2 = await runUpgradePlan(
+      buildUpgradePlan("npm"),
+      async () => 0,
+      async () => {
+        throw new Error("boom");
+      },
+    );
+    expect(ok2).toBe(true);
+
+    // A failed channel command still means failure — no heal attempted.
+    let healed2 = false;
+    const ok3 = await runUpgradePlan(
+      buildUpgradePlan("npm"),
+      async () => 1,
+      async () => {
+        healed2 = true;
+        return null;
+      },
+    );
+    expect(ok3).toBe(false);
+    expect(healed2).toBe(false);
   });
 });
