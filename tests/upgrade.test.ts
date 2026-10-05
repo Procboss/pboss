@@ -641,3 +641,33 @@ describe("upgrade: healWindowsShims (the Windows shim re-heal)", () => {
     expect(healed2).toBe(false);
   });
 });
+
+/* ── buildUpgradePlan: the deno channel's supply-chain pin ────────────────── */
+
+describe("buildUpgradePlan: the deno channel's supply-chain window", () => {
+  test("without a pin: the legacy unpinned subpath (compat)", () => {
+    const plan = buildUpgradePlan("deno");
+    expect(plan.command).toEqual([
+      "deno", "install", "-g", "-f", "-A", "--name", "pboss", "npm:pboss/deno-entry",
+    ]);
+    expect(plan.manual).toBe(false);
+    expect(plan.note).toContain("re-links");
+  });
+
+  test("with a pin: the spec is version-exact", () => {
+    const plan = buildUpgradePlan("deno", "linux", "1.6.2", { version: "1.6.0", note: "held" });
+    expect(plan.command).toEqual([
+      "deno", "install", "-g", "-f", "-A", "--name", "pboss", "npm:pboss@1.6.0/deno-entry",
+    ]);
+    expect(plan.manual).toBe(false);
+    expect(plan.note).toBe("held");
+  });
+
+  test("pin === null (no resolvable deno-entry version yet): an honest manual hold", () => {
+    const plan = buildUpgradePlan("deno", "linux", "1.6.0", null);
+    expect(plan.manual).toBe(true);
+    expect(plan.command).toEqual([]);
+    expect(plan.note).toContain("24-hour supply-chain");
+    expect(plan.note).toContain("Re-run `pboss upgrade`");
+  });
+});

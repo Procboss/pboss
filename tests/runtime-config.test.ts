@@ -29,6 +29,7 @@ import {
   unsupportedRuntimeMessage,
   invalidRuntimeConfigMessage,
   pbossInstallArgv,
+  resolvePbossInstallArgv,
   runtimeSpawnArgv,
   nodeDistPlatform,
   extractNodeTarballName,
@@ -334,5 +335,81 @@ describe("runtime-config: e2e — pboss runtime (status)", () => {
     expect(r.code).toBe(1);
     expect(r.err).toContain("Invalid ProcBoss runtime configuration: kubernetes");
     rmSync(broken, { recursive: true, force: true });
+  });
+});
+
+/* ── unit: resolvePbossInstallArgv (Deno's supply-chain window) ─────────── */
+
+describe("runtime-config: resolvePbossInstallArgv (the deno window)", () => {
+  /** A fetcher serving one packument (or a rejection). */
+  const serving = (body: unknown) =>
+    (() => Promise.resolve(new Response(JSON.stringify(body), { status: 200 }))) as unknown as typeof fetch;
+  const ago = (h: number) => new Date(Date.now() - h * 3_600_000).toISOString();
+  const packument = (ages: Record<string, number>, latest: string) => ({
+    versions: Object.fromEntries(Object.keys(ages).map((v) => [v, {}])),
+    time: Object.fromEntries(Object.entries(ages).map(([v, h]) => [v, ago(h)])),
+    "dist-tags": { latest },
+  });
+
+  test("node/bun: plain ecosystem commands, no registry read", async () => {
+    const calls: string[] = [];
+    const counting = (async () => { calls.push("called"); return new Response("{}", { status: 200 }); }) as unknown as typeof fetch;
+    const node = await resolvePbossInstallArgv("node", undefined, counting);
+    const bun = await resolvePbossInstallArgv("bun", undefined, counting);
+    expect(node.argv).toEqual(["npm", "install", "-g", "pboss@latest"]);
+    expect(bun.argv).toEqual(["bun", "add", "-g", "pboss@latest"]);
+    expect(node.via).toBe("node");
+    expect(bun.via).toBe("bun");
+    expect(calls).toEqual([]); // the window is a deno-only concern
+  });
+
+  test("deno + explicit version: the user's own pin, no registry read", async () => {
+    const counting = (async () => { throw new Error("must not be called"); }) as unknown as typeof fetch;
+    const r = await resolvePbossInstallArgv("deno", "1.6.2", counting);
+    expect(r.argv.at(-1)).toBe("npm:pboss@1.6.2/deno-entry");
+    expect(r.via).toBe("deno");
+    expect(r.note).toBeUndefined();
+  });
+
+  test("deno: pins the newest resolvable version; a fresh latest gets the hold note", async () => {
+    // 1.6.0 old, 1.6.1 two hours old, latest = 1.6.1.
+    const r = await resolvePbossInstallArgv(
+      "deno", undefined,
+      serving(packument({ "1.5.3": 24 * 7, "1.6.0": 24 * 9, "1.6.1": 2 }, "1.6.1")),
+    );
+    expect(r.argv.at(-1)).toBe("npm:pboss@1.6.0/deno-entry");
+    expect(r.via).toBe("deno");
+    expect(r.note).toContain("supply-chain hold");
+    expect(r.note).toContain("v1.6.0");
+  });
+
+  test("deno: best === latest → no note", async () => {
+    const r = await resolvePbossInstallArgv(
+      "deno", undefined,
+      serving(packument({ "1.6.0": 24 * 9, "1.6.1": 24 * 2 }, "1.6.1")),
+    );
+    expect(r.argv.at(-1)).toBe("npm:pboss@1.6.1/deno-entry");
+    expect(r.via).toBe("deno");
+    expect(r.note).toBeUndefined();
+  });
+
+  test("deno: no resolvable deno-entry version → npm delivery + the honest note", async () => {
+    // The owner's transition state: 1.5.3 old (no ./deno-entry), 1.6.0 fresh.
+    const r = await resolvePbossInstallArgv(
+      "deno", undefined,
+      serving(packument({ "1.5.3": 24 * 7, "1.6.0": 16 }, "1.6.0")),
+    );
+    expect(r.argv).toEqual(["npm", "install", "-g", "pboss@latest"]);
+    expect(r.via).toBe("npm");
+    expect(r.note).toContain("holding back");
+    expect(r.note).toContain("delivery vehicle");
+  });
+
+  test("deno: registry unreachable → unpinned spec + the honest note", async () => {
+    const failing = (() => Promise.reject(new Error("offline"))) as unknown as typeof fetch;
+    const r = await resolvePbossInstallArgv("deno", undefined, failing);
+    expect(r.argv.at(-1)).toBe("npm:pboss/deno-entry");
+    expect(r.via).toBe("deno");
+    expect(r.note).toContain("Could not read the registry");
   });
 });

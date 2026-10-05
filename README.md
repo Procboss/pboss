@@ -102,6 +102,16 @@ explicit equivalent (`--allow-run --allow-read --allow-write --allow-net
 --allow-env --allow-sys`) and the full permission table live in the
 [installation docs](https://docs.procboss.com/installation#denos-permission-system).
 
+> **Deno's 24-hour supply-chain hold:** Deno refuses to resolve npm versions
+> published within the last day — an unpinned spec silently installs the
+> PREVIOUS release (and before 1.6.0, one without the Deno entrypoint: a
+> `Failed resolving binary export` error). The universal installer handles
+> this automatically (it pins the newest version Deno can resolve, and
+> falls back to npm as the delivery vehicle during the one-time transition
+> while still executing on Deno). With the manual command, pin explicitly
+> when a release is fresh:
+> `deno install -g -A --name pboss npm:pboss@<version>/deno-entry`.
+
 ### The Runtime Selection
 
 `pboss` never guesses a runtime from whatever happens to be installed —

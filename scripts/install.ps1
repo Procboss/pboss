@@ -270,11 +270,77 @@ switch ($selected) {
         Write-Host "Installing the published pboss package globally (deno install -g $pkgSpec)..." -ForegroundColor Cyan
         # Deno executes package bins as modules — the .sh wrapper cannot
         # serve that path — so deno installs the published entry subpath.
+        # The spec is PINNED to the newest version Deno can resolve: its
+        # 24-hour supply-chain window rejects npm versions published within
+        # the last day (ranges silently fall back; exact pins error), so an
+        # unpinned npm:pboss would install an OLDER release.
         $denoSpec = "npm:pboss/deno-entry"
-        if ($pkgSpec -ne "pboss") { $denoSpec = "npm:pboss@$($pkgSpec.Split('@')[1])/deno-entry" }
-        & deno install -g -f -A --name pboss $denoSpec
-        if ($LASTEXITCODE -ne 0) { Write-Host "✗ deno install -g failed." -ForegroundColor Red; exit 1 }
-        $pmBinDir = Join-Path $env:USERPROFILE ".deno\bin"
+        $denoPinSet = $false
+        if ($pkgSpec -ne "pboss") {
+            # An explicit PBOSS_VERSION is the user's own pin — honored as-is.
+            $denoSpec = "npm:pboss@$($pkgSpec.Split('@')[1])/deno-entry"
+            $denoPinSet = $true
+        } else {
+            $denoBest = $null
+            $denoLatest = $null
+            $denoLatestEpoch = $null
+            $denoRegistryOk = $false
+            try {
+                $packument = Invoke-RestMethod -Uri "https://registry.npmjs.org/pboss" -TimeoutSec 15
+                $denoRegistryOk = $true
+                $cutoff = [DateTimeOffset]::UtcNow.AddHours(-25).ToUnixTimeSeconds()
+                $denoLatest = $packument.'dist-tags'.latest
+                foreach ($prop in $packument.time.PSObject.Properties) {
+                    if ($prop.Name -notmatch '^\d+\.\d+\.\d+$') { continue }
+                    $epoch = [DateTimeOffset]::Parse($prop.Value).ToUnixTimeSeconds()
+                    if ($epoch -gt $cutoff) { continue }
+                    if ([version]$prop.Name -lt [version]"1.6.0") { continue }
+                    if (-not $denoBest -or [version]$prop.Name -gt [version]$denoBest) { $denoBest = $prop.Name }
+                }
+                if ($denoLatest -and $packument.time.$denoLatest) {
+                    $denoLatestEpoch = [DateTimeOffset]::Parse($packument.time.$denoLatest).ToUnixTimeSeconds()
+                }
+            } catch {
+                $denoRegistryOk = $false
+            }
+
+            if ($denoBest) {
+                $denoSpec = "npm:pboss@$denoBest/deno-entry"
+                $denoPinSet = $true
+                if ($denoLatest -and $denoBest -ne $denoLatest) {
+                    Write-Host "Deno's 24-hour supply-chain hold: installing v$denoBest (latest is v$denoLatest)." -ForegroundColor Yellow
+                }
+            } elseif ($denoRegistryOk) {
+                # No deno-resolvable version exports ./deno-entry yet — the
+                # one-time transition after a deno-support release. npm
+                # delivers the package; the wrapper shims dispatch to Deno
+                # at run time; the selection stays deno.
+                $holdText = "within the next 24 hours"
+                if ($denoLatestEpoch) {
+                    $holdText = [DateTimeOffset]::FromUnixTimeSeconds($denoLatestEpoch + 90000).UtcDateTime.ToString("yyyy-MM-dd HH:mm UTC")
+                }
+                Write-Host "Deno's 24-hour supply-chain protection is holding back every pboss version that supports Deno" -ForegroundColor Yellow
+                Write-Host "  (latest v$denoLatest becomes resolvable $holdText)." -ForegroundColor Yellow
+                $npmCmd = Get-Command npm -ErrorAction SilentlyContinue
+                if ($npmCmd) {
+                    Write-Host "  Falling back to npm as the delivery vehicle — pboss still RUNS on Deno (the runtime selection stays deno)." -ForegroundColor Yellow
+                    & npm install -g $pkgSpec
+                    if ($LASTEXITCODE -ne 0) { Write-Host "npm install -g failed." -ForegroundColor Red; exit 1 }
+                    $pmChoice = "npm"
+                    $pmBinDir = (& npm config get prefix)
+                } else {
+                    Write-Host "npm was not found to fall back on. Re-run this installer after $holdText, or use -Runtime node|bun now." -ForegroundColor Red
+                    exit 1
+                }
+            } else {
+                Write-Host "Could not read the registry ahead of the install — installing the unpinned spec; Deno may resolve an older version." -ForegroundColor Yellow
+            }
+        }
+        if ($pmChoice -eq "deno") {
+            & deno install -g -f -A --name pboss $denoSpec
+            if ($LASTEXITCODE -ne 0) { Write-Host "✗ deno install -g failed." -ForegroundColor Red; exit 1 }
+            $pmBinDir = Join-Path $env:USERPROFILE ".deno\bin"
+        }
     }
 }
 
@@ -285,7 +351,9 @@ if ($pmBinDir -and (Test-Path $pmBinDir)) { $env:PATH = "$pmBinDir;$env:PATH" }
 # cannot run without a shell. The ProcBoss shims invoke PowerShell instead:
 #   pboss.cmd — a two-line bootstrap that runs pboss.ps1 (the wrapper twin)
 #   pboss.ps1 — the real wrapper (copied from the installed package's bin/)
-if ($selected -ne "deno") {
+# Skipped ONLY on the pure-deno delivery (deno's own --name pboss shim runs
+# the entry module directly); the deno→npm fallback NEEDS the shims.
+if (-not ($selected -eq "deno" -and $pmChoice -eq "deno")) {
     $pkgDir = $null
     try {
         # npm root -g → node_modules; the package sits under pboss\

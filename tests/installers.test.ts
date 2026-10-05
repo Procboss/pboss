@@ -568,3 +568,138 @@ describe("installers: sims — the Bun heal + fallback", () => {
     30000,
   );
 });
+
+/* ── Deno's npm supply-chain window ───────────────────────────────────────── */
+
+/**
+ * Deno refuses npm versions published within the last 24 h — `*` silently
+ * falls back to the previous version, exact pins error. The installer must
+ * therefore pin the spec to the newest version Deno can resolve, and fall
+ * back to npm as the delivery vehicle when no deno-entry version is
+ * resolvable yet (the one-time post-1.6.0 transition).
+ *
+ * The sims serve a REAL packument fixture through a stub curl — the
+ * installer's own awk does the parsing, so the POSIX implementation is
+ * exercised exactly as shipped.
+ */
+
+/** A stub curl that serves the packument from $STUB_PACKUMENT. */
+const PACKUMENT_CURL = `case "$*" in
+  *registry.npmjs.org/pboss*) cat "$STUB_PACKUMENT" ;;
+  *) echo "curl $*" >> "$STUB_LOG"; exit 1 ;;
+esac`;
+
+/** A compact packument fixture with the given version→age-hours map. */
+function packumentFixture(ages: Record<string, number>, latest: string): string {
+  const iso = (h: number) => new Date(Date.now() - h * 3_600_000).toISOString();
+  const time: Record<string, string> = {
+    created: iso(24 * 400),
+    modified: iso(1),
+  };
+  const versions: Record<string, {}> = {};
+  for (const [v, h] of Object.entries(ages)) {
+    time[v] = iso(h);
+    versions[v] = {};
+  }
+  // Compact separators — the registry serves compact JSON and the awk
+  // matcher is written against that shape.
+  return JSON.stringify(
+    { name: "pboss", "dist-tags": { latest }, versions, time },
+  ).replace(/": "/g, '":"').replace(/", "/g, '","').replace(/": /g, '":').replace(/", /g, '","');
+}
+
+describe("installers: sims — the Deno supply-chain window", () => {
+  test("source pins: the window resolver + the npm fallback exist in both installers", () => {
+    expect(sh).toContain("deno_resolve_window");
+    expect(sh).toContain("install_via_npm");
+    expect(sh).toContain("supply-chain");
+    expect(sh).toContain("1.6.0");
+    expect(ps1).toContain("supply-chain");
+    expect(ps1).toContain("-25).ToUnixTimeSeconds()");
+    expect(ps1).toContain('[version]"1.6.0"');
+  });
+
+  test(
+    "--runtime=deno: the spec pins the newest deno-resolvable version (a fresh latest is held back)",
+    () => {
+      if (!POSIX) return;
+      const home = mkdtempSync(join(tmpdir(), "pboss-inst-dw1-"));
+      const fixture = join(home, "packument.json");
+      // 1.6.0 ten days old (resolvable), 1.6.1 two hours old (held).
+      writeFileSync(fixture, packumentFixture({ "1.5.3": 24 * 7, "1.6.0": 24 * 10, "1.6.1": 2 }, "1.6.1"));
+      try {
+        const r = runInstaller(["--runtime=deno"], {
+          runtimes: ["deno", "node"],
+          customStubs: { curl: PACKUMENT_CURL },
+          extraEnv: { STUB_PACKUMENT: fixture },
+        });
+        expect(r.code).toBe(0);
+        expect(r.log).toContain("deno install -g -f -A --name pboss npm:pboss@1.6.0/deno-entry");
+        expect(r.log).not.toContain("npm:pboss@1.6.1");
+        expect(r.out).toContain("supply-chain hold: installing v1.6.0 (latest is v1.6.1)");
+        expect(r.log).toContain("pboss --runtime=deno --version");
+        expect(r.log).not.toContain("npm install -g");
+      } finally {
+        rmSync(home, { recursive: true, force: true });
+      }
+    },
+    30000,
+  );
+
+  test(
+    "--runtime=deno: no resolvable deno-entry version yet → npm delivers, deno still executes",
+    () => {
+      if (!POSIX) return;
+      const home = mkdtempSync(join(tmpdir(), "pboss-inst-dw2-"));
+      const fixture = join(home, "packument.json");
+      // The owner's exact transition state: 1.5.3 old (no ./deno-entry),
+      // 1.6.0 sixteen hours old (inside the window).
+      writeFileSync(fixture, packumentFixture({ "1.5.3": 24 * 7, "1.6.0": 16 }, "1.6.0"));
+      try {
+        const r = runInstaller(["--runtime=deno"], {
+          runtimes: ["deno", "node"],
+          customStubs: { curl: PACKUMENT_CURL },
+          extraEnv: { STUB_PACKUMENT: fixture },
+        });
+        expect(r.code).toBe(0);
+        // Either the plain form or the unwritable-prefix form (the stub's
+        // prefix dir does not exist yet → the rootless layout branch).
+        expect(r.log).toMatch(/npm install -g( --prefix \S+)? pboss(\n|$)/);
+        expect(r.log).not.toContain("deno install -g");
+        expect(r.out).toContain("holding back every pboss version that supports Deno");
+        expect(r.out).toContain("delivery vehicle");
+        // The runtime selection is still deno — the wrapper dispatches to it.
+        expect(r.log).toContain("pboss --runtime=deno --version");
+      } finally {
+        rmSync(home, { recursive: true, force: true });
+      }
+    },
+    30000,
+  );
+
+  test(
+    "--runtime=deno: registry unreachable → the unpinned spec, honestly noted",
+    () => {
+      if (!POSIX) return;
+      const r = runInstaller(["--runtime=deno"], { runtimes: ["deno", "node"] });
+      expect(r.code).toBe(0);
+      expect(r.log).toContain("deno install -g -f -A --name pboss npm:pboss/deno-entry");
+      expect(r.out).toContain("Could not read the registry ahead of the install");
+    },
+    30000,
+  );
+
+  test(
+    "PBOSS_VERSION with deno: the user's own pin is honored as-is",
+    () => {
+      if (!POSIX) return;
+      const r = runInstaller(["--runtime=deno"], {
+        runtimes: ["deno", "node"],
+        extraEnv: { PBOSS_VERSION: "1.6.0" },
+      });
+      expect(r.code).toBe(0);
+      expect(r.log).toContain("deno install -g -f -A --name pboss npm:pboss@1.6.0/deno-entry");
+    },
+    30000,
+  );
+});

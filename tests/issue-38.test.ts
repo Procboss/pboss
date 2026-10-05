@@ -46,6 +46,7 @@ import {
   mkdirSync,
   symlinkSync,
   readFileSync,
+  readdirSync,
 } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -76,7 +77,12 @@ function installRealPackage(): { prefix: string; home: string; farm: string } {
     stdio: "pipe",
   });
   if (pack.status !== 0) throw new Error("npm pack failed");
-  const tarball = join(farm, "pboss-1.6.0.tgz");
+  // npm pack names the tarball after package.json's version — resolve it
+  // from the farm instead of hardcoding (the version moves; the test must
+  // not break on every bump).
+  const packed = readdirSync(farm).find((f) => /^pboss-\d+\.\d+\.\d+.*\.tgz$/.test(f));
+  if (!packed) throw new Error("npm pack produced no tarball in the farm");
+  const tarball = join(farm, packed);
 
   const install = spawnSync(
     "npm",

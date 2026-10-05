@@ -35,6 +35,7 @@ import { homedir } from "node:os";
 import { randomUUID } from "node:crypto";
 import { PBOSS_HOME } from "./constants";
 import { getRuntime } from "./runtime";
+import { fetchDenoEligibility } from "./deno-eligibility";
 
 const R = getRuntime();
 
@@ -362,6 +363,76 @@ export function pbossInstallArgv(runtime: RuntimeChoice, version?: string): stri
         `npm:pboss${version ? `@${version}` : ""}/deno-entry`,
       ];
   }
+}
+
+/**
+ * A resolved install command for the published package — with the delivery
+ * vehicle made explicit. `via` differs from the runtime ONLY on the deno
+ * npm fallback: npm delivers the package (the bin wrapper), deno executes
+ * it at run time (the persistent .runtime selection is unchanged).
+ */
+export interface PbossInstallCommand {
+  argv: string[];
+  /** The ecosystem command in argv: the runtime's own, or npm on fallback. */
+  via: RuntimeChoice | "npm";
+  /** The one honest line to print when via is not the runtime itself. */
+  note?: string;
+}
+
+/**
+ * Resolve the install command for a runtime, honoring Deno's npm
+ * supply-chain window (versions published < 24 h ago are unresolvable —
+ * see deno-eligibility.ts). For deno WITHOUT an explicit version this
+ * pins the spec to the newest deno-resolvable version instead of letting
+ * the unpinned specifier silently land on an older one; when no
+ * deno-entry-capable version is resolvable yet it falls back to npm as
+ * the delivery vehicle (mirroring the bun branch's npm fallback) and
+ * says so.
+ */
+export async function resolvePbossInstallArgv(
+  runtime: RuntimeChoice,
+  version?: string,
+  fetcher: typeof fetch = fetch,
+): Promise<PbossInstallCommand> {
+  if (runtime !== "deno" || version) {
+    return { argv: pbossInstallArgv(runtime, version), via: runtime };
+  }
+
+  const eligibility = await fetchDenoEligibility(fetcher);
+  if (eligibility === null) {
+    // Registry unreachable: degrade to the unpinned spec and let Deno's own
+    // resolution decide (safe once 1.6.0 is outside the window).
+    return {
+      argv: pbossInstallArgv("deno"),
+      via: "deno",
+      note: "Could not read the registry ahead of the install — Deno may resolve an older version.",
+    };
+  }
+
+  if (eligibility.best !== null) {
+    return {
+      argv: pbossInstallArgv("deno", eligibility.best),
+      via: "deno",
+      note:
+        eligibility.best !== eligibility.latest
+          ? `Deno's 24-hour supply-chain hold: installing v${eligibility.best} ` +
+            `(latest is v${eligibility.latest}, resolvable ${eligibility.holdUntil ?? "soon"}).`
+          : undefined,
+    };
+  }
+
+  // No deno-resolvable version exports ./deno-entry yet — the one-time
+  // transition after a deno-support release. npm delivers the package; the
+  // wrapper dispatches to deno at run time; the selection stays deno.
+  return {
+    argv: pbossInstallArgv("node"),
+    via: "npm",
+    note:
+      "Deno's 24-hour supply-chain protection is holding back every pboss version " +
+      `that supports Deno (latest v${eligibility.latest ?? "?"} becomes resolvable ` +
+      `${eligibility.holdUntil ?? "within 24 hours"}) — installing through npm as the delivery ` +
+      "vehicle; pboss still RUNS on Deno (the runtime selection stays deno).",
+  };
 }
 
 /* ── interactive selection (spec §2 first-run, §12 runtime change) ─────── */

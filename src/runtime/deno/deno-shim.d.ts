@@ -15,9 +15,11 @@ declare const Deno: {
     args?: string[];
     cwd?: string;
     env?: Record<string, string>;
-    stdin?: "piped" | "inherit" | "null";
-    stdout?: "piped" | "inherit" | "null";
-    stderr?: "piped" | "inherit" | "null";
+    // A number is a raw OS fd (dup'd into the child at spawn) — the file-sink
+    // route the process adapter uses for detached children.
+    stdin?: "piped" | "inherit" | "null" | number;
+    stdout?: "piped" | "inherit" | "null" | number;
+    stderr?: "piped" | "inherit" | "null" | number;
   }) => {
     spawn(): {
       pid: number;
@@ -46,8 +48,11 @@ declare const Deno: {
     append?: boolean;
   }): Promise<{ writable: WritableStream<Uint8Array> }>;
   // network
+  // The unix-socket option is `path` in Deno's ServeOptions (Bun's is
+  // `unix` — the divergence that produced the port-8000 bug this shim now
+  // guards against: a `unix` key here would type-check and bind nothing).
   serve(
-    options: { unix?: string; port?: number } | { port: number },
+    options: { path?: string; port?: number } | { port: number },
     handler: (req: Request) => Response | Promise<Response>
   ): { shutdown(): Promise<void> };
   upgradeWebSocket(req: Request): {

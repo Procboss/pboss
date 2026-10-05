@@ -237,7 +237,7 @@ export default class Daemon {
     }
     
     // The runtime adapter's NATIVE unix-socket server: Bun.serve({unix}),
-    // node:http listen(path), Deno.serve({unix}).
+    // node:http listen(path), Deno.serve({path}).
     const opts = this.getServerOpts();
     this.server = R.network.serve({ socketPath: opts.socketPath!, fetch: (req) => opts.fetch(req) });
     return this.server;

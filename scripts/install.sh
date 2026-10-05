@@ -272,6 +272,101 @@ heal_bun_global_state() {
   printf '%s\n' "${GREEN}✓ Bun global state healed (the invalid entry and the stale lockfile are gone).${RESET}"
 }
 
+# ── 3c. npm delivery (the node channel's own path; also the Deno window's
+#    fallback delivery vehicle — the wrapper still dispatches to the
+#    selected runtime at run time). Sets PM_CHOICE/PM_DIR; dies on failure.
+install_via_npm() {
+  PM_CHOICE="npm"
+  NPM_PREFIX="$(npm config get prefix 2>/dev/null || echo "")"
+  printf '%s\n' "${CYAN}Installing the published pboss package globally (npm install -g ${PKG_SPEC})…${RESET}"
+  if [ -n "$NPM_PREFIX" ] && [ ! -w "$NPM_PREFIX" ] && [ "$IS_ROOT" -eq 0 ]; then
+    export NPM_CONFIG_PREFIX="$INVOKE_HOME/.npm-global"
+    npm install -g --prefix "$INVOKE_HOME/.npm-global" "$PKG_SPEC" || die "npm install -g failed."
+    PM_DIR="$INVOKE_HOME/.npm-global/bin"
+  else
+    npm install -g "$PKG_SPEC" || die "npm install -g failed."
+    PM_DIR="$([ -n "$NPM_PREFIX" ] && printf '%s' "$NPM_PREFIX" || npm config get prefix)/bin"
+    [ -d "$PM_DIR" ] || PM_DIR="$(npm config get prefix)"
+  fi
+}
+
+# ── 3d. Deno's npm supply-chain window ─────────────────────────────────
+# Deno REFUSES to resolve npm package versions published within the last
+# 24 hours — ranges fall back to the previous version silently and even
+# exact pins answer "Could not find npm package". A fresh pboss release is
+# therefore invisible to `deno install` for a day; the unpinned spec would
+# land on an OLDER version (and before 1.6.0, one without ./deno-entry —
+# a broken shim). This resolves the newest version Deno will actually
+# accept (age ≥ 25 h = the window + a 1 h clock-skew buffer) and pins it.
+#
+# Globals on success: DENO_BEST (version or empty), DENO_LATEST (registry
+# latest or empty), DENO_LATEST_EPOCH (its publish time, or empty),
+# DENO_REG_OK (0 answered, 1 unreachable).
+deno_resolve_window() {
+  DENO_BEST=""
+  DENO_LATEST=""
+  DENO_LATEST_EPOCH=""
+  DENO_REG_OK=1
+  DENOPACK="$(curl -fsSL --max-time 15 https://registry.npmjs.org/pboss 2>/dev/null)" || DENOPACK=""
+  [ -n "$DENOPACK" ] || return 0
+  DENO_REG_OK=0
+  # One pass over the packument (comma-recorded): collect version→publish
+  # times, dist-tags.latest, and the newest x.y.z ≥ 1.6.0 that is old
+  # enough for Deno to resolve. POSIX awk only — match()/substr(), no
+  # gawk capture arrays (must run on macOS's one-true-awk too).
+  DENOINFO="$(printf '%s' "$DENOPACK" | awk -v now="$(date +%s)" '
+    function iso2epoch(iso,   y, mo, d, h, mi, s, aa, yy, mm, days) {
+      y = substr(iso, 1, 4) + 0; mo = substr(iso, 6, 2) + 0; d = substr(iso, 9, 2) + 0
+      h = substr(iso, 12, 2) + 0; mi = substr(iso, 15, 2) + 0; s = substr(iso, 18, 2) + 0
+      aa = int((14 - mo) / 12); yy = y + 4800 - aa; mm = mo + 12 * aa - 3
+      # Julian Day Number (… - 32045) minus the Unix epoch (2440588 = JDN
+      # of 1970-01-01) → days since the epoch.
+      days = d + int((153 * mm + 2) / 5) + 365 * yy + int(yy / 4) - int(yy / 100) + int(yy / 400) - 32045 - 2440588
+      return days * 86400 + h * 3600 + mi * 60 + s
+    }
+    function vcmp(a, b,   pa, pb, i) {
+      split(a, pa, "."); split(b, pb, ".")
+      for (i = 1; i <= 3; i++) {
+        if ((pa[i] + 0) < (pb[i] + 0)) return -1
+        if ((pa[i] + 0) > (pb[i] + 0)) return 1
+      }
+      return 0
+    }
+    BEGIN { RS = ","; best = ""; latest = "" }
+    {
+      if (latest == "" && match($0, /"latest":"[0-9]+\.[0-9]+\.[0-9]+"/)) {
+        latest = substr($0, RSTART + 10, RLENGTH - 11)
+      }
+      if (match($0, /"[0-9]+\.[0-9]+\.[0-9]+":"[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]/)) {
+        rec = substr($0, RSTART + 1, RLENGTH - 1)
+        split(rec, kv, "\":\"")
+        times[kv[1]] = iso2epoch(kv[2])
+        if (vcmp(kv[1], "1.6.0") >= 0 && now - times[kv[1]] >= 25 * 3600) {
+          if (best == "" || vcmp(kv[1], best) > 0) best = kv[1]
+        }
+      }
+    }
+    END { printf "%s\t%s\t%s\n", best, latest, (latest != "" && times[latest] != "") ? times[latest] : "" }
+  ')"
+  DENO_BEST="$(printf '%s' "$DENOINFO" | cut -f1)"
+  DENO_LATEST="$(printf '%s' "$DENOINFO" | cut -f2)"
+  DENO_LATEST_EPOCH="$(printf '%s' "$DENOINFO" | cut -f3)"
+}
+
+# A human-readable "when does the hold end" for the messages.
+deno_hold_text() {
+  if [ -n "$DENO_LATEST_EPOCH" ]; then
+    HOLD_AT=$((DENO_LATEST_EPOCH + 90000)) # +25 h: the window + the buffer
+    if date -u -d "@$HOLD_AT" "+%Y-%m-%d %H:%M UTC" 2>/dev/null; then
+      return 0
+    fi
+    if date -u -r "$HOLD_AT" "+%Y-%m-%d %H:%M UTC" 2>/dev/null; then
+      return 0
+    fi
+  fi
+  printf '%s' "within the next 24 hours"
+}
+
 # ── 4. Install the PUBLISHED pboss package through the runtime's own ─────
 #    package ecosystem (spec: never a clone, never a source build).
 PKG_SPEC="pboss"
@@ -283,18 +378,7 @@ case "$RUNTIME" in
   node)
     # npm ships with node. Unwritable prefix → the user's own prefix (the
     # standard rootless npm layout).
-    PM_CHOICE="npm"
-    NPM_PREFIX="$(npm config get prefix 2>/dev/null || echo "")"
-    printf '%s\n' "${CYAN}Installing the published pboss package globally (npm install -g ${PKG_SPEC})…${RESET}"
-    if [ -n "$NPM_PREFIX" ] && [ ! -w "$NPM_PREFIX" ] && [ "$IS_ROOT" -eq 0 ]; then
-      export NPM_CONFIG_PREFIX="$INVOKE_HOME/.npm-global"
-      npm install -g --prefix "$INVOKE_HOME/.npm-global" "$PKG_SPEC" || die "npm install -g failed."
-      PM_DIR="$INVOKE_HOME/.npm-global/bin"
-    else
-      npm install -g "$PKG_SPEC" || die "npm install -g failed."
-      PM_DIR="$([ -n "$NPM_PREFIX" ] && printf '%s' "$NPM_PREFIX" || npm config get prefix)/bin"
-      [ -d "$PM_DIR" ] || PM_DIR="$(npm config get prefix)"
-    fi
+    install_via_npm
     ;;
   bun)
     PM_CHOICE="bun"
@@ -340,17 +424,50 @@ Bun refuses every later global install until it is healed.)"
     ;;
   deno)
     PM_CHOICE="deno"
-    printf '%s\n' "${CYAN}Installing the published pboss package globally (deno install -g npm:${PKG_SPEC})…${RESET}"
     # Deno executes package bins as modules — the .sh wrapper cannot serve
     # that path — so deno installs the published entry subpath directly
-    # (same file the wrapper dispatches to: dist/cli.deno.js).
+    # (same file the wrapper dispatches to: dist/cli.deno.js). The spec is
+    # PINNED to the newest version Deno can resolve: its 24-hour
+    # supply-chain window rejects fresher releases (see 3d above); the
+    # message below echoes the resolved spec so the operator sees exactly
+    # what is being installed.
+    DENO_SPEC=""
     if [ "${PKG_SPEC}" != "pboss" ]; then
+      # An explicit PBOSS_VERSION is the user's own pin — honored as-is.
       DENO_SPEC="npm:pboss@${PKG_SPEC#pboss@}/deno-entry"
+      printf '%s\n' "${CYAN}Installing the published pboss package globally (deno install -g ${DENO_SPEC})…${RESET}"
     else
-      DENO_SPEC="npm:pboss/deno-entry"
+      deno_resolve_window
+      if [ -n "$DENO_BEST" ]; then
+        DENO_SPEC="npm:pboss@${DENO_BEST}/deno-entry"
+        printf '%s\n' "${CYAN}Installing the published pboss package globally (deno install -g ${DENO_SPEC})…${RESET}"
+        if [ -n "$DENO_LATEST" ] && [ "$DENO_BEST" != "$DENO_LATEST" ]; then
+          printf '%s\n' "${YELLOW}ℹ Deno's 24-hour supply-chain hold: installing v${DENO_BEST} (latest is v${DENO_LATEST}).${RESET}"
+        fi
+      elif [ "$DENO_REG_OK" -eq 0 ]; then
+        # No deno-resolvable version exports ./deno-entry yet — the one-time
+        # transition after a deno-support release. npm delivers the package;
+        # the wrapper dispatches to Deno at run time; the selection stays deno.
+        printf '%s\n' "${YELLOW}⚠ Deno's 24-hour supply-chain protection is holding back every pboss version that supports Deno${RESET}"
+        printf '%s\n' "${YELLOW}  (latest v${DENO_LATEST:-?} becomes resolvable $(deno_hold_text)).${RESET}"
+        if command -v npm >/dev/null 2>&1; then
+          printf '%s\n' "${YELLOW}  Falling back to npm as the delivery vehicle — pboss still RUNS on Deno (the runtime selection stays deno).${RESET}"
+          install_via_npm
+        else
+          die "npm was not found to fall back on. Re-run this installer after $(deno_hold_text), or use --runtime=node|bun now."
+        fi
+      else
+        # Registry unreachable — the unpinned spec, Deno's own resolution
+        # decides (safe once 1.6.0 is outside the window).
+        DENO_SPEC="npm:pboss/deno-entry"
+        printf '%s\n' "${CYAN}Installing the published pboss package globally (deno install -g ${DENO_SPEC})…${RESET}"
+        printf '%s\n' "${YELLOW}⚠ Could not read the registry ahead of the install — installing the unpinned spec; Deno may resolve an older version.${RESET}"
+      fi
     fi
-    "$RUNTIME_BIN" install -g -f -A --name pboss "$DENO_SPEC" || die "deno install -g failed."
-    PM_DIR="$INVOKE_HOME/.deno/bin"
+    if [ -n "$DENO_SPEC" ]; then
+      "$RUNTIME_BIN" install -g -f -A --name pboss "$DENO_SPEC" || die "deno install -g failed."
+      PM_DIR="$INVOKE_HOME/.deno/bin"
+    fi
     ;;
 esac
 

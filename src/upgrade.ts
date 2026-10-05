@@ -27,6 +27,7 @@ import { existsSync, copyFileSync, writeFileSync } from "fs";
 import { homedir } from "os";
 import { join, dirname } from "path";
 import { PBOSS_HOME } from "./constants";
+import { ignore } from "./error-handling";
 import { getRuntime } from "./runtime";
 const R = getRuntime();
 
@@ -239,6 +240,7 @@ export function buildUpgradePlan(
   channel: InstallChannel,
   platform: NodeJS.Platform = process.platform,
   targetVersion?: string,
+  denoPin?: DenoPin | null,
 ): UpgradePlan {
   switch (channel) {
     case "npm":
@@ -259,14 +261,30 @@ export function buildUpgradePlan(
         note: "The postinstall hook re-checks boot persistence automatically" +
           (platform === "win32" ? "; the native pboss.cmd / pboss.ps1 shims are re-healed" : ""),
       };
-    case "deno":
+    case "deno": {
+      // -f replaces the existing global install (deno refuses otherwise);
+      // --name pins the command; /deno-entry is the published subpath
+      // (deno executes package bins as modules, so the .sh wrapper cannot
+      // serve it — see src/runtime-config.ts). The version is PINNED to
+      // the newest one Deno can resolve — its 24-hour supply-chain window
+      // rejects fresher versions outright, and an unpinned spec silently
+      // downgrades to an older release instead (deno-eligibility.ts).
+      if (denoPin === null) {
+        return {
+          channel,
+          label: "deno (global)",
+          command: [],
+          manual: true,
+          note:
+            "Deno's 24-hour supply-chain protection is holding back every pboss " +
+            "version that supports Deno (published less than a day ago). " +
+            "Re-run `pboss upgrade` after that window passes.",
+        };
+      }
+      const spec = denoPin ? `npm:pboss@${denoPin.version}/deno-entry` : "npm:pboss/deno-entry";
       return {
         channel,
         label: "deno (global)",
-        // -f replaces the existing global install (deno refuses otherwise);
-        // --name pins the command; /deno-entry is the published subpath
-        // (deno executes package bins as modules, so the .sh wrapper cannot
-        // serve it — see src/runtime-config.ts).
         command: [
           "deno",
           "install",
@@ -275,11 +293,14 @@ export function buildUpgradePlan(
           "-A",
           "--name",
           "pboss",
-          "npm:pboss/deno-entry",
+          spec,
         ],
         manual: false,
-        note: "Deno re-links the global command to the new release in place.",
+        note:
+          denoPin?.note ??
+          "Deno re-links the global command to the new release in place.",
       };
+    }
     case "brew":
       return {
         channel,
@@ -408,6 +429,21 @@ export function isSafeVersion(v: string | undefined | null): v is string {
 }
 
 /**
+ * The deno channel's window-aware pin, resolved by the caller (index.ts)
+ * via fetchDenoEligibility BEFORE the plan is built.
+ *
+ *   { version } → command pins npm:pboss@<version>/deno-entry (the newest
+ *                 version Deno can resolve; note explains any hold)
+ *   null        → no deno-resolvable version exports ./deno-entry yet —
+ *                 manual plan, the note says when the window passes
+ *   undefined   → unpinned spec (legacy/tests; callers should resolve)
+ */
+export interface DenoPin {
+  version: string;
+  note?: string;
+}
+
+/**
  * Latest published version. `fetcher` is injectable for tests. The npm
  * registry is the source of truth for version numbers across channels.
  */
@@ -493,7 +529,10 @@ export async function runUpgradePlan(
   // Windows, npm/bun channel: the package manager just regenerated its own
   // shims for the .sh bin — re-heal them (best-effort; never fails the
   // upgrade) or the next `pboss` invocation would die.
-  await healShims(plan).catch(() => null);
+  await healShims(plan).catch((err: unknown) => {
+    ignore("heal windows shims after upgrade", err);
+    return null;
+  });
   return true;
 }
 

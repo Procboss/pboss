@@ -22,7 +22,7 @@ import {
   handleRuntimeFlag,
   isValidRuntime,
   normalizeRuntime,
-  pbossInstallArgv,
+  resolvePbossInstallArgv,
   promptRuntimeSelection,
   readRuntimeFileRaw,
   runtimeChangePromptText,
@@ -89,7 +89,9 @@ import {
   writeChannelStamp,
   type InstallChannel,
   type ChannelContext,
+  type DenoPin,
 } from "./upgrade";
+import { fetchDenoEligibility } from "./deno-eligibility";
 import { resolveCloudUrl, describeCloudLink } from "./cloud";
 
 // ---------------------------------------------------------------------------
@@ -2350,13 +2352,42 @@ ${colorize("Notes:", "dim")}
       );
       process.exit(1);
     }
-    const plan = buildUpgradePlan(channel, process.platform, latest);
+
+    // Deno's supply-chain window (deno-eligibility.ts): versions published
+    // < 24 h ago are unresolvable — the registry's latest may not be
+    // installable for another day. The deno channel therefore pins to the
+    // newest version Deno can actually resolve, and the comparison target
+    // becomes that version (not latest), so the upgrade neither announces
+    // nor attempts an install Deno would refuse.
+    let denoPin: DenoPin | null | undefined;
+    let effectiveLatest = latest;
+    if (channel === "deno") {
+      const eligibility = await fetchDenoEligibility();
+      if (eligibility === null) {
+        // Registry packument unreachable — fall back to the unpinned spec;
+        // Deno's own resolution decides (never worse than pre-window).
+        denoPin = undefined;
+      } else if (eligibility.best === null) {
+        denoPin = null;
+      } else {
+        effectiveLatest = eligibility.best;
+        denoPin = {
+          version: eligibility.best,
+          note:
+            eligibility.best !== eligibility.latest
+              ? `Deno's 24-hour supply-chain hold: v${eligibility.latest} becomes resolvable ` +
+                `${eligibility.holdUntil ?? "within a day"} — upgrading to v${eligibility.best} now.`
+              : undefined,
+        };
+      }
+    }
+    const plan = buildUpgradePlan(channel, process.platform, latest, denoPin);
 
     console.log(colorize("⚡ pboss upgrade", "bold"));
     console.log(`  Installed via:  ${plan.label}`);
     console.log(`  Current:        v${VERSION}`);
 
-    const cmp = compareVersions(VERSION, latest);
+    const cmp = compareVersions(VERSION, effectiveLatest);
 
     if (cmp >= 0) {
       console.log(colorize(`✓ Already up to date (v${VERSION}).`, "green"));
@@ -2367,7 +2398,7 @@ ${colorize("Notes:", "dim")}
       } else {
         console.log(
           colorize(
-            `  Installed version is ahead of the registry (v${VERSION} > v${latest}) — nothing to do.`,
+            `  Installed version is ahead of the registry (v${VERSION} > v${effectiveLatest}) — nothing to do.`,
             "dim"
           )
         );
@@ -2375,7 +2406,7 @@ ${colorize("Notes:", "dim")}
       return;
     }
 
-    console.log(`  Latest:         v${latest}`);
+    console.log(`  Latest:         v${effectiveLatest}`);
     console.log(
       `  Upgrade cmd:    ${plan.command.join(" ") || "(manual — see note)"}`
     );
@@ -2557,8 +2588,22 @@ ${colorize("Notes:", "dim")}
     if (!ensure) process.exit(1);
 
     // 2. Install/update the published package for the new runtime (spec §13).
+    // Deno resolves its spec through the supply-chain window (deno-eligibility):
+    // pinned to the newest version Deno can actually resolve, or delivered
+    // via npm when no deno-entry version is resolvable yet.
     console.log(`Installing the published pboss package for ${runtimeLabel(selected)} …`);
-    const install = R.process.spawn(pbossInstallArgv(selected), {
+    const installPlan = await resolvePbossInstallArgv(selected);
+    if (installPlan.note) console.log(colorize(`  ${installPlan.note}`, "cyan"));
+    if (installPlan.via === "npm" && !R.misc.which("npm")) {
+      console.error(
+        `✗ npm is needed as the delivery vehicle right now, but was not found — re-run \`pboss runtime change\` after ${runtimeLabel(selected)}'s 24-hour supply-chain window passes.`
+      );
+      if (previous !== null && isValidRuntime(previous)) {
+        console.error(`  Configured runtime remains: ${previous}`);
+      }
+      process.exit(1);
+    }
+    const install = R.process.spawn(installPlan.argv, {
       stdout: "inherit",
       stderr: "inherit",
     });

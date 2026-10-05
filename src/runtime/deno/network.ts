@@ -1,8 +1,11 @@
 /**
  * ProcBoss (pboss) — Deno network adapter.
  *
- * Deno-native servers: Deno.serve({ unix } | { port }) and
+ * Deno-native servers: Deno.serve({ path } | { port }) and
  * Deno.upgradeWebSocket for the dashboard's live updates.
+ * (The unix-socket option is `path` in Deno's ServeOptions — Bun's is
+ * `unix`; passing `unix` here binds the TCP default port 8000 instead,
+ * which leaves the daemon unreachable on its socket.)
  *
  * The daemon CLIENT half: Deno's fetch has no Unix-socket option, so this
  * adapter carries a minimal HTTP/1.1 client over Deno.connect — the native
@@ -40,7 +43,7 @@ export function createDenoNetwork(): PBNetworkRuntime {
       };
 
       const server = opts.socketPath
-        ? Deno.serve({ unix: opts.socketPath }, (req) => handler(req, ctx))
+        ? Deno.serve({ path: opts.socketPath }, (req) => handler(req, ctx))
         : Deno.serve({ port: opts.port! }, (req) => handler(req, ctx));
 
       return {
@@ -120,21 +123,19 @@ async function buildResponse(
       let pending = bodyFirst;
       let remaining: number = contentLength !== null ? parseInt(contentLength) : Infinity;
 
-      const push = (bytes: Uint8Array) => {
-        if (bytes.length === 0) return;
-        if (!chunked) {
-          if (remaining === Infinity) {
-            controller.enqueue(bytes);
-            return;
-          }
-          const take = Math.min(remaining, bytes.length);
-          controller.enqueue(bytes.slice(0, take));
-          remaining -= take;
-          if (remaining === 0) controller.close();
-          return;
+      const finish = () => {
+        try {
+          controller.close();
+        } catch {
+          /* already closed */
         }
-        // Chunked framing: strip size lines, pass payload through.
-        pending = new Uint8Array([...pending, ...bytes]);
+      };
+
+      // Chunked framing: strip size lines, pass payload through. Runs on
+      // the bytes that arrived WITH the head too — a small streamed reply
+      // can complete entirely in the first read, and the drain must not
+      // wait for further bytes that never come (the connection closes).
+      const drainChunked = () => {
         for (;;) {
           const text = new TextDecoder().decode(pending);
           const lineEnd = text.indexOf("\r\n");
@@ -142,7 +143,7 @@ async function buildResponse(
           const size = parseInt(text.slice(0, lineEnd), 16);
           if (Number.isNaN(size)) return; // partial hex line — wait for more
           if (size === 0) {
-            controller.close();
+            finish();
             return;
           }
           const payloadStart = lineEnd + 2;
@@ -152,9 +153,45 @@ async function buildResponse(
         }
       };
 
+      const push = (bytes: Uint8Array) => {
+        if (bytes.length === 0) return;
+        if (!chunked) {
+          if (remaining === Infinity) {
+            controller.enqueue(bytes);
+            return;
+          }
+          if (remaining <= 0) {
+            // Fully delivered — a late extra read (post-close) must not
+            // enqueue again; close is idempotent-safe here.
+            finish();
+            return;
+          }
+          const take = Math.min(remaining, bytes.length);
+          controller.enqueue(bytes.slice(0, take));
+          remaining -= take;
+          if (remaining === 0) finish();
+          return;
+        }
+        pending = new Uint8Array([...pending, ...bytes]);
+        drainChunked();
+      };
+
       if (contentLength === "0") {
-        controller.close();
+        finish();
         return;
+      }
+
+      // The bytes that arrived WITH the response head are the FIRST body
+      // bytes. The daemon's JSON replies are small enough to land in the
+      // same read as the head — they must be enqueued before anything the
+      // reader delivers later, or res.json() sees an empty body and every
+      // probe reports a dead daemon (the exact "start timed out although
+      // the socket was bound" signature). Chunked replies complete through
+      // drainChunked() for the same reason.
+      if (chunked) {
+        drainChunked();
+      } else if (bodyFirst.length > 0) {
+        push(bodyFirst);
       }
 
       void (async () => {
@@ -163,19 +200,15 @@ async function buildResponse(
             if (signal?.aborted) break;
             const { done, value } = await reader.read();
             if (done) {
-              controller.close();
+              finish();
               return;
             }
             if (value) push(value);
           }
-          controller.close();
+          finish();
         } catch (err) {
           ignore("deno socketFetch body stream", err);
-          try {
-            controller.close();
-          } catch {
-            /* already closed */
-          }
+          finish();
         }
       })();
     },
