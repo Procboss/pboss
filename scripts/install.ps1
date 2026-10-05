@@ -1,8 +1,13 @@
 # ProcBoss (pboss) Universal Installer for Windows
 # https://procboss.com
 # Usage: powershell -c "irm https://procboss.com/install.ps1 | iex"
-#        powershell -c "irm https://procboss.com/install.ps1 | iex -Args" (see below)
-# Explicit runtime:  iex "& { irm https://procboss.com/install.ps1 } -Runtime node|bun|deno"
+# Explicit runtime (inside PowerShell):
+#   iex "& { $(irm https://procboss.com/install.ps1) } -Runtime node"
+#   (node | bun | deno — the $() interpolates the script into the
+#   scriptblock so & can bind -Runtime to its param(); without it the
+#   script downloads but never executes. From cmd.exe or the Run box,
+#   wrap the same payload in single quotes:
+#   powershell -c "iex '& { $(irm https://procboss.com/install.ps1) } -Runtime node'")
 #
 # RUNTIME-AWARE ARCHITECTURE (the contract this installer implements):
 #
