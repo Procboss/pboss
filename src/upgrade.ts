@@ -26,6 +26,7 @@ import { mkdir, readFile, writeFile, stat } from "fs/promises";
 import { existsSync, copyFileSync, writeFileSync } from "fs";
 import { homedir } from "os";
 import { join, dirname } from "path";
+import { fileURLToPath } from "node:url";
 import { PBOSS_HOME } from "./constants";
 import { ignore } from "./error-handling";
 import { getRuntime } from "./runtime";
@@ -113,6 +114,16 @@ export type ChannelContext = {
   parentHasGit?: boolean;
 };
 
+/**
+ * This module's directory — portable across Bun, Node and Deno.
+ * `import.meta.dir` is a BUN-ONLY extension (undefined elsewhere → the
+ * upgrade channel probe crashed on Node and Deno with "The 'path'
+ * argument must be of type string"); `import.meta.url` is standard. In
+ * the bundled dist this resolves to the dist directory; in a source
+ * checkout it resolves to src/ — both shapes the channel rules expect.
+ */
+const MODULE_DIR = dirname(fileURLToPath(import.meta.url));
+
 export async function currentChannelContext(): Promise<ChannelContext> {
   return {
     stamp: await readChannelStamp(),
@@ -122,9 +133,9 @@ export async function currentChannelContext(): Promise<ChannelContext> {
         typeof Bun.main === "string" &&
         Bun.main.includes("$bunfs")) ||
       false,
-    moduleDir: import.meta.dir,
+    moduleDir: MODULE_DIR,
     platform: process.platform,
-    parentHasGit: await isGitRoot(join(import.meta.dir, "..")),
+    parentHasGit: await isGitRoot(join(MODULE_DIR, "..")),
   };
 }
 
@@ -500,7 +511,7 @@ export async function healWindowsShims(
   // it (.../pboss/src or .../pboss/dist), and npm/bun update in place —
   // same directory, new files — so the wrapper twin beside this source is
   // the NEW one. Known-layout fallbacks cover exotic resolutions.
-  const moduleDir = opts.moduleDir ?? import.meta.dir;
+  const moduleDir = opts.moduleDir ?? MODULE_DIR;
   const candidates = [
     join(dirname(moduleDir), "bin", "pboss.ps1"),
     join(homedir(), ".bun", "install", "global", "node_modules", "pboss", "bin", "pboss.ps1"),

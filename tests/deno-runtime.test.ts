@@ -218,4 +218,35 @@ console.log("child-wrote-after-parent-exit");
     },
     120_000,
   );
+
+  test.skipIf(!canDeno || !DIST_BUILT)(
+    "`pboss upgrade --check` completes under deno (the import.meta.dir crash — bug 5)",
+    async () => {
+      const home = mkdtempSync(join(tmpdir(), "pboss-deno-upg-"));
+      mkdirSync(join(home, ".pboss"), { recursive: true });
+      writeFileSync(join(home, ".pboss", ".runtime"), "deno\n");
+      try {
+        const proc = Bun.spawnSync([denoBin!, "run", "-A", DIST_ENTRY, "upgrade", "--check"], {
+          env: { ...process.env, HOME: home, PBOSS_HOME: join(home, ".pboss"), TERM: "dumb" },
+          stdout: "pipe",
+          stderr: "pipe",
+          stdin: "ignore",
+          timeout: 60_000,
+        });
+        const out = new TextDecoder().decode(proc.stdout) + new TextDecoder().decode(proc.stderr);
+        // Bug 5: currentChannelContext used `import.meta.dir` — a BUN-ONLY
+        // extension, undefined under Deno/Node → the channel probe crashed
+        // with "The 'path' argument must be of type string. Received
+        // undefined" before any upgrade logic ran.
+        expect(out).not.toContain("must be of type string");
+        expect(out).not.toContain("parentHasGit");
+        // It got far enough to print the upgrade header (registry answers
+        // or the hold note — either is a completed channel resolution).
+        expect(out).toContain("pboss upgrade");
+      } finally {
+        rmSync(home, { recursive: true, force: true });
+      }
+    },
+    120_000,
+  );
 });
