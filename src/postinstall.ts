@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 /**
- * ProcBoss (pboss) — Bun Process Manager
+ * ProcBoss (pboss) — JavaScript & TypeScript Process Manager
  * https://procboss.com
  * https://github.com/procboss/pboss
  * License: GPL-3.0-only

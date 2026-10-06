@@ -1,6 +1,6 @@
 /**
- * ProcBoss (pboss) — Bun Process Manager
- * A production-grade process manager for Bun.
+ * ProcBoss (pboss) — JavaScript & TypeScript Process Manager
+ * A production-grade, runtime-agnostic process manager — Bun, Node.js and Deno.
  *
  * Features:
  * - Fork & cluster execution modes

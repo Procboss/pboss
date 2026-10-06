@@ -1,5 +1,5 @@
 /**
- * ProcBoss (pboss) — Bun Process Manager
+ * ProcBoss (pboss) — JavaScript & TypeScript Process Manager
  *
  * Issue #32: the real internal event system.
  *

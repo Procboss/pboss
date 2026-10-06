@@ -1,5 +1,5 @@
 /**
- * ProcBoss (pboss) — Bun Process Manager
+ * ProcBoss (pboss) — JavaScript & TypeScript Process Manager
  * Error-handling policy for best-effort operations.
  *
  * Repo rules (enforced by tests/error-handling.test.ts):

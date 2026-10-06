@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 /**
- * ProcBoss (pboss) — Bun Process Manager
- * A production-grade process manager for Bun.
+ * ProcBoss (pboss) — JavaScript & TypeScript Process Manager
+ * A production-grade, runtime-agnostic process manager — Bun, Node.js and Deno.
  *
  * Features:
  * - Fork & cluster execution modes
@@ -2880,7 +2880,8 @@ ${colorize("Notes:", "dim")}
 
   printHelp() {
     console.log(`
-    ${colorize("ProcBoss", "bold")} ${colorize(`v${VERSION}`, "dim")} — Bun Process Manager
+    ${colorize("ProcBoss", "bold")} ${colorize(`v${VERSION}`, "dim")} — JavaScript & TypeScript Process Manager
+    ${colorize("Native on Bun, Node.js and Deno — no compatibility layers", "dim")}
     
     ${colorize("Usage:", "bold")} pboss <command> [options]
     

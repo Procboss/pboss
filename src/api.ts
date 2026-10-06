@@ -1,5 +1,5 @@
 /**
- * PBoss — Bun Process Manager
+ * PBoss — JavaScript & TypeScript Process Manager
  * Programmatic API
  *
  * Usage:

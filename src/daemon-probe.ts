@@ -1,5 +1,5 @@
 /**
- * ProcBoss (pboss) — Bun Process Manager
+ * ProcBoss (pboss) — JavaScript & TypeScript Process Manager
  * Shared daemon-socket probe.
  *
  * Answers one question: "is there a daemon LISTENING and answering pings
