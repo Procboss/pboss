@@ -95,6 +95,8 @@ import {
 } from "./upgrade";
 import { fetchDenoEligibility } from "./deno-eligibility";
 import { resolveCloudUrl, describeCloudLink } from "./cloud";
+import { normalizeDenoPermissions } from "./deno-permissions";
+import { commandRuntime } from "./install-mode";
 
 // ---------------------------------------------------------------------------
 // PBossCLI class — Delegates all process engine operations to PBoss API
@@ -155,6 +157,9 @@ const START_VALUE_FLAGS = new Set([
   "--namespace",
   "--depends-on",
   "--on-ns-member-exit",
+  // Deno permissions (runtime-unique): comma list, same spellings the
+  // parser takes. Short form is -P — -p is --port (PM2 parity).
+  "--permissions", "-P",
   // Already extracted by cmdStart before the scan runs; listed so the two
   // scanners can never disagree if that ordering ever changes.
   "--config", "-c",
@@ -255,6 +260,59 @@ function looksLikeEcosystemTarget(target: string): boolean {
   return ECOSYSTEM_NAME_HINTS.some((hint) => target.includes(hint));
 }
 
+/**
+ * Split a `--permissions` / `--permissions=` value into entries and validate
+ * them NOW (fast, clear error at the terminal) using the same normalizer the
+ * daemon applies at spawn time. Returns the raw entries — the config, dump
+ * and `describe` keep showing what the user wrote; flags are derived at
+ * build time.
+ */
+function parsePermissionListArg(value: string, flagName: string): string[] {
+  const entries = value
+    .split(",")
+    .map((e) => e.trim())
+    .filter((e) => e !== "");
+  if (entries.length === 0) {
+    console.error(
+      colorize(
+        `Error: ${flagName} requires a comma-separated permission list ` +
+          `(e.g. ${flagName} allow-read,allow-net=api.example.com)`,
+        "red"
+      )
+    );
+    process.exit(1);
+  }
+  try {
+    normalizeDenoPermissions(entries);
+  } catch (err: any) {
+    console.error(colorize(`Error: ${err.message}`, "red"));
+    process.exit(1);
+  }
+  return entries;
+}
+
+/**
+ * A dim, honest notice when permissions cannot apply: the app's interpreter
+ * is EXPLICITLY stated and is not deno (bun/node have no permission model).
+ * Unstated interpreters stay silent — the feature follows whichever runtime
+ * wins resolution on the machine, which is the documented contract.
+ */
+function warnIgnoredPermissions(apps: StartOptions[]): void {
+  for (const app of apps) {
+    if (!app.permissions?.length || !app.interpreter) continue;
+    const firstToken = app.interpreter.trim().split(/\s+/)[0]!;
+    const rt = commandRuntime([firstToken]);
+    if (rt !== null && rt !== "deno") {
+      console.error(
+        colorize(
+          `[pboss] permissions are a Deno feature — ignored for ${rt} app "${app.name ?? app.script}"`,
+          "dim"
+        )
+      );
+    }
+  }
+}
+
 export class PBossCLI {
   public pboss: PBoss;
   public noDaemon: boolean = false;
@@ -313,6 +371,26 @@ export class PBossCLI {
         case "--node-args":
           opts.nodeArgs = args[++i]!.split(" ");
           break;
+        // Deno permissions (runtime-unique, owner request 2026-10-06):
+        // comma-separated entries, validated inline — the same normalizer
+        // the daemon runs at spawn time. Short form is -P (-p is --port).
+        // The = spelling is handled in the default branch below.
+        case "--permissions":
+        case "-P": {
+          const value = args[++i];
+          if (value === undefined || value === "") {
+            console.error(
+              colorize(
+                "Error: --permissions requires a comma-separated permission list " +
+                  "(e.g. --permissions allow-read,allow-net=api.example.com)",
+                "red"
+              )
+            );
+            process.exit(1);
+          }
+          opts.permissions = parsePermissionListArg(value, arg);
+          break;
+        }
         case "--watch":
         case "-w":
           opts.watch = true;
@@ -472,6 +550,20 @@ export class PBossCLI {
           opts.sourceMapSupport = true;
           break;
         default:
+          // --permissions=<list> — the = spelling the docs show. Handled
+          // here (not as a case) because it is one token: nothing is consumed
+          // beyond it, so it is NOT a value flag for the target scanner.
+          if (arg.startsWith("--permissions=")) {
+            const value = arg.slice("--permissions=".length);
+            if (value === "") {
+              console.error(
+                colorize("Error: --permissions= requires a comma-separated permission list", "red")
+              );
+              process.exit(1);
+            }
+            opts.permissions = parsePermissionListArg(value, "--permissions=");
+            break;
+          }
           if (arg.startsWith("-")) {
             console.warn(colorize(`[pboss] Unknown flag ignored: ${arg}`, "dim"));
           } else {
@@ -579,6 +671,11 @@ export class PBossCLI {
           this.pboss = new PBoss({ noDaemon: true });
         }
 
+        // Runtime-unique honesty (2026-10-06): a permissions list on an app
+        // whose interpreter is explicitly bun/node can never apply — say so,
+        // dimly, once per start instead of failing silently.
+        warnIgnoredPermissions(config.apps);
+
         const states = await this.pboss.startEcosystem(config);
         if (!raw && !config.apps.some((app) => app.raw)) {
           printProcessTable(states);
@@ -634,6 +731,10 @@ export class PBossCLI {
 
         opts.script = resolve(opts.script);
         if (!opts.cwd) opts.cwd = path.dirname(opts.script);
+
+        // Same honesty rule as the config branch above: explicit non-deno
+        // interpreters get the one-line notice, unstated ones stay silent.
+        warnIgnoredPermissions([opts]);
 
         const states = await this.pboss.start(opts);
         if (!opts.raw) {
@@ -1262,6 +1363,10 @@ Every alert also supports sustained durations in the JSON file
         console.log(`  CWD          : ${env?.cwd ?? "-"}`);
         console.log(`  Args         : ${env?.args?.join(" ") || "(none)"}`);
         console.log(`  Interpreter  : ${env?.interpreter || "-"}`);
+        if (env?.interpreterArgs?.length)
+          console.log(`  Interp. args : ${env.interpreterArgs.join(" ")}`);
+        if (env?.permissions?.length)
+          console.log(`  Permissions  : ${env.permissions.join(", ")} (deno)`);
         console.log(`  Restarts     : ${env?.restart_time ?? 0}`);
         console.log(`  Unstable     : ${env?.unstable_restarts ?? 0}`);
         console.log(
@@ -3007,6 +3112,13 @@ ${colorize("Notes:", "dim")}
     --watch, -w                   Watch for file changes
     --cwd <path>                  Working directory
     --interpreter <bin>           Custom interpreter
+    --interpreter-args <args>     Arguments for the interpreter
+    --permissions, -P <list>     Deno permissions (runtime-unique —
+                                  ignored under bun/node): comma list of
+                                  allow-read, allow-net=host, deny-write,
+                                  all (-A), none. Entries already in
+                                  --interpreter-args are never duplicated;
+                                  -p is --port, so the short form is -P
     --node-args <args>            Extra runtime arguments
     --max-memory-restart <size>   e.g. 200M, 1G
     --max-restarts <N>            Max restart attempts
@@ -3041,6 +3153,8 @@ ${colorize("Notes:", "dim")}
     pboss start server.ts --name api -i 4 --watch
     pboss start --no-daemon app.ts
     pboss start --name api --no-daemon server.ts
+    pboss start deno-api.ts --interpreter deno \
+      --permissions allow-net,allow-read=./config   (deno-only)
     pboss start ecosystem.config.ts
     pboss start --config procboss.config.js
     pboss start --config ./any.js   (any custom config file name)

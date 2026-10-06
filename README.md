@@ -246,6 +246,31 @@ Names that are not pboss apps resolve against systemd (`postgresql` →
 inactive one blocks it with a clear diagnostic — and pboss never starts
 or stops a system service it does not own.
 
+**Deno permissions** — the first runtime-unique feature: state WHAT a deno
+app may do instead of the kitchen-sink `deno run -A` default. Short form is
+`-P` (`-p` is `--port`, PM2 parity); the `--permissions=` spelling works too.
+
+```bash
+pboss start server.ts --interpreter deno --permissions allow-net,allow-read=./config
+pboss start worker.ts --interpreter deno -P none        # zero-permission deno app
+```
+
+```js
+// ecosystem file — same list, array form
+module.exports = {
+  apps: [{ name: "deno-api", script: "./server.ts", interpreter: "deno",
+           permissions: ["allow-net", "allow-read", "deny-write"] }],
+};
+```
+
+Entries are `allow-<category>` / `deny-<category>` (optionally
+`=value`-scoped), plus `all` (`-A`) and `none`. Permissions already stated in
+`--interpreter-args` are never duplicated — the user's scoping always wins —
+and a user-stated `-A` suppresses `allow-*` entries (deno rejects the
+combination) while `deny-*` entries still layer on top. The list is
+**runtime-unique**: ignored under bun/node (no permission model there), so
+one ecosystem file drives a mixed fleet.
+
 List all processes:
 
 ```bash

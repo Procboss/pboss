@@ -809,6 +809,8 @@ export function startOptionsFromState(p: ProcessState): StartOptions {
     ignoreWatch: env?.ignoreWatch,
     interpreter: env?.interpreter,
     interpreterArgs: env?.interpreterArgs,
+    // Runtime-unique (deno) permission list — surfaced for fleet parity.
+    permissions: env?.permissions,
     mergeLogs: env?.mergeLogs,
     raw: env?.raw,
     logDateFormat: env?.logDateFormat,

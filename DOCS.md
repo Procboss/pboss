@@ -34,6 +34,7 @@ ProcBoss is free and open-source. If it saves you time, star it on [GitHub](http
 - [Installation](#installation)
 - [Quick Start](#quick-start)
 - [Runtime Support](#runtime-support)
+  - [Deno permissions — the runtime-unique feature](#deno-permissions--the-runtime-unique-feature)
 - [CLI Reference](#cli-reference)
   - [Process Management](#process-management)
   - [Cluster Mode](#cluster-mode)
@@ -367,7 +368,7 @@ runtime with `--interpreter` always wins.
 | **TypeScript / JSX** | `.ts`, `.tsx`, `.jsx`, `.mts` | main runtime — `bun run` / `deno run -A` / `node` via tsx / `--experimental-strip-types`; compiled installs: `bun run` → `deno run -A` → `node` | `pboss start server.ts` |
 | **JavaScript** | `.js`, `.mjs`, `.cjs` | main runtime — `bun run` / `deno run -A` / `node`; compiled installs: `bun run` → `deno run -A` → `node <file>` | `pboss start app.js` |
 | **Node.js (pinned)** | `.js` | `node <file>` (via `--interpreter`) | `pboss start app.js --interpreter node` |
-| **Custom Interpreter** | *any* | Custom runtime via `--interpreter` | `pboss start app.ts --interpreter "deno run -A"` |
+| **Custom Interpreter** | *any* | Custom runtime via `--interpreter` | `pboss start app.ts --interpreter deno` |
 
 <!-- 2026-09-29: multi-language support is hidden while the product focuses on JS/TS
      backends. Re-add when it returns: append "Beyond that trio it manages everything
@@ -402,6 +403,56 @@ pboss start worker.py --name py-worker
 pboss start worker.py --interpreter ./venv/bin/python
 ```
 -->
+
+### Deno permissions — the runtime-unique feature
+
+Deno is the one pboss runtime with a **permission model**, so it gets a
+first-class option (owner request, 2026-10-06): state WHAT the app may do
+instead of handing it the kitchen-sink `deno run -A` default.
+
+```bash
+# CLI flag (short -P — -p is --port, PM2 parity): comma-separated list
+pboss start server.ts --interpreter deno --permissions allow-net,allow-read=./config
+
+# same, = spelling
+pboss start server.ts --interpreter deno --permissions=allow-net,allow-read=./config
+
+# a zero-permission deno app (the -A default is dropped, nothing replaces it)
+pboss start worker.ts --interpreter deno --permissions none
+```
+
+Entries are `allow-<category>` / `deny-<category>` with an optional `=value`
+scoping (`allow-net=api.example.com`, `allow-env=FOO,BAR`), plus `all` (`-A`)
+and `none`. Categories: `read`, `write`, `net`, `env`, `run`, `sys`, `ffi`,
+`hrtime`. The same list lives in ecosystem files:
+
+```js
+module.exports = {
+  apps: [{
+    name: "deno-api",
+    script: "./server.ts",
+    interpreter: "deno",
+    permissions: ["allow-net", "allow-read", "deny-write"],
+  }],
+};
+```
+
+Merge rules (verified against deno 2.9.7):
+
+- **No duplication** — a permission the user already stated in
+  `--interpreter-args` (or `--node-args`) is never repeated, and the user's
+  scoping always wins over a broader request in the list.
+- **No conflicts** — deno rejects `-A` mixed with any `--allow-*` in either
+  order, so a user-stated `-A` suppresses `allow-*` entries (they are
+  implied anyway) while `deny-*` entries still layer on top
+  (`-A --deny-write` is valid — deny takes precedence).
+- **The default is replaced, not widened** — pboss's own resolved
+  `deno run -A` is dropped the moment a permission list is present: asking
+  for specific grants means not-all.
+- **Runtime-unique, portable configs** — under bun/node the list is
+  ignored (bun/node have no permission model), so one ecosystem file drives a
+  mixed fleet; pboss prints a dim notice when a non-deno interpreter is
+  stated explicitly.
 
 ### Runtime discovery — how pboss finds `bun` (and why it matters)
 
@@ -459,7 +510,7 @@ pboss start server.ts --name api --max-memory-restart 512M
 ```
 
 ```
-pboss start server.ts --interpreter "deno run -A"
+pboss start server.ts --interpreter deno --permissions allow-net,allow-read=./config
 ```
 
 ```
@@ -477,6 +528,7 @@ pboss start server.ts --name api --wait-ready --listen-timeout 10000
 | `--env <KEY=VAL>` | Environment variable (repeatable) | — |
 | `--interpreter <bin>` | Custom interpreter binary | Auto-detected |
 | `--interpreter-args <args>` | Arguments for the interpreter | — |
+| `--permissions, -P <list>` | **Deno only** (runtime-unique — ignored under bun/node): comma-separated permission list, e.g. `allow-read,allow-net=api.com,deny-write`; `all` = `-A`, `none` = no permissions. Entries already present in `--interpreter-args` are never duplicated. `-p` is `--port`, so the short form is `-P` | — |
 | `--node-args <args>` | Additional runtime arguments | — |
 | `--max-memory-restart <size>` | Restart when memory exceeds limit | — |
 | `--max-restarts <n>` | Maximum consecutive restarts | `16` |
@@ -2045,6 +2097,7 @@ The complete set of options available for each entry in the apps array:
 | `killTimeout` | `number` | `5000` | Grace period in ms before SIGKILL |
 | `interpreter` | `string` | Auto | Custom interpreter |
 | `interpreterArgs` | `string[]` | — | Arguments for the interpreter |
+| `permissions` | `string[]` | — | **Deno only** (runtime-unique, ignored under bun/node): permission list — `allow-read`, `allow-net=api.com`, `deny-write`, `all`, `none`. Never duplicates `interpreterArgs`; replaces the default `deno run -A`. See [Deno permissions](#deno-permissions--the-runtime-unique-feature) |
 | `nodeArgs` | `string[]` | — | Additional runtime arguments |
 | `namespace` | `string` | — | Namespace for grouping processes |
 | `onNsMemberExit` | `"ignore"` \| `"exit"` | `ignore` | Reaction to a namespace sibling's terminal exit (namespaced processes only; see [Namespaces](#namespaces--group-level-lifecycle)) |

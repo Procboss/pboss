@@ -197,6 +197,22 @@ export interface ProcessDescription {
   sourceMapSupport?: boolean;
   // Node args compatibility
   nodeArgs?: string[];
+  // ── Runtime-unique features ─────────────────────────────────────────────
+  // Options in this section belong to ONE runtime. They are honored when the
+  // app runs under that runtime and silently ignored under every other —
+  // one ecosystem file stays portable across machines whose interpreter
+  // chains differ. Translation happens at the single command-build choke
+  // point (ClusterManager.buildWorkerCommand → src/deno-permissions.ts).
+
+  /**
+   * Deno-only (runtime-unique): the app's permission list —
+   * `permissions: ["allow-read", "allow-net=api.example.com", "deny-write"]`.
+   * Translated to real deno flags at spawn time; entries already stated in
+   * `interpreterArgs` (or `nodeArgs`) are never duplicated, and pboss's own
+   * default `deno run -A` is replaced by the list. Ignored under bun/node.
+   * See src/deno-permissions.ts for the full contract.
+   */
+  permissions?: string[];
   // Namespace
   namespace?: string;
   /** Issue #31: reaction to a namespace sibling's terminal exit. */
@@ -316,6 +332,13 @@ export interface StartOptions {
    * the supervisor in-process (same as `--no-daemon`). Issue #28.
    */
   noDaemon?: boolean;
+  /**
+   * Deno-only (runtime-unique): permission list for the app — see the
+   * ProcessDescription field of the same name and src/deno-permissions.ts.
+   * `--permissions allow-read,allow-net=api.com` on the CLI, or an array in
+   * an ecosystem file. Ignored when the app runs under bun/node.
+   */
+  permissions?: string[];
 }
 
 export interface EcosystemConfig {

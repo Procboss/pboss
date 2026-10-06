@@ -1145,6 +1145,9 @@ const R = getRuntime();
        alertDisabled: options.alertDisabled,
        nodeArgs: options.nodeArgs,
        sourceMapSupport: options.sourceMapSupport,
+       // Runtime-unique (deno) permission list — persisted with the config so
+       // restarts/resurrect keep honoring it; see src/deno-permissions.ts.
+       permissions: options.permissions,
        treekill: true,
      };
    }

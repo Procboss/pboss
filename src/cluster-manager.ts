@@ -20,6 +20,7 @@ import {
   findBun,
   nodeSupportsTypeStripping,
 } from "./install-mode";
+import { mergeDenoPermissions } from "./deno-permissions";
 import { getRuntime } from "./runtime";
 import type { PBChild } from "./runtime";
 import path from "path"
@@ -65,6 +66,14 @@ export class ClusterManager {
     */
    async buildWorkerCommand(config: ProcessDescription): Promise<string[]> {
      const cmd: string[] = [];
+     // Runtime-unique features bookkeeping (deno permissions): routeEnd marks
+     // where the interpreter/interpreter-args (or pboss's RESOLVED route)
+     // region ends — before node-args. routeIsResolved is true only when the
+     // region was built by pboss's own resolution, whose `deno run -A` default
+     // is strippable the moment the user states a permission list; a
+     // user-stated -A (via --interpreter-args) is never stripped, only
+     // deduplicated against.
+     let routeIsResolved = false;
 
      if (config.interpreter) {
        if (config.interpreter !== "none" && config.interpreter !== "binary" && config.interpreter !== "direct") {
@@ -96,10 +105,39 @@ export class ClusterManager {
        } else {
          cmd.push(...await resolveScriptInterpreter(config.script));
        }
+       // The extension branches above (python/go/ruby/… resolutions) are all
+       // pboss's own choices — non-deno by construction, so marking the whole
+       // else-branch "resolved" is safe for the -A strip (only the deno route
+       // ever carries one).
+       routeIsResolved = true;
      }
+
+     const routeEnd = cmd.length;
 
      if (config.nodeArgs?.length) {
        cmd.push(...config.nodeArgs);
+     }
+
+     // ── Runtime-unique features (owner request, 2026-10-06) ─────────────
+     // A permission list is a DENO-only concept, translated here at the ONE
+     // place every app command is assembled (fork + cluster per-instance;
+     // the node:cluster wrapper uses buildNodeClusterCommand below —
+     // node-only by contract). mergeDenoPermissions returns the prefix
+     // unchanged for every non-deno runtime (bun/node have no permission
+     // model), never duplicates a permission the user already stated in
+     // interpreter/node args, and replaces pboss's own `deno run -A` default
+     // with the specific list.
+     if (config.permissions?.length) {
+       const merged = mergeDenoPermissions(cmd, config.permissions, {
+         defaultAllEnd: routeIsResolved ? routeEnd : 0,
+       });
+       // merged may be the SAME array (non-deno runtimes return the prefix
+       // untouched) — never clear-and-refill cmd, or the shared reference
+       // empties itself: append the script to the returned array instead.
+       if (merged !== cmd) {
+         cmd.length = 0;
+         cmd.push(...merged);
+       }
      }
 
      cmd.push(path.resolve(config.script));
@@ -118,6 +156,10 @@ export class ClusterManager {
    *
    * The interpreter route mirrors buildWorkerCommand exactly so a cluster
    * app and a single instance of the same app resolve the same runtime.
+   *
+   * Deno permissions are deliberately NOT translated here: node:cluster is
+   * Node-only by contract (this method throws for any non-node route), and
+   * permissions are a deno-unique feature — ignored under Node by design.
    */
   async buildNodeClusterCommand(
     config: ProcessDescription,
