@@ -103,14 +103,14 @@ describe("README.md: the untouched core contract survives removals", () => {
     // and a process manager needs the full grant set. 2026-10-04: the runtime
     // wrapper architecture — deno installs the published ENTRY subpath
     // (--name pins the command; deno runs package bins as modules).
-    // 2026-10-06: --minimum-dependency-age=0 — Deno ≥ 2.9's own escape hatch
+    // 2026-10-06: --min-dep-age=0 — Deno ≥ 2.9's own escape hatch
     // for the 24-hour supply-chain hold (without it the unpinned spec
     // silently installs the PREVIOUS release — the owner's "stuck at 1.5.3"
     // report). Same day, also the owner's request: --reload --force — a
     // stale cached resolution is the other way an old version sticks
     // around, and an existing installation must be overwritten in place.
     expect(readme).toContain(
-      "deno install -g -A --minimum-dependency-age=0 --name pboss --reload --force npm:pboss/deno-entry",
+      "deno install -g -A --min-dep-age=0 --name pboss --reload --force npm:pboss/deno-entry",
     );
     // 2026-09-29: per-runtime install blocks at the owner's request — a bold
     // runtime label above its own fenced single-command block, so GitHub's
@@ -118,7 +118,7 @@ describe("README.md: the untouched core contract survives removals", () => {
     expect(readme).toContain("**Node.js**\n\n```bash\nnpm install -g pboss\n```");
     expect(readme).toContain("**Bun**\n\n```bash\nbun install -g pboss\n```");
     expect(readme).toContain(
-      "**Deno**\n\n```bash\ndeno install -g -A --minimum-dependency-age=0 --name pboss --reload --force npm:pboss/deno-entry\n```",
+      "**Deno**\n\n```bash\ndeno install -g -A --min-dep-age=0 --name pboss --reload --force npm:pboss/deno-entry\n```",
     );
     // 2026-10-04: the universal installer is BACK (runtime-aware): the
     // one-liner prompts for a runtime (Node default), --runtime=<x> pins it,

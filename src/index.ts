@@ -2357,7 +2357,7 @@ ${colorize("Notes:", "dim")}
     // Deno's supply-chain window (deno-eligibility.ts): versions published
     // < 24 h ago are unresolvable by default — an unpinned spec silently
     // falls back and exact pins error. Deno's OWN escape hatch is the
-    // --minimum-dependency-age flag: when the local deno knows it, the
+    // --min-dep-age flag: when the local deno knows it, the
     // upgrade installs the registry's TRUE latest (the version package.json
     // carried into the publish) instead of waiting out the window. Only
     // denos without the flag keep the window-aware pin below.
@@ -2375,7 +2375,7 @@ ${colorize("Notes:", "dim")}
         denoPin = {
           version: eligibility?.latest ?? null,
           bypass: true,
-          note: `Deno's 24-hour supply-chain hold is bypassed for this upgrade (--minimum-dependency-age=0).`,
+          note: `Deno's 24-hour supply-chain hold is bypassed for this upgrade (--min-dep-age=0).`,
         };
       } else if (eligibility === null) {
         // Registry packument unreachable — fall back to the unpinned spec;
@@ -2603,7 +2603,7 @@ ${colorize("Notes:", "dim")}
 
     // 2. Install/update the published package for the new runtime (spec §13).
     // Deno resolves its spec through the supply-chain window (deno-eligibility):
-    // with the local deno's own --minimum-dependency-age escape hatch the
+    // with the local deno's own --min-dep-age escape hatch the
     // registry's true latest installs immediately; without it, pinned to the
     // newest version Deno can actually resolve, or delivered via npm when no
     // deno-entry version is resolvable yet.

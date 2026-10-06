@@ -16,9 +16,10 @@
  * "Failed resolving binary export" report.
  *
  * Deno ships its OWN escape hatch for the hold: the
- * `--minimum-dependency-age` flag (alias `--min-dep-age`; value `0`
- * disables the policy for that resolution — Deno's error hint names it
- * explicitly). pboss's install and upgrade surfaces pass the flag whenever
+ * `--min-dep-age` flag (short for `--minimum-dependency-age`; value `0`
+ * disables the policy for that resolution — Deno's help prints the short
+ * form, its error hint the long one). pboss's install and upgrade surfaces
+ * pass the flag whenever
  * the local deno knows it (probed from `deno install --help`, never
  * version-parsed: passing an unknown flag is a hard error on older
  * denos, which have no hold to bypass anyway). With the flag the spec
@@ -56,8 +57,9 @@ export const DENO_ENTRY_MIN_VERSION = "1.6.0";
 
 /** Deno ≥ 2.9's escape hatch for the supply-chain hold: `0` disables the
  *  age policy for that resolution, so a spec resolves the release just
- *  published instead of silently falling back to the previous one. */
-export const DENO_MIN_DEP_AGE_FLAG = "--minimum-dependency-age=0";
+ *  published instead of silently falling back to the previous one. The
+ *  short spelling — what `deno install --help` itself prints. */
+export const DENO_MIN_DEP_AGE_FLAG = "--min-dep-age=0";
 
 /** Whether a `deno install --help` text knows the age-hold flag. Probing
  *  the help beats version parsing: the flag ships WITH the policy, and an

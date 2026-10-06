@@ -194,13 +194,14 @@ pboss --runtime=bun     # one invocation under Bun
 ```
 
 Deno installs the published **entry subpath**
-(`deno install -g -A --minimum-dependency-age=0 --name pboss --reload --force npm:pboss/deno-entry`)
+(`deno install -g -A --min-dep-age=0 --name pboss --reload --force npm:pboss/deno-entry`)
 because deno executes npm package bins as modules — a shell wrapper cannot
 serve that path; the deno command runs `dist/cli.deno.js` directly, and
 `pboss --runtime=deno` (which the installer and `runtime change` run for
 you) persists the selection the wrapper architecture reads. The
-`--minimum-dependency-age=0` flag disables Deno's 24-hour supply-chain hold
-for that install (see the Deno Global Install section); the installers,
+`--min-dep-age=0` flag (short for `--minimum-dependency-age=0`) disables
+Deno's 24-hour supply-chain hold for that install (see the Deno Global
+Install section); the installers,
 `runtime change` and `upgrade` pass it automatically whenever the local
 Deno supports it, and pin the exact version otherwise.
 
@@ -243,12 +244,12 @@ Update later with `npm install -g pboss@latest`.
 ### Deno Global Install
 
 ```bash
-deno install -g -A --minimum-dependency-age=0 --name pboss --reload --force npm:pboss/deno-entry
+deno install -g -A --min-dep-age=0 --name pboss --reload --force npm:pboss/deno-entry
 ```
 
 Deno is deny-by-default — `-A` grants what a process manager needs. The explicit equivalent is `--allow-run --allow-read --allow-write --allow-net --allow-env --allow-sys`. `--reload` re-resolves the spec against the live registry instead of Deno's local cache (a stale cached resolution is the other way an old version sticks around), and `--force` overwrites an existing installation — the same command installs, reinstalls, and upgrades in place.
 
-**Deno's 24-hour supply-chain hold:** Deno refuses npm versions published within the last day — an unpinned spec silently installs the previous release (before 1.6.0, one without the Deno entrypoint: a broken `Failed resolving binary export` shim), and an exact pin of a fresh version errors with `Could not find npm package`. The `--minimum-dependency-age=0` flag in the command above is Deno's own escape hatch: it disables the hold for that install so the spec resolves the release just published. On Deno releases older than 2.9 there is no hold (and no flag — omit it). The universal installer and `pboss upgrade` pass the flag automatically whenever the local Deno supports it, and pin the exact version they install; to pin manually, use `npm:pboss@<version>/deno-entry` together with the flag.
+**Deno's 24-hour supply-chain hold:** Deno refuses npm versions published within the last day — an unpinned spec silently installs the previous release (before 1.6.0, one without the Deno entrypoint: a broken `Failed resolving binary export` shim), and an exact pin of a fresh version errors with `Could not find npm package`. The `--min-dep-age=0` flag in the command above is Deno's own escape hatch (the short form of `--minimum-dependency-age=0`): it disables the hold for that install so the spec resolves the release just published. On Deno releases older than 2.9 there is no hold (and no flag — omit it). The universal installer and `pboss upgrade` pass the flag automatically whenever the local Deno supports it, and pin the exact version they install; to pin manually, use `npm:pboss@<version>/deno-entry` together with the flag.
 
 ---
 
@@ -1840,7 +1841,7 @@ The machine credential in `~/.pboss/cloud.json` is a **permanent cache**: it liv
 |---|---|
 | `npm i -g pboss` | `npm install -g pboss@latest` |
 | `bun add -g pboss` | `bun add -g pboss@latest` |
-| `deno install -g … npm:pboss/deno-entry` | `deno install -g -f -A --minimum-dependency-age=0 --name pboss npm:pboss@<latest>/deno-entry` (Deno ≥ 2.9 — the hold bypassed; older Deno pins the newest resolvable version) |
+| `deno install -g … npm:pboss/deno-entry` | `deno install -g -f -A --min-dep-age=0 --name pboss npm:pboss@<latest>/deno-entry` (Deno ≥ 2.9 — the hold bypassed; older Deno pins the newest resolvable version) |
 | Homebrew | `brew upgrade pboss` |
 | snap | `sudo snap refresh pboss` |
 | universal installer (curl \| sh / install.ps1) | the selected runtime's ecosystem — the installer again is idempotent |

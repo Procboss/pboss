@@ -368,9 +368,9 @@ deno_hold_text() {
 }
 
 # Whether this deno knows the supply-chain hold's OWN escape hatch: the
-# --minimum-dependency-age flag (alias --min-dep-age; value 0 disables the
-# age policy for that resolution — Deno's error hint names it). Probing the
-# help text beats version parsing: the flag ships WITH the policy, and an
+# --min-dep-age flag (short for --minimum-dependency-age; value 0 disables
+# the age policy for that resolution — Deno's error hint names it). Probing
+# the help text beats version parsing: the flag ships WITH the policy, and an
 # unknown flag is a hard error on older denos — which have no hold to
 # bypass anyway. Usage: deno_supports_min_dep_age <deno-binary>.
 deno_supports_min_dep_age() {
@@ -442,7 +442,7 @@ Bun refuses every later global install until it is healed.)"
     # versions published within the last day (ranges fall back silently,
     # exact pins error), so a naive `npm:pboss/deno-entry` installs the
     # PREVIOUS release (and before 1.6.0, one without ./deno-entry — a
-    # broken shim). Deno ships its own escape hatch: --minimum-dependency-age=0
+    # broken shim). Deno ships its own escape hatch: --min-dep-age=0
     # disables the hold for this resolution. When the local deno knows the
     # flag (deno_supports_min_dep_age above) the spec is pinned to the
     # registry's TRUE latest — the version package.json carried into the
@@ -458,7 +458,7 @@ Bun refuses every later global install until it is healed.)"
     DENO_SPEC=""
     DENO_AGE_FLAG=""
     if deno_supports_min_dep_age "$RUNTIME_BIN"; then
-      DENO_AGE_FLAG="--minimum-dependency-age=0"
+      DENO_AGE_FLAG="--min-dep-age=0"
     fi
     if [ "${PKG_SPEC}" != "pboss" ]; then
       # An explicit PBOSS_VERSION is the user's own pin — honored as-is

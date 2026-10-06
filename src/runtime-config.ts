@@ -379,7 +379,7 @@ export interface PbossInstallCommand {
  * Resolve the install command for a runtime, honoring Deno's npm
  * supply-chain window (versions published < 24 h ago are unresolvable —
  * see deno-eligibility.ts). When the local deno knows Deno's own escape
- * hatch (`--minimum-dependency-age=0`, probed — never version-guessed),
+ * hatch (`--min-dep-age=0`, probed — never version-guessed),
  * the command carries the flag and pins the registry's TRUE latest: the
  * version package.json carried into the publish installs immediately.
  * Older denos keep the window-aware pin; when no deno-entry-capable
@@ -422,7 +422,7 @@ export async function resolvePbossInstallArgv(
       note:
         eligibility?.latest === undefined
           ? "Could not read the registry ahead of the install — installing the unpinned spec with Deno's age hold disabled."
-          : "Deno's 24-hour supply-chain hold is bypassed for this install (--minimum-dependency-age=0).",
+          : "Deno's 24-hour supply-chain hold is bypassed for this install (--min-dep-age=0).",
     };
   }
 

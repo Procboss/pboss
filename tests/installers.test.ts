@@ -642,10 +642,10 @@ describe("installers: sims — the Deno supply-chain window", () => {
     // The probe (never version-parsed — an unknown flag hard-errors on
     // older denos) and Deno's own escape hatch, value 0.
     expect(sh).toContain("deno_supports_min_dep_age");
-    expect(sh).toContain("--minimum-dependency-age=0");
+    expect(sh).toContain("--min-dep-age=0");
     expect(sh).toContain("'--min-dep-age'");
     expect(ps1).toContain('-match "--min-dep-age"');
-    expect(ps1).toContain('"--minimum-dependency-age=0"');
+    expect(ps1).toContain('"--min-dep-age=0"');
   });
 
   test("source pins: --reload --force on every deno install, in both installers", () => {
@@ -677,7 +677,7 @@ describe("installers: sims — the Deno supply-chain window", () => {
         });
         expect(r.code).toBe(0);
         expect(r.log).toContain(
-          "deno install -g -A --minimum-dependency-age=0 --name pboss --reload --force npm:pboss@1.6.1/deno-entry",
+          "deno install -g -A --min-dep-age=0 --name pboss --reload --force npm:pboss@1.6.1/deno-entry",
         );
         // The window pin is GONE — no 1.6.0, no npm delivery.
         expect(r.log).not.toContain("npm:pboss@1.6.0");
@@ -701,7 +701,7 @@ describe("installers: sims — the Deno supply-chain window", () => {
       });
       expect(r.code).toBe(0);
       expect(r.log).toContain(
-        "deno install -g -A --minimum-dependency-age=0 --name pboss --reload --force npm:pboss/deno-entry",
+        "deno install -g -A --min-dep-age=0 --name pboss --reload --force npm:pboss/deno-entry",
       );
       expect(r.out).toContain("age hold disabled");
     },
@@ -719,7 +719,7 @@ describe("installers: sims — the Deno supply-chain window", () => {
       });
       expect(r.code).toBe(0);
       expect(r.log).toContain(
-        "deno install -g -A --minimum-dependency-age=0 --name pboss --reload --force npm:pboss@1.6.1/deno-entry",
+        "deno install -g -A --min-dep-age=0 --name pboss --reload --force npm:pboss@1.6.1/deno-entry",
       );
     },
     30000,

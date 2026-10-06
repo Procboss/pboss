@@ -279,7 +279,7 @@ export function buildUpgradePlan(
       // (deno executes package bins as modules, so the .sh wrapper cannot
       // serve it — see src/runtime-config.ts). Version choice:
       //
-      //   bypass  → the local deno knows --minimum-dependency-age, so the
+      //   bypass  → the local deno knows --min-dep-age, so the
       //             flag disables the 24-hour supply-chain hold for this
       //             resolution and the spec pins the registry's TRUE latest
       //             (the version package.json carried into the publish).
@@ -448,7 +448,7 @@ export function isSafeVersion(v: string | undefined | null): v is string {
  * via fetchDenoEligibility + probeDenoMinDepAge BEFORE the plan is built.
  *
  *   { version, bypass } → bypass: install the registry's TRUE latest with
- *                         --minimum-dependency-age=0 (the hold disabled);
+ *                         --min-dep-age=0 (the hold disabled);
  *                         version may be null when the registry could not
  *                         be read — the unpinned spec + the flag still
  *                         resolves latest instead of falling back
@@ -461,7 +461,7 @@ export function isSafeVersion(v: string | undefined | null): v is string {
 export interface DenoPin {
   /** The version to pin (null: the unpinned npm:pboss spec). */
   version: string | null;
-  /** Local deno knows --minimum-dependency-age: disable the age hold. */
+  /** Local deno knows --min-dep-age: disable the age hold. */
   bypass?: boolean;
   note?: string;
 }

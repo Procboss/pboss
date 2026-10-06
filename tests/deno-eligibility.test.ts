@@ -164,10 +164,11 @@ describe("deno-eligibility: helpers", () => {
   });
 
   test("DENO_MIN_DEP_AGE_FLAG: Deno's own escape hatch, value 0 (disables)", () => {
-    // The exact spelling Deno's error hint names; verified against 2.9.7:
-    // `deno install -g -A --minimum-dependency-age=0 --name pboss
+    // The SHORT spelling — what `deno install --help` itself prints (the
+    // long form --minimum-dependency-age is equivalent); verified against
+    // 2.9.7: `deno install -g -A --min-dep-age=0 --name pboss
     //  npm:pboss@1.6.1/deno-entry` installs a 6-minute-old release.
-    expect(DENO_MIN_DEP_AGE_FLAG).toBe("--minimum-dependency-age=0");
+    expect(DENO_MIN_DEP_AGE_FLAG).toBe("--min-dep-age=0");
   });
 
   test("helpTextSupportsMinDepAge: either spelling, never a false positive", () => {

@@ -275,7 +275,7 @@ switch ($selected) {
         # silently, exact pins error), so a naive unpinned npm:pboss
         # installs the PREVIOUS release (and before 1.6.0, one without
         # ./deno-entry — a broken shim). Deno ships its own escape hatch:
-        # --minimum-dependency-age=0 disables the hold for this
+        # --min-dep-age=0 disables the hold for this
         # resolution. When the local deno knows the flag (probed from its
         # own help text — never version-parsed), the spec is pinned to the
         # registry's TRUE latest and fresh installs get the current
@@ -290,7 +290,7 @@ switch ($selected) {
         $denoAgeFlag = $null
         try {
             $denoHelp = (& deno install --help 2>&1 | Out-String)
-            if ($denoHelp -match "--min-dep-age") { $denoAgeFlag = "--minimum-dependency-age=0" }
+            if ($denoHelp -match "--min-dep-age") { $denoAgeFlag = "--min-dep-age=0" }
         } catch { $denoAgeFlag = $null }
         if ($pkgSpec -ne "pboss") {
             # An explicit PBOSS_VERSION is the user's own pin — honored

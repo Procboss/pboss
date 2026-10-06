@@ -413,7 +413,7 @@ describe("runtime-config: resolvePbossInstallArgv (the deno window)", () => {
     expect(r.note).toContain("Could not read the registry");
   });
 
-  /* ── the age-hold bypass (Deno ≥ 2.9 knows --minimum-dependency-age) ─── */
+  /* ── the age-hold bypass (Deno ≥ 2.9 knows --min-dep-age) ─── */
 
   test("deno + bypass: the registry's TRUE latest installs with the flag — no window pin", async () => {
     // The owner's exact report state: 1.6.1 published 2 h ago (inside the
@@ -425,7 +425,7 @@ describe("runtime-config: resolvePbossInstallArgv (the deno window)", () => {
     );
     expect(r.argv).toEqual([
       "deno", "install", "-g", "-f", "-A",
-      "--minimum-dependency-age=0",
+      "--min-dep-age=0",
       "--name", "pboss", "npm:pboss@1.6.1/deno-entry",
     ]);
     expect(r.via).toBe("deno");
@@ -439,7 +439,7 @@ describe("runtime-config: resolvePbossInstallArgv (the deno window)", () => {
     const r = await resolvePbossInstallArgv("deno", undefined, failing, async () => true);
     expect(r.argv).toEqual([
       "deno", "install", "-g", "-f", "-A",
-      "--minimum-dependency-age=0",
+      "--min-dep-age=0",
       "--name", "pboss", "npm:pboss/deno-entry",
     ]);
     expect(r.via).toBe("deno");
@@ -451,7 +451,7 @@ describe("runtime-config: resolvePbossInstallArgv (the deno window)", () => {
     const r = await resolvePbossInstallArgv("deno", "1.6.1", counting, async () => true);
     expect(r.argv).toEqual([
       "deno", "install", "-g", "-f", "-A",
-      "--minimum-dependency-age=0",
+      "--min-dep-age=0",
       "--name", "pboss", "npm:pboss@1.6.1/deno-entry",
     ]);
     expect(r.via).toBe("deno");
@@ -467,7 +467,7 @@ describe("runtime-config: resolvePbossInstallArgv (the deno window)", () => {
       async () => false,
     );
     expect(r.argv.at(-1)).toBe("npm:pboss@1.6.0/deno-entry");
-    expect(r.argv).not.toContain("--minimum-dependency-age=0");
+    expect(r.argv).not.toContain("--min-dep-age=0");
     expect(r.note).toContain("supply-chain hold");
   });
 
@@ -478,7 +478,7 @@ describe("runtime-config: resolvePbossInstallArgv (the deno window)", () => {
       "deno", "install", "-g", "-f", "-A", "--name", "pboss", "npm:pboss/deno-entry",
     ]);
     expect(pbossInstallArgv("deno", "1.6.1", true)).toEqual([
-      "deno", "install", "-g", "-f", "-A", "--minimum-dependency-age=0",
+      "deno", "install", "-g", "-f", "-A", "--min-dep-age=0",
       "--name", "pboss", "npm:pboss@1.6.1/deno-entry",
     ]);
   });

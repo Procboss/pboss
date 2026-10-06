@@ -31,7 +31,7 @@
 #
 # (Deno's own global installs do not run this file — deno executes package
 #  bins as modules, so its installer targets the published entry subpath:
-#  `deno install -g -A --minimum-dependency-age=0 --name pboss --reload
+#  `deno install -g -A --min-dep-age=0 --name pboss --reload
 #  --force npm:pboss/deno-entry`.)
 #
 # All arguments — including spaces, quotes, empty strings and everything

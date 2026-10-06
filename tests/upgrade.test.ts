@@ -672,7 +672,7 @@ describe("buildUpgradePlan: the deno channel's supply-chain window", () => {
     expect(plan.note).toContain("Re-run `pboss upgrade`");
   });
 
-  /* ── the age-hold bypass (Deno ≥ 2.9 knows --minimum-dependency-age) ─── */
+  /* ── the age-hold bypass (Deno ≥ 2.9 knows --min-dep-age) ─── */
 
   test("bypass + version: the registry's TRUE latest, flag in the command", () => {
     // The owner's report state: 1.6.1 published hours ago (inside the
@@ -680,7 +680,7 @@ describe("buildUpgradePlan: the deno channel's supply-chain window", () => {
     const plan = buildUpgradePlan("deno", "linux", "1.6.1", { version: "1.6.1", bypass: true });
     expect(plan.command).toEqual([
       "deno", "install", "-g", "-f", "-A",
-      "--minimum-dependency-age=0",
+      "--min-dep-age=0",
       "--name", "pboss", "npm:pboss@1.6.1/deno-entry",
     ]);
     expect(plan.manual).toBe(false);
@@ -691,7 +691,7 @@ describe("buildUpgradePlan: the deno channel's supply-chain window", () => {
     const plan = buildUpgradePlan("deno", "linux", "1.6.1", { version: null, bypass: true });
     expect(plan.command).toEqual([
       "deno", "install", "-g", "-f", "-A",
-      "--minimum-dependency-age=0",
+      "--min-dep-age=0",
       "--name", "pboss", "npm:pboss/deno-entry",
     ]);
     expect(plan.manual).toBe(false);
@@ -699,7 +699,7 @@ describe("buildUpgradePlan: the deno channel's supply-chain window", () => {
 
   test("a pin WITHOUT bypass never carries the flag (old denos must not see it)", () => {
     const plan = buildUpgradePlan("deno", "linux", "1.6.1", { version: "1.6.0", note: "held" });
-    expect(plan.command).not.toContain("--minimum-dependency-age=0");
+    expect(plan.command).not.toContain("--min-dep-age=0");
     expect(plan.note).toBe("held");
   });
 });
