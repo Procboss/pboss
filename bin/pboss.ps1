@@ -123,7 +123,7 @@ switch ($runtime) {
                   "  remove '$runtimeFile' to choose again")
         }
         if (-not (Test-Path $cli)) { Fail "pboss install incomplete: $cli is missing — reinstall pboss." }
-        & bun --bun run $cli @args
+        & bun $cli @args
         exit $LASTEXITCODE
     }
     "deno" {

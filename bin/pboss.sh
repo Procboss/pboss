@@ -176,7 +176,7 @@ Install Bun (https://bun.sh), or switch runtimes:
   pboss --runtime=node  (or deno) for one invocation
   rm '$RUNTIME_FILE'    to choose again"
     [ -f "$CLI" ] || die "pboss install incomplete: $CLI is missing — reinstall pboss."
-    exec bun --bun run "$CLI" "$@"
+    exec bun "$CLI" "$@"
     ;;
   deno)
     CLI="$PKG_DIR/dist/cli.deno.js"
