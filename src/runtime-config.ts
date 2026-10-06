@@ -351,12 +351,16 @@ export function pbossInstallArgv(runtime: RuntimeChoice, version?: string, bypas
     case "deno":
       // Deno executes npm package bins as MODULES, so the .sh wrapper cannot
       // serve that path — deno installs the PUBLISHED entry subpath directly
-      // (verified: `deno install -g -f -A --name pboss npm:pboss/deno-entry`
-      // runs dist/cli.deno.js with args forwarded). -f replaces an existing
-      // install (deno refuses to overwrite otherwise).
-      const argv = ["deno", "install", "-g", "-f", "-A"];
+      // with the canonical command (identical to README / install.sh /
+      // install.ps1). --force replaces an existing install (deno refuses to
+      // overwrite otherwise); --reload re-resolves against the live registry
+      // so a stale cached packument cannot keep serving the previous
+      // resolution (verified: `deno install -g -A --name pboss --reload
+      // --force npm:pboss/deno-entry` runs dist/cli.deno.js with args
+      // forwarded).
+      const argv = ["deno", "install", "-g", "-A"];
       if (bypass) argv.push(DENO_MIN_DEP_AGE_FLAG);
-      argv.push("--name", "pboss", `npm:pboss${version ? `@${version}` : ""}/deno-entry`);
+      argv.push("--name", "pboss", "--reload", "--force", `npm:pboss${version ? `@${version}` : ""}/deno-entry`);
       return argv;
   }
 }

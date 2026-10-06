@@ -81,6 +81,7 @@ import {
   currentChannelContext,
   detectChannel,
   configuredRuntimeChannel,
+  resolveUpgradeChannel,
   buildUpgradePlan,
   compareVersions,
   fetchLatestVersion,
@@ -1260,7 +1261,7 @@ Every alert also supports sustained durations in the JSON file
         console.log(`  Script       : ${env?.script ?? "-"}`);
         console.log(`  CWD          : ${env?.cwd ?? "-"}`);
         console.log(`  Args         : ${env?.args?.join(" ") || "(none)"}`);
-        console.log(`  Interpreter  : ${env?.interpreter || "bun"}`);
+        console.log(`  Interpreter  : ${env?.interpreter || "-"}`);
         console.log(`  Restarts     : ${env?.restart_time ?? 0}`);
         console.log(`  Unstable     : ${env?.unstable_restarts ?? 0}`);
         console.log(
@@ -2303,6 +2304,7 @@ ${colorize("Notes:", "dim")}
         "universal",
         "npm",
         "bun",
+        "deno",
         "brew",
         "snap",
         "source",
@@ -2329,13 +2331,14 @@ ${colorize("Notes:", "dim")}
     // runtime in ~/.pboss/.runtime decides which package ecosystem upgrades
     // pboss — node→npm, bun→bun, deno→deno. The channel stamp/heuristics only
     // cover machines that predate a selection. brew/snap keep owning their
-    // own installs (their package manager IS the ecosystem).
+    // own installs (their package manager IS the ecosystem). A deno
+    // EXECUTION is never overridden (resolveUpgradeChannel): deno's own
+    // shim dispatches straight to the entry, so the wrapper-only .runtime
+    // file cannot speak for a deno install — a stale npm-era selection
+    // must not redirect its upgrade into npm.
     const runtimeChannel = await configuredRuntimeChannel();
     const detected = detectChannel(ctx);
-    const channel: InstallChannel =
-      runtimeChannel && (detected === "npm" || detected === "bun" || detected === "deno" || detected === "universal")
-        ? runtimeChannel
-        : detected;
+    const channel: InstallChannel = resolveUpgradeChannel(runtimeChannel, detected);
 
     // The registry's latest is known BEFORE the plan is built, because the
     // universal channel pins it into the installer command
@@ -2961,7 +2964,7 @@ ${colorize("Notes:", "dim")}
     whoami                        Who is logged in on this CLI
     upgrade                       Self-update through the channel that
                                   installed pboss (universal / npm / bun /
-                                  brew / snap) — never spawns a second CLI
+                                  deno / brew / snap) — never spawns a second CLI
                                   --check: dry run, --yes: skip confirm
                                   --channel X: fix a misdetected channel
     

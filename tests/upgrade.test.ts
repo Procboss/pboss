@@ -7,6 +7,7 @@ import {
   writeChannelStamp,
   parseUserAgent,
   detectChannel,
+  resolveUpgradeChannel,
   buildUpgradePlan,
   compareVersions,
   fetchLatestVersion,
@@ -100,6 +101,135 @@ describe("detectChannel: the stamp wins", () => {
   test("npm stamp with pm bun resolves to the bun channel", () => {
     expect(detectChannel(ctx({ stamp: { channel: "npm", pm: "bun" } }))).toBe("bun");
     expect(detectChannel(ctx({ stamp: { channel: "npm", pm: "npm" } }))).toBe("npm");
+  });
+});
+
+describe("detectChannel: the executing runtime is the truth (deno installs)", () => {
+  // The owner's report (2026-10-06): a `deno install -g … npm:pboss/deno-entry`
+  // machine printed "Installed via: npm (global)" and planned
+  // `npm install -g pboss@latest`. Deno's npm cache matches no path rule,
+  // npm's postinstall never runs under deno (no stamp is written for the
+  // deno install), and the npm-era stamp from an earlier install outlived
+  // the reinstall. The runtime EXECUTING pboss is the one signal that
+  // cannot be stale.
+  const denoCache = "/home/alice/.cache/deno/npm/registry.npmjs.org/pboss/1.6.3/dist";
+  const denoBin = "/home/alice/.deno/bin/deno";
+
+  test("a fresh deno global (deno's npm cache, no stamp) → deno", () => {
+    expect(
+      detectChannel(ctx({ runtime: "deno", execPath: denoBin, moduleDir: denoCache }))
+    ).toBe("deno");
+  });
+
+  test("a stale npm-era postinstall stamp must not outvote the executing deno", () => {
+    expect(
+      detectChannel(
+        ctx({
+          runtime: "deno",
+          execPath: denoBin,
+          moduleDir: denoCache,
+          stamp: { channel: "npm", pm: "npm", by: "postinstall" },
+        })
+      )
+    ).toBe("deno");
+    expect(
+      detectChannel(
+        ctx({
+          runtime: "deno",
+          execPath: denoBin,
+          moduleDir: denoCache,
+          stamp: { channel: "npm", pm: "bun", by: "postinstall" },
+        })
+      )
+    ).toBe("deno");
+  });
+
+  test("the universal installer's stamp still owns its deno-path installs", () => {
+    // install.sh stamps {"channel":"universal","pm":"deno"} even when it
+    // ran `deno install -g` — the installer re-runs that path on upgrade.
+    expect(
+      detectChannel(
+        ctx({
+          runtime: "deno",
+          execPath: denoBin,
+          moduleDir: denoCache,
+          stamp: { channel: "universal", pm: "deno", by: "install.sh" },
+        })
+      )
+    ).toBe("universal");
+  });
+
+  test("a deliberate --channel repair is respected over the executing runtime", () => {
+    expect(
+      detectChannel(
+        ctx({
+          runtime: "deno",
+          execPath: denoBin,
+          moduleDir: denoCache,
+          stamp: { channel: "npm", by: "pboss upgrade --channel" },
+        })
+      )
+    ).toBe("npm");
+  });
+
+  test("a source checkout run under deno stays a source install", () => {
+    expect(
+      detectChannel(
+        ctx({ runtime: "deno", execPath: denoBin, moduleDir: "/tmp/my-fork/pboss/src" })
+      )
+    ).toBe("source");
+    expect(
+      detectChannel(
+        ctx({ runtime: "deno", execPath: denoBin, moduleDir: "/tmp/my-fork/dist", parentHasGit: true })
+      )
+    ).toBe("source");
+  });
+
+  test("windows deno installs detect identically (case/separator-normalized)", () => {
+    expect(
+      detectChannel(
+        ctx({
+          runtime: "deno",
+          platform: "win32",
+          execPath: "C:\\Users\\alice\\AppData\\Local\\deno\deno.exe",
+          moduleDir: "C:\\Users\\alice\\AppData\\Local\\deno\\npm\\registry.npmjs.org\\pboss\\1.6.3\\dist",
+        })
+      )
+    ).toBe("deno");
+  });
+
+  test("the deno rule never fires without deno executing (old contexts unchanged)", () => {
+    expect(detectChannel(ctx({ moduleDir: denoCache }))).toBe("unknown");
+    expect(detectChannel(ctx({ moduleDir: denoCache, runtime: "node" }))).toBe("unknown");
+    expect(detectChannel(ctx({ moduleDir: denoCache, runtime: "bun" }))).toBe("unknown");
+  });
+});
+
+describe("resolveUpgradeChannel (the detected channel vs the runtime selection)", () => {
+  test("a deno detection is terminal — a stale .runtime cannot redirect it", () => {
+    // The owner's report: deno install, .runtime left over from the
+    // npm-era first-run default (Node) redirected the upgrade into npm.
+    expect(resolveUpgradeChannel("npm", "deno")).toBe("deno");
+    expect(resolveUpgradeChannel("bun", "deno")).toBe("deno");
+    expect(resolveUpgradeChannel(null, "deno")).toBe("deno");
+    expect(resolveUpgradeChannel("deno", "deno")).toBe("deno");
+  });
+
+  test("spec §14 preserved: the selection decides npm/bun/universal detections", () => {
+    expect(resolveUpgradeChannel("deno", "npm")).toBe("deno");
+    expect(resolveUpgradeChannel("deno", "bun")).toBe("deno");
+    expect(resolveUpgradeChannel("deno", "universal")).toBe("deno");
+    expect(resolveUpgradeChannel("npm", "npm")).toBe("npm");
+    expect(resolveUpgradeChannel("bun", "npm")).toBe("bun");
+  });
+
+  test("brew/snap/source/unknown keep owning themselves (no ecosystem override)", () => {
+    expect(resolveUpgradeChannel("npm", "brew")).toBe("brew");
+    expect(resolveUpgradeChannel("deno", "snap")).toBe("snap");
+    expect(resolveUpgradeChannel("npm", "source")).toBe("source");
+    expect(resolveUpgradeChannel("deno", "unknown")).toBe("unknown");
+    expect(resolveUpgradeChannel(null, "universal")).toBe("universal");
+    expect(resolveUpgradeChannel(null, "unknown")).toBe("unknown");
   });
 });
 
@@ -513,6 +643,27 @@ describe("CLI surface", () => {
     expect(code).toBe(1);
     expect(err).toContain('Unknown channel "bogus"');
   });
+
+  test("`pboss upgrade --channel deno` is accepted (deno parity) and persists the repair", async () => {
+    // Deno was the one channel the repair flag refused — a deno user had
+    // no way to fix a misdetected machine. Now it stamps and plans deno.
+    const proc = Bun.spawn(
+      ["bun", "run", "src/index.ts", "upgrade", "--channel", "deno", "--check"],
+      {
+        cwd: import.meta.dir + "/..",
+        stdout: "pipe",
+        stderr: "pipe",
+        env: { ...process.env, PBOSS_HOME: join(home, ".pboss") },
+      }
+    );
+    const out = await new Response(proc.stdout).text();
+    const err = await new Response(proc.stderr).text();
+    await proc.exited;
+    expect(err).not.toContain('Unknown channel "deno"');
+    expect(out).toMatch(/Installed via:\s+deno \(global\)/);
+    // The repair persists: the stamp says deno.
+    expect(readFileSync(join(home, ".pboss", "channel.json"), "utf8")).toContain('"deno"');
+  });
 });
 
 /* ── the Windows shim heal — `pboss upgrade` must not break pboss ────────── */
@@ -646,10 +797,11 @@ describe("upgrade: healWindowsShims (the Windows shim re-heal)", () => {
 /* ── buildUpgradePlan: the deno channel's supply-chain pin ────────────────── */
 
 describe("buildUpgradePlan: the deno channel's supply-chain window", () => {
-  test("without a pin: the legacy unpinned subpath (compat)", () => {
+  test("without a pin: the canonical unpinned command (README parity)", () => {
     const plan = buildUpgradePlan("deno");
     expect(plan.command).toEqual([
-      "deno", "install", "-g", "-f", "-A", "--name", "pboss", "npm:pboss/deno-entry",
+      "deno", "install", "-g", "-A", "--name", "pboss", "--reload", "--force",
+      "npm:pboss/deno-entry",
     ]);
     expect(plan.manual).toBe(false);
     expect(plan.note).toContain("re-links");
@@ -658,7 +810,8 @@ describe("buildUpgradePlan: the deno channel's supply-chain window", () => {
   test("with a pin: the spec is version-exact", () => {
     const plan = buildUpgradePlan("deno", "linux", "1.6.2", { version: "1.6.0", note: "held" });
     expect(plan.command).toEqual([
-      "deno", "install", "-g", "-f", "-A", "--name", "pboss", "npm:pboss@1.6.0/deno-entry",
+      "deno", "install", "-g", "-A", "--name", "pboss", "--reload", "--force",
+      "npm:pboss@1.6.0/deno-entry",
     ]);
     expect(plan.manual).toBe(false);
     expect(plan.note).toBe("held");
@@ -679,9 +832,9 @@ describe("buildUpgradePlan: the deno channel's supply-chain window", () => {
     // window), local deno knows the flag → upgrade goes straight to it.
     const plan = buildUpgradePlan("deno", "linux", "1.6.1", { version: "1.6.1", bypass: true });
     expect(plan.command).toEqual([
-      "deno", "install", "-g", "-f", "-A",
+      "deno", "install", "-g", "-A",
       "--min-dep-age=0",
-      "--name", "pboss", "npm:pboss@1.6.1/deno-entry",
+      "--name", "pboss", "--reload", "--force", "npm:pboss@1.6.1/deno-entry",
     ]);
     expect(plan.manual).toBe(false);
     expect(plan.note).toContain("bypassed");
@@ -690,9 +843,9 @@ describe("buildUpgradePlan: the deno channel's supply-chain window", () => {
   test("bypass + null version (registry unreadable): the unpinned spec STILL carries the flag", () => {
     const plan = buildUpgradePlan("deno", "linux", "1.6.1", { version: null, bypass: true });
     expect(plan.command).toEqual([
-      "deno", "install", "-g", "-f", "-A",
+      "deno", "install", "-g", "-A",
       "--min-dep-age=0",
-      "--name", "pboss", "npm:pboss/deno-entry",
+      "--name", "pboss", "--reload", "--force", "npm:pboss/deno-entry",
     ]);
     expect(plan.manual).toBe(false);
   });

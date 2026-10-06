@@ -13,13 +13,21 @@
  *      where the stamp was wiped): the executable's own location tells the
  *      truth — /snap/pboss is snap, /opt/homebrew/Cellar/pboss is brew,
  *      a compiled binary in /usr/local/bin is the universal install, a
- *      node_modules path is a package-manager install.
+ *      node_modules path is a package-manager install. And for deno —
+ *      whose global installs land in deno's npm cache (a path no rule
+ *      matches) and never run npm's postinstall (so no stamp is ever
+ *      written) — the runtime ACTUALLY EXECUTING pboss is the one signal
+ *      that cannot be stale.
  *
  * ABOVE BOTH (the runtime-aware architecture): the persistent user-selected
  * runtime in `~/.pboss/.runtime` decides WHICH package ecosystem upgrades
  * the package — node → npm, bun → bun, deno → deno (spec §14). The runtime
  * is the user's explicit, persistent choice; the channel stamp only breaks
- * ties for machines that predate it.
+ * ties for machines that predate it. One inversion: when the runtime
+ * EXECUTING pboss is Deno (a `deno install -g` machine, where the
+ * wrapper-only .runtime file was never consulted and cannot speak for the
+ * install), the live runtime wins over any stale selection or stamp —
+ * see resolveUpgradeChannel().
  */
 
 import { mkdir, readFile, writeFile, stat } from "fs/promises";
@@ -49,8 +57,10 @@ export type InstallChannel =
 /** Marker payload the installers write. */
 export type ChannelStamp = {
   channel: InstallChannel;
-  /** For package-manager stamps: which package manager owns the install. */
-  pm?: "npm" | "bun" | "pnpm" | "yarn";
+  /** For package-manager stamps: which package manager owns the install.
+   *  "deno" appears on the universal installer's deno path (install.sh
+   *  stamps PM_CHOICE — the installer's own selection, not an npm agent). */
+  pm?: "npm" | "bun" | "deno" | "pnpm" | "yarn";
   /** Epoch seconds — when the stamp was written. */
   stampedAt?: number;
   /** Who wrote it (installer script name). */
@@ -108,6 +118,12 @@ export type ChannelContext = {
   /** Directory of this module — reveals npm/bun global installs. */
   moduleDir: string;
   platform: NodeJS.Platform;
+  /** The runtime ACTUALLY executing pboss ("node" | "bun" | "deno") —
+   *  the live signal a deno install is told by (deno's npm-cache paths
+   *  match no filesystem rule and deno never runs npm's postinstall, so
+   *  no stamp exists to read). Optional so injected test contexts keep
+   *  their shape. */
+  runtime?: "node" | "bun" | "deno";
   /** True when the directory ABOVE this module is a git repo (a checkout
    *  cloned under ANY name — `git clone … pboss my-fork` — is still a
    *  source run; the path heuristic alone would miss it). Optional so
@@ -137,6 +153,7 @@ export async function currentChannelContext(): Promise<ChannelContext> {
     moduleDir: MODULE_DIR,
     platform: process.platform,
     parentHasGit: await isGitRoot(join(MODULE_DIR, "..")),
+    runtime: R.name,
   };
 }
 
@@ -156,15 +173,41 @@ async function isGitRoot(dir: string): Promise<boolean> {
  * the installer itself); without one we infer from the executable path.
  */
 export function detectChannel(ctx: ChannelContext): InstallChannel {
+  const exec = normalizePath(ctx.execPath);
+  const moduleDir = normalizePath(ctx.moduleDir);
+
+  // 0. The runtime ACTUALLY executing pboss — the one signal that cannot be
+  //    stale (the live half of spec §14). npm links its bins to Node and
+  //    Bun's to Bun, so a pboss executing under Deno is a deno install:
+  //    `deno install -g npm:pboss/deno-entry` dispatches straight to the
+  //    entry, its npm-cache path matches no filesystem rule below, and
+  //    npm's postinstall never runs under deno — every OTHER artifact on
+  //    such a machine (an npm-era stamp from an install that was replaced,
+  //    the wrapper-only ~/.pboss/.runtime file deno's shim never consults)
+  //    can only describe what was there BEFORE. Three things keep their
+  //    authority over it:
+  //      - a deliberate `--channel` repair (the user pinned it by hand),
+  //      - channels that own their own upgrade path (universal / brew /
+  //        snap — the universal installer stamps itself even on its deno
+  //        path, and re-runs that path when it upgrades the machine),
+  //      - a source checkout (running a repo's dist under deno by hand is
+  //        a source run, not a deno install).
+  if (ctx.runtime === "deno") {
+    const deliberate = ctx.stamp?.by === "pboss upgrade --channel";
+    const ownsUpgrade =
+      ctx.stamp?.channel === "universal" ||
+      ctx.stamp?.channel === "brew" ||
+      ctx.stamp?.channel === "snap";
+    const sourceShape = moduleDir.endsWith("/pboss/src") || ctx.parentHasGit === true;
+    if (!deliberate && !ownsUpgrade && !sourceShape) return "deno";
+  }
+
   // 1. The installer's own record is authoritative.
   if (ctx.stamp?.channel) {
     const ch = ctx.stamp.channel;
     if (ch === "npm" && ctx.stamp.pm === "bun") return "bun";
     return ch;
   }
-
-  const exec = normalizePath(ctx.execPath);
-  const moduleDir = normalizePath(ctx.moduleDir);
 
   // 2. Snap classic confinement — the binary lives under /snap/pboss.
   if (exec.startsWith("/snap/") || exec.startsWith("c:/programdata/snap")) {
@@ -274,10 +317,15 @@ export function buildUpgradePlan(
           (platform === "win32" ? "; the native pboss.cmd / pboss.ps1 shims are re-healed" : ""),
       };
     case "deno": {
-      // -f replaces the existing global install (deno refuses otherwise);
-      // --name pins the command; /deno-entry is the published subpath
-      // (deno executes package bins as modules, so the .sh wrapper cannot
-      // serve it — see src/runtime-config.ts). Version choice:
+      // The canonical install command (README / install.sh / install.ps1):
+      // --force replaces the existing global install (deno refuses
+      // otherwise), --reload re-resolves against the live registry (a
+      // stale cached packument keeps serving the previous resolution even
+      // past the hold — the "upgraded but `pboss -v` still shows the old
+      // version" failure), --name pins the command, and /deno-entry is the
+      // published subpath (deno executes package bins as modules, so the
+      // .sh wrapper cannot serve it — see src/runtime-config.ts).
+      // Version choice:
       //
       //   bypass  → the local deno knows --min-dep-age, so the
       //             flag disables the 24-hour supply-chain hold for this
@@ -300,9 +348,9 @@ export function buildUpgradePlan(
       const spec = denoPin?.version
         ? `npm:pboss@${denoPin.version}/deno-entry`
         : "npm:pboss/deno-entry";
-      const command = ["deno", "install", "-g", "-f", "-A"];
+      const command = ["deno", "install", "-g", "-A"];
       if (denoPin?.bypass) command.push(DENO_MIN_DEP_AGE_FLAG);
-      command.push("--name", "pboss", spec);
+      command.push("--name", "pboss", "--reload", "--force", spec);
       return {
         channel,
         label: "deno (global)",
@@ -391,6 +439,29 @@ export function buildUpgradePlan(
 /** The channel a configured runtime upgrades through. */
 export function channelForRuntime(runtime: "node" | "bun" | "deno"): InstallChannel {
   return runtime === "node" ? "npm" : runtime;
+}
+
+/**
+ * The channel `pboss upgrade` actually uses: the detected channel vs the
+ * persistent runtime selection (spec §14). A deno DETECTION is the
+ * executing runtime speaking — deno's own shim never consults
+ * ~/.pboss/.runtime (that file belongs to the npm/bun wrapper), so a
+ * stale node/bun selection must not redirect a deno install's upgrade
+ * into another ecosystem. For every other package-manager-shaped
+ * detection, the persistent selection decides the ecosystem
+ * (node → npm, bun → bun, deno → deno) — including the universal
+ * installer's installs, which ride the selected runtime's package
+ * ecosystem; brew/snap/source/unknown keep owning themselves.
+ */
+export function resolveUpgradeChannel(
+  runtimeChannel: InstallChannel | null,
+  detected: InstallChannel,
+): InstallChannel {
+  if (detected === "deno") return "deno";
+  return runtimeChannel !== null &&
+    (detected === "npm" || detected === "bun" || detected === "universal")
+    ? runtimeChannel
+    : detected;
 }
 
 /**

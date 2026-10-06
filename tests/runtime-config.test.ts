@@ -178,15 +178,16 @@ describe("runtime-config: install commands", () => {
     expect(pbossInstallArgv("node", "1.6.0")).toEqual(["npm", "install", "-g", "pboss@1.6.0"]);
   });
 
-  test("deno → the published ENTRY SUBPATH (deno runs bins as modules)", () => {
+  test("deno → the published ENTRY SUBPATH (the canonical install command)", () => {
     expect(pbossInstallArgv("deno")).toEqual([
       "deno",
       "install",
       "-g",
-      "-f",
       "-A",
       "--name",
       "pboss",
+      "--reload",
+      "--force",
       "npm:pboss/deno-entry",
     ]);
     // version pins ride the specifier, not a flag
@@ -424,9 +425,9 @@ describe("runtime-config: resolvePbossInstallArgv (the deno window)", () => {
       async () => true,
     );
     expect(r.argv).toEqual([
-      "deno", "install", "-g", "-f", "-A",
+      "deno", "install", "-g", "-A",
       "--min-dep-age=0",
-      "--name", "pboss", "npm:pboss@1.6.1/deno-entry",
+      "--name", "pboss", "--reload", "--force", "npm:pboss@1.6.1/deno-entry",
     ]);
     expect(r.via).toBe("deno");
     expect(r.note).toContain("bypassed");
@@ -438,9 +439,9 @@ describe("runtime-config: resolvePbossInstallArgv (the deno window)", () => {
     const failing = (() => Promise.reject(new Error("offline"))) as unknown as typeof fetch;
     const r = await resolvePbossInstallArgv("deno", undefined, failing, async () => true);
     expect(r.argv).toEqual([
-      "deno", "install", "-g", "-f", "-A",
+      "deno", "install", "-g", "-A",
       "--min-dep-age=0",
-      "--name", "pboss", "npm:pboss/deno-entry",
+      "--name", "pboss", "--reload", "--force", "npm:pboss/deno-entry",
     ]);
     expect(r.via).toBe("deno");
     expect(r.note).toContain("age hold disabled");
@@ -450,9 +451,9 @@ describe("runtime-config: resolvePbossInstallArgv (the deno window)", () => {
     const counting = (() => Promise.resolve(new Response("{}", { status: 200 }))) as unknown as typeof fetch;
     const r = await resolvePbossInstallArgv("deno", "1.6.1", counting, async () => true);
     expect(r.argv).toEqual([
-      "deno", "install", "-g", "-f", "-A",
+      "deno", "install", "-g", "-A",
       "--min-dep-age=0",
-      "--name", "pboss", "npm:pboss@1.6.1/deno-entry",
+      "--name", "pboss", "--reload", "--force", "npm:pboss@1.6.1/deno-entry",
     ]);
     expect(r.via).toBe("deno");
     expect(r.note).toBeUndefined();
@@ -475,11 +476,11 @@ describe("runtime-config: resolvePbossInstallArgv (the deno window)", () => {
     expect(pbossInstallArgv("node", undefined, true)).toEqual(["npm", "install", "-g", "pboss@latest"]);
     expect(pbossInstallArgv("bun", undefined, true)).toEqual(["bun", "add", "-g", "pboss@latest"]);
     expect(pbossInstallArgv("deno")).toEqual([
-      "deno", "install", "-g", "-f", "-A", "--name", "pboss", "npm:pboss/deno-entry",
+      "deno", "install", "-g", "-A", "--name", "pboss", "--reload", "--force", "npm:pboss/deno-entry",
     ]);
     expect(pbossInstallArgv("deno", "1.6.1", true)).toEqual([
-      "deno", "install", "-g", "-f", "-A", "--min-dep-age=0",
-      "--name", "pboss", "npm:pboss@1.6.1/deno-entry",
+      "deno", "install", "-g", "-A", "--min-dep-age=0",
+      "--name", "pboss", "--reload", "--force", "npm:pboss@1.6.1/deno-entry",
     ]);
   });
 });

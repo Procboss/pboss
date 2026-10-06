@@ -1841,7 +1841,7 @@ The machine credential in `~/.pboss/cloud.json` is a **permanent cache**: it liv
 |---|---|
 | `npm i -g pboss` | `npm install -g pboss@latest` |
 | `bun add -g pboss` | `bun add -g pboss@latest` |
-| `deno install -g … npm:pboss/deno-entry` | `deno install -g -f -A --min-dep-age=0 --name pboss npm:pboss@<latest>/deno-entry` (Deno ≥ 2.9 — the hold bypassed; older Deno pins the newest resolvable version) |
+| `deno install -g … npm:pboss/deno-entry` | `deno install -g -A --min-dep-age=0 --name pboss --reload --force npm:pboss@<latest>/deno-entry` (Deno ≥ 2.9 — the hold bypassed; older Deno pins the newest resolvable version) |
 | Homebrew | `brew upgrade pboss` |
 | snap | `sudo snap refresh pboss` |
 | universal installer (curl \| sh / install.ps1) | the selected runtime's ecosystem — the installer again is idempotent |
@@ -1849,7 +1849,7 @@ The machine credential in `~/.pboss/cloud.json` is a **permanent cache**: it liv
 <!-- 2026-10-04: the universal installer is back (runtime-aware) — the table
      row above reflects the .runtime-driven channel. -->
 
-Machines installed before the stamp existed are covered by runtime detection from the executable's own location (`…/Cellar/pboss/…` → brew, `/snap/pboss/…` → snap, a `node_modules` path → npm/bun, a repo checkout → source). If the detection is wrong, `pboss upgrade --channel brew` repairs it and persists the answer.
+Machines installed before the stamp existed are covered by runtime detection from the executable's own location (`…/Cellar/pboss/…` → brew, `/snap/pboss/…` → snap, a `node_modules` path → npm/bun, a repo checkout → source) — and, for Deno, by the runtime **actually executing** pboss: a deno global install runs the published entry directly from deno's npm cache (a path no rule matches) and never runs npm's postinstall (so no stamp is ever written), which makes the executing runtime the one signal that cannot be stale — an npm-era stamp or `.runtime` left over from an install that was replaced cannot outvote it. If the detection is wrong anyway, `pboss upgrade --channel brew` repairs it and persists the answer (every channel is accepted, deno included).
 
 ```bash
 pboss upgrade --check       # dry run: current/latest/channel/command, changes nothing
