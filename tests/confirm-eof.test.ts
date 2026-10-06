@@ -81,6 +81,23 @@ async function runInPty(cmd: string, input: string, timeoutMs = 30_000) {
   });
 }
 
+/**
+ * The VISIBLE text of a pty capture — ANSI escapes (cursor moves, line
+ * clears, colors) and CRs stripped. Why: the harness feeds input at spawn,
+ * so the bytes can beat the CLI into raw mode and readline then REPAINTS —
+ * the owner's box (2026-10-06, prepublishOnly) captured `... [y/N] \x1b[53Gn`,
+ * a cursorTo(end-of-prompt) between the prompt and the echoed answer, and a
+ * literal "[y/N] n" match broke on it. Assert on WHAT was said, not on how
+ * the terminal repainted it (stripAnsi's pty-hardened sibling).
+ */
+function visible(s: string): string {
+  return s
+    .replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g, "") // OSC (ESC ] ... BEL/ST)
+    .replace(/\x1b\[[0-9;:?<=>!]*[ -/]*[@-~]/g, "") // CSI — cursorTo/clear/color
+    .replace(/\x1b./g, "") // any other ESC pair
+    .replace(/\r\n?/g, "\n"); // pty CRLF → LF
+}
+
 async function cleanup(home: string) {
   try {
     await runCli(["kill"], home);
@@ -158,10 +175,11 @@ describe("confirm() EOF — e2e (real CLI, real pty)", () => {
           "\x04"
         );
         expect(res.code).toBe(1); // aborted, not crashed (13) nor hung
-        expect(res.out).toContain("Delete 2 processes");
-        expect(res.out).toContain("(input closed — treating as no)");
-        expect(res.out).toContain("Aborted — nothing was deleted");
-        expect(res.out).not.toContain("never resolved"); // the deno TLA error
+        const out = visible(res.out);
+        expect(out).toContain("Delete 2 processes");
+        expect(out).toContain("(input closed — treating as no)");
+        expect(out).toContain("Aborted — nothing was deleted");
+        expect(out).not.toContain("never resolved"); // the deno TLA error
 
         // The fleet survives — nothing was deleted.
         const list = await runCli(["list"], home);
@@ -194,9 +212,12 @@ describe("confirm() EOF — e2e (real CLI, real pty)", () => {
           "n\n"
         );
         expect(res.code).toBe(1);
-        expect(res.out).toContain("[y/N] n");
-        expect(res.out).toContain("Aborted — nothing was deleted");
-        expect(res.out).not.toContain("(input closed"); // the noise the guard kills
+        // The echoed answer may be separated from the prompt by a repaint
+        // escape — match the visible text (owner's box, 2026-10-06).
+        const out = visible(res.out);
+        expect(out).toContain("[y/N] n");
+        expect(out).toContain("Aborted — nothing was deleted");
+        expect(out).not.toContain("(input closed"); // the noise the guard kills
       } finally {
         await cleanup(home);
       }
