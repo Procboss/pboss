@@ -9,6 +9,8 @@ import {
   parseUserAgent,
   detectChannel,
   resolveUpgradeChannel,
+  runtimeForChannel,
+  channelForRuntime,
   buildUpgradePlan,
   compareVersions,
   fetchLatestVersion,
@@ -19,6 +21,7 @@ import {
   parseVersionOutput,
   verifyInstalledVersion,
   type ChannelContext,
+  type UniversalRuntimeHint,
 } from "../src/upgrade";
 import { VERSION } from "../src/constants";
 
@@ -474,6 +477,81 @@ describe("buildUpgradePlan: version-exact universal installs (the stale -v bug)"
       "../../etc/passwd",
     ]) {
       expect(isSafeVersion(bad as unknown as string)).toBe(false);
+    }
+  });
+});
+
+describe("buildUpgradePlan: the universal channel never re-asks the runtime", () => {
+  // Owner report, 2026-10-06: `pboss upgrade` through the universal channel
+  // re-ran the installer, which PROMPTED for a runtime mid-upgrade. The
+  // upgrade already knows the answer (the persisted selection, or the
+  // runtime executing pboss) — it now rides along as an explicit flag.
+
+  test("a runtime hint rides along as --runtime through the pipe (bash -s --)", () => {
+    const plan = buildUpgradePlan("universal", "linux", undefined, undefined, "bun");
+    expect(plan.command).toEqual([
+      "bash",
+      "-c",
+      "curl -fsSL https://procboss.com/install.sh | bash -s -- --runtime=bun",
+    ]);
+    expect(plan.note).toContain("--runtime=bun");
+    expect(plan.note).toContain("never re-asks");
+  });
+
+  test("the hint combines with the version pin (both ride the same pipe)", () => {
+    const plan = buildUpgradePlan("universal", "linux", "1.6.6", undefined, "node");
+    expect(plan.command[2]).toBe(
+      "curl -fsSL https://procboss.com/install.sh | PBOSS_VERSION=1.6.6 bash -s -- --runtime=node",
+    );
+  });
+
+  test("windows: -Runtime BINDS to the irm'd scriptblock (the documented form)", () => {
+    const plan = buildUpgradePlan("universal", "win32", undefined, undefined, "deno");
+    expect(plan.command.at(-1)).toBe(
+      "iex '& { $(irm https://procboss.com/install.ps1) } -Runtime deno'",
+    );
+    // The plain `irm | iex` form cannot carry parameters — it must not be
+    // used once a runtime is passed.
+    expect(plan.command.at(-1)).not.toContain("| iex");
+    expect(plan.note).toContain("-Runtime deno");
+  });
+
+  test("an invalid hint is dropped, never interpolated (whitelist discipline)", () => {
+    for (const evil of ["bun; rm -rf ~", "node $(reboot)", "", "kubernetes"] as const) {
+      const plan = buildUpgradePlan(
+        "universal",
+        "linux",
+        undefined,
+        undefined,
+        evil as UniversalRuntimeHint,
+      );
+      expect(plan.command.join(" ")).toBe(
+        "bash -c curl -fsSL https://procboss.com/install.sh | bash",
+      );
+      expect(plan.note).not.toContain("never re-asks");
+    }
+  });
+
+  test("no hint → the installer's own sources decide (flag, .runtime, prompt)", () => {
+    // Unchanged shape (pinned above too) — restated for the new parameter:
+    // absent hint means the plan itself carries no runtime opinion.
+    expect(buildUpgradePlan("universal", "linux").command.join(" ")).toBe(
+      "bash -c curl -fsSL https://procboss.com/install.sh | bash",
+    );
+    expect(buildUpgradePlan("universal", "linux", undefined, undefined, null).command.join(" ")).toBe(
+      "bash -c curl -fsSL https://procboss.com/install.sh | bash",
+    );
+  });
+
+  test("runtimeForChannel is channelForRuntime's inverse", () => {
+    expect(runtimeForChannel("npm")).toBe("node");
+    expect(runtimeForChannel("bun")).toBe("bun");
+    expect(runtimeForChannel("deno")).toBe("deno");
+    for (const self of ["universal", "brew", "snap", "source", "unknown"] as const) {
+      expect(runtimeForChannel(self)).toBeNull();
+    }
+    for (const rt of ["node", "bun", "deno"] as const) {
+      expect(runtimeForChannel(channelForRuntime(rt))).toBe(rt);
     }
   });
 });

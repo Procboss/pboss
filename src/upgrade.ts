@@ -278,6 +278,14 @@ export type UpgradePlan = {
 };
 
 /**
+ * The runtime the universal installer must be told to use — the answer it
+ * would otherwise prompt for (owner report, 2026-10-06). Whitelist-checked
+ * before it is ever interpolated into a shell command (the same discipline
+ * as isSafeVersion): anything but node/bun/deno is dropped, not passed.
+ */
+export type UniversalRuntimeHint = "node" | "bun" | "deno";
+
+/**
  * The channel-fidelity table: each channel upgrades THROUGH ITSELF. Pure —
  * safe to unit test without touching the machine.
  *
@@ -290,12 +298,20 @@ export type UpgradePlan = {
  * version" happens. npm/bun channels pin `pboss@latest` inherently;
  * brew/snap defer to their package manager; Windows keeps the unpinned
  * installer (install.ps1 has no tarball path yet).
+ *
+ * `runtimeHint` (universal channel only) rides along as an explicit
+ * --runtime / -Runtime flag so the re-run installer never prompts: the
+ * upgrade derives it from the persistent selection (spec §14) or the
+ * runtime executing this very pboss. Absent → the installer's own
+ * sources decide (its --runtime flag, then ~/.pboss/.runtime, then the
+ * prompt — the same order the wrapper uses).
  */
 export function buildUpgradePlan(
   channel: InstallChannel,
   platform: NodeJS.Platform = process.platform,
   targetVersion?: string,
   denoPin?: DenoPin | null,
+  runtimeHint?: UniversalRuntimeHint | null,
 ): UpgradePlan {
   switch (channel) {
     case "npm":
@@ -386,6 +402,12 @@ export function buildUpgradePlan(
         note: "The snap refreshes in place — no second CLI appears.",
       };
     case "universal": {
+      // The flag is whitelist-checked — NEVER interpolate an unvalidated
+      // value into a shell command (same rule as PBOSS_VERSION above).
+      const rt =
+        runtimeHint === "node" || runtimeHint === "bun" || runtimeHint === "deno"
+          ? runtimeHint
+          : null;
       if (platform === "win32") {
         return {
           channel,
@@ -396,25 +418,36 @@ export function buildUpgradePlan(
             "-ExecutionPolicy",
             "Bypass",
             "-Command",
-            "irm https://procboss.com/install.ps1 | iex",
+            // With a runtime to pass, -Runtime must BIND to the irm'd
+            // scriptblock (the form install.ps1's own header documents);
+            // a plain `irm | iex` cannot carry parameters.
+            rt
+              ? `iex '& { $(irm https://procboss.com/install.ps1) } -Runtime ${rt}'`
+              : "irm https://procboss.com/install.ps1 | iex",
           ],
           manual: false,
-          note: "No Administrator needed — it installs per-user by default.",
+          note:
+            "No Administrator needed — it installs per-user by default." +
+            (rt ? ` The runtime rides along (-Runtime ${rt} is passed explicitly, so the installer never re-asks).` : ""),
         };
       }
       const pin = isSafeVersion(targetVersion) ? `PBOSS_VERSION=${targetVersion} ` : "";
+      // `bash -s --` forwards the flag through the pipe to the script —
+      // a bare `bash` after the pipe receives no arguments at all.
+      const tail = rt ? `bash -s -- --runtime=${rt}` : "bash";
       return {
         channel,
         label: "universal installer",
         command: [
           "bash",
           "-c",
-          `curl -fsSL https://procboss.com/install.sh | ${pin}bash`,
+          `curl -fsSL https://procboss.com/install.sh | ${pin}${tail}`,
         ],
         manual: false,
         note:
           "No root required — the installer is idempotent and refreshes in place." +
-            (pin ? " It downloads the exact version shown above from the npm registry." : ""),
+            (pin ? " It downloads the exact version shown above from the npm registry." : "") +
+            (rt ? ` The runtime rides along (--runtime=${rt} is passed explicitly, so the installer never re-asks).` : ""),
       };
     }
     case "source":
@@ -441,6 +474,29 @@ export function buildUpgradePlan(
 /** The channel a configured runtime upgrades through. */
 export function channelForRuntime(runtime: "node" | "bun" | "deno"): InstallChannel {
   return runtime === "node" ? "npm" : runtime;
+}
+
+/**
+ * The inverse of channelForRuntime — the runtime a package-ecosystem
+ * channel rides on. Feeds the universal installer's --runtime flag: the
+ * upgrade already knows the answer (the persisted selection, or the
+ * runtime executing this very pboss), and the installer must never re-ask
+ * a question the machine has already answered (owner report, 2026-10-06:
+ * `pboss upgrade` through the universal channel prompted mid-upgrade).
+ * Channels that own their own upgrade path (universal/brew/snap/…)
+ * have no runtime to name — null.
+ */
+export function runtimeForChannel(channel: InstallChannel): "node" | "bun" | "deno" | null {
+  switch (channel) {
+    case "npm":
+      return "node";
+    case "bun":
+      return "bun";
+    case "deno":
+      return "deno";
+    default:
+      return null;
+  }
 }
 
 /**

@@ -82,6 +82,7 @@ import {
   detectChannel,
   configuredRuntimeChannel,
   resolveUpgradeChannel,
+  runtimeForChannel,
   buildUpgradePlan,
   compareVersions,
   fetchLatestVersion,
@@ -2488,6 +2489,17 @@ ${colorize("Notes:", "dim")}
     const detected = detectChannel(ctx);
     const channel: InstallChannel = resolveUpgradeChannel(runtimeChannel, detected);
 
+    // The universal installer must never re-ask the runtime question
+    // mid-upgrade (owner report, 2026-10-06): the answer rides along as an
+    // explicit --runtime flag. The persistent selection is the first source
+    // (it cannot disagree with the executing runtime — the wrapper
+    // dispatches BY it); when no selection exists (a pre-selection machine,
+    // e.g. a compiled-binary install predating the wrapper architecture),
+    // the runtime executing this very pboss is the best truth there is.
+    const universalRuntime = runtimeChannel
+      ? runtimeForChannel(runtimeChannel)
+      : R.name;
+
     // The registry's latest is known BEFORE the plan is built, because the
     // universal channel pins it into the installer command
     // (PBOSS_VERSION=…) so `curl | bash` compiles exactly the release this
@@ -2545,7 +2557,7 @@ ${colorize("Notes:", "dim")}
         }
       }
     }
-    const plan = buildUpgradePlan(channel, process.platform, latest, denoPin);
+    const plan = buildUpgradePlan(channel, process.platform, latest, denoPin, universalRuntime);
 
     console.log(colorize("⚡ pboss upgrade", "bold"));
     console.log(`  Installed via:  ${plan.label}`);

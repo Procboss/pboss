@@ -11,9 +11,12 @@
 #
 # RUNTIME-AWARE ARCHITECTURE (the contract this installer implements):
 #
-#   The USER selects the runtime — explicitly (-Runtime) or through the
-#   interactive prompt (Node is the default; Enter picks it). The selection
-#   is persisted by pboss itself into ~\.pboss\.runtime and stays there
+#   The USER selects the runtime — explicitly (-Runtime), or the
+#   PERSISTED selection ~\.pboss\.runtime when one exists (a re-run —
+#   `pboss upgrade`'s universal channel, or a manual re-run of this
+#   installer — honors it, never re-asks it), or the interactive prompt on
+#   a first install (Node is the default; Enter picks it). The selection is
+#   persisted by pboss itself into ~\.pboss\.runtime and stays there
 #   across upgrades until `pboss runtime change` says otherwise.
 #
 #   This installer NEVER infers a runtime from whatever happens to be
@@ -56,7 +59,7 @@ function Test-Runtime([string]$value) {
     return ($n -eq "node" -or $n -eq "bun" -or $n -eq "deno")
 }
 
-# ── 1. Runtime selection: -Runtime, or the interactive prompt ─────────────
+# ── 1. Runtime selection: -Runtime, the persisted selection, or the prompt ─
 $selected = Normalize-Runtime $Runtime
 if ($selected -and -not (Test-Runtime $selected)) {
     Write-Host "Unsupported runtime: $Runtime" -ForegroundColor Red
@@ -66,6 +69,33 @@ if ($selected -and -not (Test-Runtime $selected)) {
     Write-Host "  bun"
     Write-Host "  deno"
     exit 1
+}
+
+if (-not $selected) {
+    # The persisted selection (spec §14): ~\.pboss\.runtime — written by pboss
+    # itself (first run, `pboss runtime change`, or this installer's init
+    # step). A re-run of this installer must honor it, never re-ask a
+    # question the machine has already answered. Invalid content is NOT
+    # swallowed (spec §20 — the wrapper and the CLI die on this same file
+    # with the same text): a broken selection must never be silently
+    # replaced by a guess.
+    if (Test-Path $runtimeFile -PathType Leaf) {
+        $persisted = Normalize-Runtime (Get-Content $runtimeFile -Raw)
+        if (Test-Runtime $persisted) {
+            $selected = $persisted
+            $selectedSource = "(persisted in ~\.pboss\.runtime — switch with: pboss runtime change)"
+        } else {
+            Write-Host "Invalid ProcBoss runtime configuration: $(Get-Content $runtimeFile -Raw)" -ForegroundColor Red
+            Write-Host ""
+            Write-Host "Supported runtimes:"
+            Write-Host "  node"
+            Write-Host "  bun"
+            Write-Host "  deno"
+            Write-Host ""
+            Write-Host "Fix or remove the file, or re-run with -Runtime <node|bun|deno>."
+            exit 1
+        }
+    }
 }
 
 if (-not $selected) {
@@ -105,6 +135,7 @@ if (-not $selected) {
 }
 
 Write-Host "Selected runtime: $selected" -ForegroundColor Green
+if ($selectedSource) { Write-Host "  $selectedSource" -ForegroundColor DarkGray }
 
 # ── 2. Ensure the selected runtime exists — install it when missing ──────
 function Find-Runtime([string]$name) {

@@ -9,9 +9,12 @@
 #
 # RUNTIME-AWARE ARCHITECTURE (the contract this installer implements):
 #
-#   The USER selects the runtime — explicitly (--runtime=<x>) or through the
-#   interactive prompt (Node is the default; Enter picks it). The selection
-#   is persisted by pboss itself into ~/.pboss/.runtime and stays there
+#   The USER selects the runtime — explicitly (--runtime=<x>), or the
+#   PERSISTED selection ~/.pboss/.runtime when one exists (a re-run —
+#   `pboss upgrade`'s universal channel, or a manual curl | sh refresh —
+#   honors it, never re-asks it), or the interactive prompt on a first
+#   install (Node is the default; Enter picks it). The selection is
+#   persisted by pboss itself into ~/.pboss/.runtime and stays there
 #   across upgrades until `pboss runtime change` says otherwise.
 #
 #   This installer NEVER infers a runtime from whatever happens to be
@@ -99,7 +102,10 @@ done
 [ "$EXPECT_VALUE" = 1 ] && die "--runtime requires a value: node | bun | deno"
 
 if [ -n "$RUNTIME" ]; then
-  # Explicit selection: validate, normalize to lowercase, never guess.
+  # Explicit selection: validate, normalize to lowercase, never guess. The
+  # flag outranks every other source — the one input that cannot be stale,
+  # and the one that REPAIRS a broken persisted selection (the init step
+  # below re-saves it).
   RUNTIME="$(normalize_runtime "$RUNTIME")"
   case "$RUNTIME" in
     node | bun | deno) ;;
@@ -110,10 +116,36 @@ if [ -n "$RUNTIME" ]; then
       exit 1
       ;;
   esac
-else
-  # Interactive selection — Node on Enter (the default). Works when stdin is
-  # the curl pipe too: the prompt reads the terminal via /dev/tty. Fully
-  # headless environments (CI) must pass --runtime explicitly.
+elif [ -f "$RUNTIME_FILE" ]; then
+  # The persisted selection (spec §14): ~/.pboss/.runtime — written by pboss
+  # itself (first run, `pboss runtime change`, or this installer's init
+  # step). A re-run of this installer must honor it, never re-ask a
+  # question the machine has already answered. Invalid content is NOT
+  # swallowed (spec §20 — the wrapper and the CLI die on this same file
+  # with the same text): a broken selection must never be silently
+  # replaced by a guess.
+  PERSISTED_RUNTIME="$(normalize_runtime "$(cat "$RUNTIME_FILE" 2>/dev/null || printf '%s' '')")"
+  case "$PERSISTED_RUNTIME" in
+    node | bun | deno)
+      RUNTIME="$PERSISTED_RUNTIME"
+      RUNTIME_SOURCE="(persisted in ~/.pboss/.runtime — switch with: pboss runtime change)"
+      ;;
+    *)
+      printf '\n' >&2
+      printf 'Invalid ProcBoss runtime configuration: %s\n\n' "$(cat "$RUNTIME_FILE" 2>/dev/null)" >&2
+      supported_runtimes_list >&2
+      printf '\n' >&2
+      printf '%s\n' "Fix or remove the file, or re-run with --runtime=<node|bun|deno>." >&2
+      exit 1
+      ;;
+  esac
+fi
+
+if [ -z "$RUNTIME" ]; then
+  # Interactive selection — first install only (no selection exists yet).
+  # Node on Enter (the default). Works when stdin is the curl pipe too: the
+  # prompt reads the terminal via /dev/tty. Fully headless environments
+  # (CI) must pass --runtime explicitly.
   printf '%s\n' "Kindly select your runtime:"
   printf '\n'
   printf '%s\n' "  1. Node"
@@ -153,7 +185,11 @@ else
 fi
 
 printf '%s' "${CYAN}Selected runtime: "
-printf '%s\n' "${GREEN}${RUNTIME}${RESET}"
+printf '%s' "${GREEN}${RUNTIME}${RESET}"
+if [ -n "${RUNTIME_SOURCE:-}" ]; then
+  printf '%s' " ${RUNTIME_SOURCE}"
+fi
+printf '\n'
 
 # ── 3. Ensure the selected runtime exists — install it when missing ───────
 # The selected runtime is authoritative: another runtime being present is

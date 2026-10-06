@@ -214,9 +214,11 @@ instead.
 curl -fsSL https://procboss.com/install.sh | sh
 ```
 
-Asks which runtime to run under (Node is the default), installs the runtime
-when missing, installs the published package through that runtime's own
-package ecosystem, and saves the selection:
+Asks which runtime to run under on a first install (Node is the default),
+installs the runtime when missing, installs the published package through
+that runtime's own package ecosystem, and saves the selection — a re-run of
+the installer (including `pboss upgrade`'s universal channel) reads the
+saved selection and never asks again:
 
 ```bash
 curl -fsSL https://procboss.com/install.sh | sh -s -- --runtime=node
@@ -1899,7 +1901,7 @@ The machine credential in `~/.pboss/cloud.json` is a **permanent cache**: it liv
 | `deno install -g … npm:pboss/deno-entry` | `deno install -g -A --min-dep-age=0 --name pboss --reload --force npm:pboss/deno-entry` (Deno ≥ 2.9 — the hold bypassed, the unpinned spec resolves the true latest; older Deno pins the newest resolvable version) |
 | Homebrew | `brew upgrade pboss` |
 | snap | `sudo snap refresh pboss` |
-| universal installer (curl \| sh / install.ps1) | the selected runtime's ecosystem — the installer again is idempotent |
+| universal installer (curl \| sh / install.ps1) | the selected runtime's ecosystem — and with no selection on the machine yet, the installer re-runs with the executing runtime passed explicitly (`--runtime=<x>`), so it never re-asks mid-upgrade |
 
 <!-- 2026-10-04: the universal installer is back (runtime-aware) — the table
      row above reflects the .runtime-driven channel. -->

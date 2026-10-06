@@ -152,10 +152,16 @@ function runInstaller(
     runtimes?: string[];
     extraEnv?: Record<string, string>;
     customStubs?: Record<string, string>;
+    /** Pre-seed the persisted selection (~/.pboss/.runtime) — the re-run case. */
+    runtimeFile?: string;
   } = {},
 ): { code: number; out: string; err: string; log: string } {
   const home = mkdtempSync(join(tmpdir(), "pboss-inst-home-"));
   const log = join(home, "stub.log");
+  if (opts.runtimeFile !== undefined) {
+    mkdirSync(join(home, ".pboss"), { recursive: true });
+    writeFileSync(join(home, ".pboss", ".runtime"), opts.runtimeFile);
+  }
   const files: Record<string, string> = {
     id: `case "$1" in -un) echo "testuser" ;; *) echo "1000" ;; esac`,
     curl: `echo "curl $*" >> "$STUB_LOG"; exit 1`, // runtime downloads must be opt-in
@@ -444,6 +450,95 @@ describe("installers: sims — the explicit runtime flow", () => {
         rmSync(farm, { recursive: true, force: true });
         rmSync(home, { recursive: true, force: true });
       }
+    },
+    30000,
+  );
+});
+
+/* ── the persisted selection (re-runs never re-ask) ────────────────────────── */
+
+describe("installers: the persisted runtime selection (re-runs never re-ask)", () => {
+  test("source pins: both installers read ~/.pboss/.runtime before prompting", () => {
+    // sh: the elif between the flag and the prompt + the spec §20 text.
+    expect(sh).toContain('elif [ -f "$RUNTIME_FILE" ]');
+    expect(sh).toContain("Invalid ProcBoss runtime configuration: %s");
+    expect(sh).toContain("Fix or remove the file, or re-run with --runtime=<node|bun|deno>.");
+    // ps1: the same contract in PowerShell.
+    expect(ps1).toContain("Test-Path $runtimeFile -PathType Leaf");
+    expect(ps1).toContain("Invalid ProcBoss runtime configuration:");
+    expect(ps1).toContain("Fix or remove the file, or re-run with -Runtime <node|bun|deno>.");
+    // The reuse note names the switch path (both installers).
+    expect(sh).toContain("pboss runtime change");
+    expect(ps1).toContain("pboss runtime change");
+  });
+
+  test(
+    "~/.pboss/.runtime=bun, headless: reused — no prompt, bun installs",
+    () => {
+      if (!POSIX) return;
+      // The upgrade flow's exact shape: `pboss upgrade` re-runs the
+      // installer with stdin inherited from a non-interactive parent —
+      // the old installer died with "needs a runtime selection" (or
+      // prompted) even though the machine had already answered.
+      const r = runInstaller([], { runtimes: ["bun", "node"], runtimeFile: "bun\n" });
+      expect(r.code).toBe(0);
+      expect(r.out).toContain("Selected runtime: bun");
+      expect(r.out).toContain("persisted in ~/.pboss/.runtime");
+      expect(r.out).not.toContain("Kindly select your runtime");
+      expect(r.err).not.toContain("ProcBoss needs a runtime selection.");
+      expect(r.log).toContain("bun install -g pboss");
+      expect(r.log).toContain("pboss --runtime=bun --version");
+      // The persisted selection is authoritative — node being present
+      // changes nothing.
+      expect(r.log).not.toContain("npm install -g");
+    },
+    30000,
+  );
+
+  test(
+    "an explicit --runtime beats the persisted selection (the repair path)",
+    () => {
+      if (!POSIX) return;
+      const r = runInstaller(["--runtime=deno"], {
+        runtimes: ["deno", "node"],
+        runtimeFile: "node\n",
+      });
+      expect(r.code).toBe(0);
+      expect(r.out).toContain("Selected runtime: deno");
+      expect(r.out).not.toContain("persisted in ~/.pboss/.runtime");
+      expect(r.log).toContain(
+        "deno install -g -A --name pboss --reload --force npm:pboss/deno-entry",
+      );
+    },
+    30000,
+  );
+
+  test(
+    "an invalid persisted selection dies with the spec §20 text, before installing",
+    () => {
+      if (!POSIX) return;
+      const r = runInstaller([], { runtimes: ["node"], runtimeFile: "kubernetes\n" });
+      expect(r.code).toBe(1);
+      expect(r.err).toContain("Invalid ProcBoss runtime configuration: kubernetes");
+      expect(r.err).toContain("Supported runtimes:");
+      expect(r.err).toContain("Fix or remove the file, or re-run with --runtime=<node|bun|deno>.");
+      expect(r.log).not.toContain("install");
+      expect(r.out).not.toContain("Installing");
+    },
+    30000,
+  );
+
+  test(
+    "an explicit --runtime REPAIRS an invalid persisted selection",
+    () => {
+      if (!POSIX) return;
+      const r = runInstaller(["--runtime=node"], {
+        runtimes: ["node"],
+        runtimeFile: "kubernetes\n",
+      });
+      expect(r.code).toBe(0);
+      expect(r.out).toContain("Selected runtime: node");
+      expect(r.log).toContain("npm install -g");
     },
     30000,
   );

@@ -54,7 +54,8 @@ The full documentation lives at [docs.procboss.com](https://docs.procboss.com)
 One command — it asks which runtime pboss should run under (Node is the
 default; press Enter), installs the runtime when it is missing, installs the
 published package through that runtime's own package ecosystem, and saves
-your choice so every later `pboss` — including upgrades — uses it:
+your choice so every later `pboss` — including upgrades — uses it (a re-run
+of the installer reads the saved selection and never asks again):
 
 ```bash
 curl -fsSL https://procboss.com/install.sh | sh
