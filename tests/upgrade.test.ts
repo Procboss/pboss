@@ -1,7 +1,8 @@
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync, mkdirSync } from "fs";
 import { tmpdir } from "os";
-import { join } from "path";
+import { join, dirname } from "path";
+import { fileURLToPath } from "node:url";
 import {
   readChannelStamp,
   writeChannelStamp,
@@ -827,20 +828,11 @@ describe("buildUpgradePlan: the deno channel's supply-chain window", () => {
 
   /* ── the age-hold bypass (Deno ≥ 2.9 knows --min-dep-age) ─── */
 
-  test("bypass + version: the registry's TRUE latest, flag in the command", () => {
-    // The owner's report state: 1.6.1 published hours ago (inside the
-    // window), local deno knows the flag → upgrade goes straight to it.
-    const plan = buildUpgradePlan("deno", "linux", "1.6.1", { version: "1.6.1", bypass: true });
-    expect(plan.command).toEqual([
-      "deno", "install", "-g", "-A",
-      "--min-dep-age=0",
-      "--name", "pboss", "--reload", "--force", "npm:pboss@1.6.1/deno-entry",
-    ]);
-    expect(plan.manual).toBe(false);
-    expect(plan.note).toContain("bypassed");
-  });
-
-  test("bypass + null version (registry unreadable): the unpinned spec STILL carries the flag", () => {
+  test("bypass: the owner's canonical command — unpinned spec, flag, nothing else", () => {
+    // Owner spec (2026-10-06, given verbatim twice): the upgrade command IS
+    // the install command plus --reload --force. Under the age-hold bypass
+    // the spec is NEVER version-pinned — the flag alone makes the unpinned
+    // spec resolve the registry's TRUE latest.
     const plan = buildUpgradePlan("deno", "linux", "1.6.1", { version: null, bypass: true });
     expect(plan.command).toEqual([
       "deno", "install", "-g", "-A",
@@ -848,6 +840,20 @@ describe("buildUpgradePlan: the deno channel's supply-chain window", () => {
       "--name", "pboss", "--reload", "--force", "npm:pboss/deno-entry",
     ]);
     expect(plan.manual).toBe(false);
+    expect(plan.note).toContain("bypassed");
+  });
+
+  test("the CALLERS never pin under bypass — display and execution both", () => {
+    // The builder above still accepts a pin with bypass (its own generic
+    // shape), but the CLI must never build one: `pboss upgrade` and
+    // `runtime change` pass the UNPINNED spec whenever the local deno
+    // knows the flag (owner report, 2026-10-06 — a version-pinned spec
+    // kept appearing in the command line).
+    const repo = join(dirname(fileURLToPath(import.meta.url)), "..");
+    const indexSrc = readFileSync(join(repo, "src", "index.ts"), "utf8");
+    expect(indexSrc).toMatch(/denoPin = \{\s*version: null,\s*bypass: true,/);
+    const rcSrc = readFileSync(join(repo, "src", "runtime-config.ts"), "utf8");
+    expect(rcSrc).toContain('pbossInstallArgv("deno", undefined, true)');
   });
 
   test("a pin WITHOUT bypass never carries the flag (old denos must not see it)", () => {

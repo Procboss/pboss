@@ -383,12 +383,14 @@ export interface PbossInstallCommand {
  * Resolve the install command for a runtime, honoring Deno's npm
  * supply-chain window (versions published < 24 h ago are unresolvable —
  * see deno-eligibility.ts). When the local deno knows Deno's own escape
- * hatch (`--min-dep-age=0`, probed — never version-guessed),
- * the command carries the flag and pins the registry's TRUE latest: the
- * version package.json carried into the publish installs immediately.
- * Older denos keep the window-aware pin; when no deno-entry-capable
- * version is resolvable yet, npm delivers the package (the bin wrapper
- * dispatches to deno at run time) and the command says so.
+ * hatch (`--min-dep-age=0`, probed — never version-guessed), the command
+ * is the owner's canonical one: the UNPINNED spec plus the flag (2026-10-06
+ * — the install command and the upgrade command are the same shape),
+ * because the flag alone makes the unpinned spec resolve the registry's
+ * TRUE latest. Older denos keep the window-aware pin; when no
+ * deno-entry-capable version is resolvable yet, npm delivers the package
+ * (the bin wrapper dispatches to deno at run time) and the command says
+ * so.
  *
  * `minDepAgeProber` defaults to "no flag" — deterministic for tests; the
  * live caller (the runtime-change flow) passes the real probe so the
@@ -411,24 +413,18 @@ export async function resolvePbossInstallArgv(
     return { argv: pbossInstallArgv("deno", version, bypass), via: "deno" };
   }
 
-  const [eligibility, bypass] = await Promise.all([
-    fetchDenoEligibility(fetcher),
-    minDepAgeProber(),
-  ]);
-
-  if (bypass) {
-    // Deno ≥ 2.9: the flag disables the hold for this resolution —
-    // install the registry's true latest; unpinned + flag when the
-    // registry could not be read.
+  // The flag probe comes first: a deno that knows the escape hatch gets
+  // the unpinned canonical command, and the registry is not consulted at
+  // all — the flag makes the unpinned spec resolve the true latest.
+  if (await minDepAgeProber()) {
     return {
-      argv: pbossInstallArgv("deno", eligibility?.latest ?? undefined, true),
+      argv: pbossInstallArgv("deno", undefined, true),
       via: "deno",
-      note:
-        eligibility?.latest === undefined
-          ? "Could not read the registry ahead of the install — installing the unpinned spec with Deno's age hold disabled."
-          : "Deno's 24-hour supply-chain hold is bypassed for this install (--min-dep-age=0).",
+      note: "Deno's 24-hour supply-chain hold is bypassed for this install (--min-dep-age=0).",
     };
   }
+
+  const eligibility = await fetchDenoEligibility(fetcher);
 
   if (eligibility === null) {
     // Registry unreachable: degrade to the unpinned spec and let Deno's own

@@ -416,26 +416,31 @@ describe("runtime-config: resolvePbossInstallArgv (the deno window)", () => {
 
   /* ── the age-hold bypass (Deno ≥ 2.9 knows --min-dep-age) ─── */
 
-  test("deno + bypass: the registry's TRUE latest installs with the flag — no window pin", async () => {
-    // The owner's exact report state: 1.6.1 published 2 h ago (inside the
-    // window — unpinned would silently land on 1.5.3, a broken shim).
-    const r = await resolvePbossInstallArgv(
-      "deno", undefined,
-      serving(packument({ "1.5.3": 24 * 7, "1.6.0": 24 * 10, "1.6.1": 2 }, "1.6.1")),
-      async () => true,
-    );
+  test("deno + bypass: the owner's canonical unpinned command — the registry is never consulted", async () => {
+    // Owner spec (2026-10-06): under the age-hold bypass the command is the
+    // unpinned canonical one, and the flag probe comes FIRST — no
+    // eligibility fetch, no version pin (the flag alone resolves the true
+    // latest). A fetcher that counts proves the registry was not read.
+    let fetches = 0;
+    const counting = (() => {
+      fetches++;
+      return Promise.resolve(new Response("{}", { status: 200 }));
+    }) as unknown as typeof fetch;
+    const r = await resolvePbossInstallArgv("deno", undefined, counting, async () => true);
     expect(r.argv).toEqual([
       "deno", "install", "-g", "-A",
       "--min-dep-age=0",
-      "--name", "pboss", "--reload", "--force", "npm:pboss@1.6.1/deno-entry",
+      "--name", "pboss", "--reload", "--force", "npm:pboss/deno-entry",
     ]);
     expect(r.via).toBe("deno");
     expect(r.note).toContain("bypassed");
-    // The window pin is GONE — 1.6.0 must not appear.
-    expect(r.argv.at(-1)).not.toContain("1.6.0");
+    expect(fetches).toBe(0);
   });
 
-  test("deno + bypass: registry unreachable → the unpinned spec STILL carries the flag", async () => {
+  test("deno + bypass: registry state is irrelevant — offline and online build the SAME command", async () => {
+    // The old code had two notes (registry read vs unread); with the flag
+    // probe first, the bypass result no longer depends on the registry at
+    // all — an offline machine gets the identical argv.
     const failing = (() => Promise.reject(new Error("offline"))) as unknown as typeof fetch;
     const r = await resolvePbossInstallArgv("deno", undefined, failing, async () => true);
     expect(r.argv).toEqual([
@@ -444,7 +449,7 @@ describe("runtime-config: resolvePbossInstallArgv (the deno window)", () => {
       "--name", "pboss", "--reload", "--force", "npm:pboss/deno-entry",
     ]);
     expect(r.via).toBe("deno");
-    expect(r.note).toContain("age hold disabled");
+    expect(r.note).toContain("bypassed");
   });
 
   test("deno + explicit version + bypass: the user's pin carries the flag too", async () => {

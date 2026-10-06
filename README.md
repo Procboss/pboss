@@ -115,9 +115,12 @@ same command installs, reinstalls, and upgrades in place.
 > that hold for this install, so the
 > spec resolves the release just published (it is Deno's own escape hatch,
 > available in Deno 2.9+ — on older Deno, which has no hold, omit the
-> flag). The universal installer passes the flag automatically whenever
-> your Deno supports it, and pins the exact version it installs; to pin
-> manually, use `deno install -g -A --min-dep-age=0 --name pboss
+> flag). The universal installer and `pboss upgrade` pass the flag
+> automatically whenever your Deno supports it — the installer pins the
+> exact version it installs, while `pboss upgrade` runs the same unpinned
+> command as above; on older Deno, `pboss upgrade` pins the newest
+> resolvable version. To pin manually, use `deno install -g -A
+> --min-dep-age=0 --name pboss
 > --reload --force npm:pboss@<version>/deno-entry`.
 
 ### The Runtime Selection

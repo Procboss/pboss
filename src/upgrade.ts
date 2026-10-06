@@ -325,12 +325,14 @@ export function buildUpgradePlan(
       // version" failure), --name pins the command, and /deno-entry is the
       // published subpath (deno executes package bins as modules, so the
       // .sh wrapper cannot serve it — see src/runtime-config.ts).
-      // Version choice:
+      // Version choice (owner spec, 2026-10-06 — the upgrade command IS
+      // the install command plus --reload --force):
       //
-      //   bypass  → the local deno knows --min-dep-age, so the
-      //             flag disables the 24-hour supply-chain hold for this
-      //             resolution and the spec pins the registry's TRUE latest
-      //             (the version package.json carried into the publish).
+      //   bypass  → the UNPINNED spec `npm:pboss/deno-entry`: the local
+      //             deno knows --min-dep-age, so the flag alone disables
+      //             the 24-hour supply-chain hold and the unpinned spec
+      //             resolves the registry's TRUE latest (README parity —
+      //             no version pin, and no eligibility fetch either).
       //   pin     → the newest version Deno can resolve without the flag
       //             (deno-eligibility.ts) — older denos only.
       if (denoPin === null) {

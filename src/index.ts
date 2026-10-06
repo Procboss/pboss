@@ -2506,44 +2506,43 @@ ${colorize("Notes:", "dim")}
     }
 
     // Deno's supply-chain window (deno-eligibility.ts): versions published
-    // < 24 h ago are unresolvable by default — an unpinned spec silently
-    // falls back and exact pins error. Deno's OWN escape hatch is the
-    // --min-dep-age flag: when the local deno knows it, the
-    // upgrade installs the registry's TRUE latest (the version package.json
-    // carried into the publish) instead of waiting out the window. Only
-    // denos without the flag keep the window-aware pin below.
+    // < 24 h ago are unresolvable by default. The flag probe comes FIRST:
+    // a deno that knows --min-dep-age gets the owner's canonical command —
+    // the UNPINNED spec plus the flag (owner spec, 2026-10-06: the upgrade
+    // command is the install command plus --reload --force, exactly) —
+    // because the flag alone makes the unpinned spec resolve the
+    // registry's TRUE latest, so no version pin (and no eligibility fetch)
+    // is needed. Only denos without the flag keep the window-aware pin.
     let denoPin: DenoPin | null | undefined;
     let effectiveLatest = latest;
     if (channel === "deno") {
-      const [eligibility, minDepAge] = await Promise.all([
-        fetchDenoEligibility(),
-        probeDenoMinDepAge(),
-      ]);
+      const minDepAge = await probeDenoMinDepAge();
       if (minDepAge) {
-        // The flag disables the hold for this resolution — pin the true
-        // latest; unpinned + flag when the registry could not be read.
         effectiveLatest = latest;
         denoPin = {
-          version: eligibility?.latest ?? null,
+          version: null,
           bypass: true,
           note: `Deno's 24-hour supply-chain hold is bypassed for this upgrade (--min-dep-age=0).`,
         };
-      } else if (eligibility === null) {
-        // Registry packument unreachable — fall back to the unpinned spec;
-        // Deno's own resolution decides (never worse than pre-window).
-        denoPin = undefined;
-      } else if (eligibility.best === null) {
-        denoPin = null;
       } else {
-        effectiveLatest = eligibility.best;
-        denoPin = {
-          version: eligibility.best,
-          note:
-            eligibility.best !== eligibility.latest
-              ? `Deno's 24-hour supply-chain hold: v${eligibility.latest} becomes resolvable ` +
-                `${eligibility.holdUntil ?? "within a day"} — upgrading to v${eligibility.best} now.`
-              : undefined,
-        };
+        const eligibility = await fetchDenoEligibility();
+        if (eligibility === null) {
+          // Registry packument unreachable — fall back to the unpinned spec;
+          // Deno's own resolution decides (never worse than pre-window).
+          denoPin = undefined;
+        } else if (eligibility.best === null) {
+          denoPin = null;
+        } else {
+          effectiveLatest = eligibility.best;
+          denoPin = {
+            version: eligibility.best,
+            note:
+              eligibility.best !== eligibility.latest
+                ? `Deno's 24-hour supply-chain hold: v${eligibility.latest} becomes resolvable ` +
+                  `${eligibility.holdUntil ?? "within a day"} — upgrading to v${eligibility.best} now.`
+                : undefined,
+          };
+        }
       }
     }
     const plan = buildUpgradePlan(channel, process.platform, latest, denoPin);
@@ -2757,8 +2756,8 @@ ${colorize("Notes:", "dim")}
 
     // 2. Install/update the published package for the new runtime (spec §13).
     // Deno resolves its spec through the supply-chain window (deno-eligibility):
-    // with the local deno's own --min-dep-age escape hatch the
-    // registry's true latest installs immediately; without it, pinned to the
+    // with the local deno's own --min-dep-age escape hatch the UNPINNED canonical
+    // command installs the registry's true latest; without it, pinned to the
     // newest version Deno can actually resolve, or delivered via npm when no
     // deno-entry version is resolvable yet.
     console.log(`Installing the published pboss package for ${runtimeLabel(selected)} …`);
