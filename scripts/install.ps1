@@ -267,20 +267,57 @@ switch ($selected) {
     }
     "deno" {
         $pmChoice = "deno"
-        Write-Host "Installing the published pboss package globally (deno install -g $pkgSpec)..." -ForegroundColor Cyan
         # Deno executes package bins as modules — the .sh wrapper cannot
         # serve that path — so deno installs the published entry subpath.
-        # The spec is PINNED to the newest version Deno can resolve: its
-        # 24-hour supply-chain window rejects npm versions published within
-        # the last day (ranges silently fall back; exact pins error), so an
-        # unpinned npm:pboss would install an OLDER release.
+        #
+        # Version policy — Deno's 24-hour supply-chain window rejects npm
+        # versions published within the last day (ranges fall back
+        # silently, exact pins error), so a naive unpinned npm:pboss
+        # installs the PREVIOUS release (and before 1.6.0, one without
+        # ./deno-entry — a broken shim). Deno ships its own escape hatch:
+        # --minimum-dependency-age=0 disables the hold for this
+        # resolution. When the local deno knows the flag (probed from its
+        # own help text — never version-parsed), the spec is pinned to the
+        # registry's TRUE latest and fresh installs get the current
+        # release immediately. Older denos keep the window-aware pin.
         $denoSpec = "npm:pboss/deno-entry"
         $denoPinSet = $false
+        $denoAgeFlag = $null
+        try {
+            $denoHelp = (& deno install --help 2>&1 | Out-String)
+            if ($denoHelp -match "--min-dep-age") { $denoAgeFlag = "--minimum-dependency-age=0" }
+        } catch { $denoAgeFlag = $null }
         if ($pkgSpec -ne "pboss") {
-            # An explicit PBOSS_VERSION is the user's own pin — honored as-is.
+            # An explicit PBOSS_VERSION is the user's own pin — honored
+            # as-is (the flag keeps a freshly published pin installable).
             $denoSpec = "npm:pboss@$($pkgSpec.Split('@')[1])/deno-entry"
             $denoPinSet = $true
+            if ($denoAgeFlag) {
+                Write-Host "Installing the published pboss package globally (deno install -g $denoAgeFlag $denoSpec)..." -ForegroundColor Cyan
+            } else {
+                Write-Host "Installing the published pboss package globally (deno install -g $denoSpec)..." -ForegroundColor Cyan
+            }
+        } elseif ($denoAgeFlag) {
+            # Deno >= 2.9: the age hold is disabled for this resolution —
+            # install the registry's latest, not yesterday's fallback.
+            $denoLatest = $null
+            try {
+                $packument = Invoke-RestMethod -Uri "https://registry.npmjs.org/pboss" -TimeoutSec 15
+                $denoLatest = $packument.'dist-tags'.latest
+            } catch { $denoLatest = $null }
+            if ($denoLatest) {
+                $denoSpec = "npm:pboss@$denoLatest/deno-entry"
+                $denoPinSet = $true
+                Write-Host "Installing the published pboss package globally (deno install -g $denoAgeFlag $denoSpec)..." -ForegroundColor Cyan
+                Write-Host "Deno's 24-hour supply-chain hold is bypassed for this install — v$denoLatest is the newest release." -ForegroundColor Yellow
+            } else {
+                # Registry unreachable, but the flag still beats the silent
+                # fallback to an older version.
+                Write-Host "Installing the published pboss package globally (deno install -g $denoAgeFlag $denoSpec)..." -ForegroundColor Cyan
+                Write-Host "Could not read the registry ahead of the install — installing the unpinned spec with Deno's age hold disabled." -ForegroundColor Yellow
+            }
         } else {
+            # Older deno — the window-aware pin.
             $denoBest = $null
             $denoLatest = $null
             $denoLatestEpoch = $null
@@ -321,6 +358,7 @@ switch ($selected) {
                 }
                 Write-Host "Deno's 24-hour supply-chain protection is holding back every pboss version that supports Deno" -ForegroundColor Yellow
                 Write-Host "  (latest v$denoLatest becomes resolvable $holdText)." -ForegroundColor Yellow
+                Write-Host "  Tip: upgrade Deno (deno upgrade) — current releases install the newest pboss immediately." -ForegroundColor Yellow
                 $npmCmd = Get-Command npm -ErrorAction SilentlyContinue
                 if ($npmCmd) {
                     Write-Host "  Falling back to npm as the delivery vehicle — pboss still RUNS on Deno (the runtime selection stays deno)." -ForegroundColor Yellow
@@ -337,7 +375,11 @@ switch ($selected) {
             }
         }
         if ($pmChoice -eq "deno") {
-            & deno install -g -f -A --name pboss $denoSpec
+            if ($denoAgeFlag) {
+                & deno install -g -f -A $denoAgeFlag --name pboss $denoSpec
+            } else {
+                & deno install -g -f -A --name pboss $denoSpec
+            }
             if ($LASTEXITCODE -ne 0) { Write-Host "✗ deno install -g failed." -ForegroundColor Red; exit 1 }
             $pmBinDir = Join-Path $env:USERPROFILE ".deno\bin"
         }

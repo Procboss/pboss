@@ -16,7 +16,9 @@ import {
   parseDenoEligibility,
   fetchDenoEligibility,
   denoEntrySpec,
+  helpTextSupportsMinDepAge,
   DENO_ENTRY_MIN_VERSION,
+  DENO_MIN_DEP_AGE_FLAG,
   DENO_SUPPLY_CHAIN_WINDOW_HOURS,
   DENO_WINDOW_BUFFER_HOURS,
   comparePlainVersions,
@@ -159,5 +161,23 @@ describe("deno-eligibility: helpers", () => {
     expect(comparePlainVersions("1.10.0", "1.9.0")).toBeGreaterThan(0);
     expect(comparePlainVersions("1.6.0", "1.5.99")).toBeGreaterThan(0);
     expect(comparePlainVersions("2.0.0", "10.0.0")).toBeLessThan(0);
+  });
+
+  test("DENO_MIN_DEP_AGE_FLAG: Deno's own escape hatch, value 0 (disables)", () => {
+    // The exact spelling Deno's error hint names; verified against 2.9.7:
+    // `deno install -g -A --minimum-dependency-age=0 --name pboss
+    //  npm:pboss@1.6.1/deno-entry` installs a 6-minute-old release.
+    expect(DENO_MIN_DEP_AGE_FLAG).toBe("--minimum-dependency-age=0");
+  });
+
+  test("helpTextSupportsMinDepAge: either spelling, never a false positive", () => {
+    // Real `deno install --help` (2.9.7) prints the SHORT alias:
+    // "  --min-dep-age <VALUE>  (Unstable) The age in minutes …"
+    expect(helpTextSupportsMinDepAge("  --min-dep-age <VALUE>  (Unstable) The age in minutes")).toBe(true);
+    // Long spelling, if help ever switches to it.
+    expect(helpTextSupportsMinDepAge("  --minimum-dependency-age <VALUE>  The age")).toBe(true);
+    // Old deno (pre-2.9): neither spelling, no hold, no flag.
+    expect(helpTextSupportsMinDepAge("Install a package or script globally\n  -A, --allow-all")).toBe(false);
+    expect(helpTextSupportsMinDepAge("")).toBe(false);
   });
 });

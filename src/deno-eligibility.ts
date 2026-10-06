@@ -13,9 +13,19 @@
  * Consequence for pboss: right after we publish, every unpinned deno
  * install lands on YESTERDAY's version — and before 1.6.0 that meant a
  * broken shim (`./deno-entry` did not exist), the owner's exact
- * "Failed resolving binary export" report. Every deno install/upgrade
- * surface therefore resolves the NEWEST version Deno will actually accept
- * and PINS the spec to it, instead of guessing:
+ * "Failed resolving binary export" report.
+ *
+ * Deno ships its OWN escape hatch for the hold: the
+ * `--minimum-dependency-age` flag (alias `--min-dep-age`; value `0`
+ * disables the policy for that resolution — Deno's error hint names it
+ * explicitly). pboss's install and upgrade surfaces pass the flag whenever
+ * the local deno knows it (probed from `deno install --help`, never
+ * version-parsed: passing an unknown flag is a hard error on older
+ * denos, which have no hold to bypass anyway). With the flag the spec
+ * resolves the registry's TRUE latest — the version package.json
+ * carried into the publish — instead of silently landing on the
+ * previous release. Surfaces running on older denos keep the window-
+ * aware pin below:
  *
  *   best = max semver of { v : time[v] is ≥ 25 h old  AND  v ≥ 1.6.0 }
  *
@@ -43,6 +53,20 @@ export const DENO_WINDOW_BUFFER_HOURS = 1;
 
 /** The first pboss version whose exports map defines ./deno-entry. */
 export const DENO_ENTRY_MIN_VERSION = "1.6.0";
+
+/** Deno ≥ 2.9's escape hatch for the supply-chain hold: `0` disables the
+ *  age policy for that resolution, so a spec resolves the release just
+ *  published instead of silently falling back to the previous one. */
+export const DENO_MIN_DEP_AGE_FLAG = "--minimum-dependency-age=0";
+
+/** Whether a `deno install --help` text knows the age-hold flag. Probing
+ *  the help beats version parsing: the flag ships WITH the policy, and an
+ *  unknown flag is a hard error on denos that predate both. Both spellings
+ *  are accepted — 2.9.7's help prints the short alias, the error hint
+ *  names the long form. */
+export function helpTextSupportsMinDepAge(help: string): boolean {
+  return help.includes("--min-dep-age") || help.includes("--minimum-dependency-age");
+}
 
 /** The full packument is required — the `time` map is not in /latest. */
 export const PBOSS_PACKUMENT_URL = "https://registry.npmjs.org/pboss";

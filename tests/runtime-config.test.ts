@@ -412,4 +412,74 @@ describe("runtime-config: resolvePbossInstallArgv (the deno window)", () => {
     expect(r.via).toBe("deno");
     expect(r.note).toContain("Could not read the registry");
   });
+
+  /* ── the age-hold bypass (Deno ≥ 2.9 knows --minimum-dependency-age) ─── */
+
+  test("deno + bypass: the registry's TRUE latest installs with the flag — no window pin", async () => {
+    // The owner's exact report state: 1.6.1 published 2 h ago (inside the
+    // window — unpinned would silently land on 1.5.3, a broken shim).
+    const r = await resolvePbossInstallArgv(
+      "deno", undefined,
+      serving(packument({ "1.5.3": 24 * 7, "1.6.0": 24 * 10, "1.6.1": 2 }, "1.6.1")),
+      async () => true,
+    );
+    expect(r.argv).toEqual([
+      "deno", "install", "-g", "-f", "-A",
+      "--minimum-dependency-age=0",
+      "--name", "pboss", "npm:pboss@1.6.1/deno-entry",
+    ]);
+    expect(r.via).toBe("deno");
+    expect(r.note).toContain("bypassed");
+    // The window pin is GONE — 1.6.0 must not appear.
+    expect(r.argv.at(-1)).not.toContain("1.6.0");
+  });
+
+  test("deno + bypass: registry unreachable → the unpinned spec STILL carries the flag", async () => {
+    const failing = (() => Promise.reject(new Error("offline"))) as unknown as typeof fetch;
+    const r = await resolvePbossInstallArgv("deno", undefined, failing, async () => true);
+    expect(r.argv).toEqual([
+      "deno", "install", "-g", "-f", "-A",
+      "--minimum-dependency-age=0",
+      "--name", "pboss", "npm:pboss/deno-entry",
+    ]);
+    expect(r.via).toBe("deno");
+    expect(r.note).toContain("age hold disabled");
+  });
+
+  test("deno + explicit version + bypass: the user's pin carries the flag too", async () => {
+    const counting = (() => Promise.resolve(new Response("{}", { status: 200 }))) as unknown as typeof fetch;
+    const r = await resolvePbossInstallArgv("deno", "1.6.1", counting, async () => true);
+    expect(r.argv).toEqual([
+      "deno", "install", "-g", "-f", "-A",
+      "--minimum-dependency-age=0",
+      "--name", "pboss", "npm:pboss@1.6.1/deno-entry",
+    ]);
+    expect(r.via).toBe("deno");
+    expect(r.note).toBeUndefined();
+  });
+
+  test("deno, NO bypass (old deno): the window pin survives unchanged", async () => {
+    // Same fresh-latest fixture as the bypass test, but the prober says
+    // the local deno has no flag — the newest RESOLVABLE version pins.
+    const r = await resolvePbossInstallArgv(
+      "deno", undefined,
+      serving(packument({ "1.5.3": 24 * 7, "1.6.0": 24 * 10, "1.6.1": 2 }, "1.6.1")),
+      async () => false,
+    );
+    expect(r.argv.at(-1)).toBe("npm:pboss@1.6.0/deno-entry");
+    expect(r.argv).not.toContain("--minimum-dependency-age=0");
+    expect(r.note).toContain("supply-chain hold");
+  });
+
+  test("pbossInstallArgv: bypass only ever touches the deno form", () => {
+    expect(pbossInstallArgv("node", undefined, true)).toEqual(["npm", "install", "-g", "pboss@latest"]);
+    expect(pbossInstallArgv("bun", undefined, true)).toEqual(["bun", "add", "-g", "pboss@latest"]);
+    expect(pbossInstallArgv("deno")).toEqual([
+      "deno", "install", "-g", "-f", "-A", "--name", "pboss", "npm:pboss/deno-entry",
+    ]);
+    expect(pbossInstallArgv("deno", "1.6.1", true)).toEqual([
+      "deno", "install", "-g", "-f", "-A", "--minimum-dependency-age=0",
+      "--name", "pboss", "npm:pboss@1.6.1/deno-entry",
+    ]);
+  });
 });

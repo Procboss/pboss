@@ -29,6 +29,7 @@ import { join, dirname } from "path";
 import { fileURLToPath } from "node:url";
 import { PBOSS_HOME } from "./constants";
 import { ignore } from "./error-handling";
+import { DENO_MIN_DEP_AGE_FLAG, helpTextSupportsMinDepAge } from "./deno-eligibility";
 import { getRuntime } from "./runtime";
 const R = getRuntime();
 
@@ -276,10 +277,14 @@ export function buildUpgradePlan(
       // -f replaces the existing global install (deno refuses otherwise);
       // --name pins the command; /deno-entry is the published subpath
       // (deno executes package bins as modules, so the .sh wrapper cannot
-      // serve it — see src/runtime-config.ts). The version is PINNED to
-      // the newest one Deno can resolve — its 24-hour supply-chain window
-      // rejects fresher versions outright, and an unpinned spec silently
-      // downgrades to an older release instead (deno-eligibility.ts).
+      // serve it — see src/runtime-config.ts). Version choice:
+      //
+      //   bypass  → the local deno knows --minimum-dependency-age, so the
+      //             flag disables the 24-hour supply-chain hold for this
+      //             resolution and the spec pins the registry's TRUE latest
+      //             (the version package.json carried into the publish).
+      //   pin     → the newest version Deno can resolve without the flag
+      //             (deno-eligibility.ts) — older denos only.
       if (denoPin === null) {
         return {
           channel,
@@ -292,24 +297,23 @@ export function buildUpgradePlan(
             "Re-run `pboss upgrade` after that window passes.",
         };
       }
-      const spec = denoPin ? `npm:pboss@${denoPin.version}/deno-entry` : "npm:pboss/deno-entry";
+      const spec = denoPin?.version
+        ? `npm:pboss@${denoPin.version}/deno-entry`
+        : "npm:pboss/deno-entry";
+      const command = ["deno", "install", "-g", "-f", "-A"];
+      if (denoPin?.bypass) command.push(DENO_MIN_DEP_AGE_FLAG);
+      command.push("--name", "pboss", spec);
       return {
         channel,
         label: "deno (global)",
-        command: [
-          "deno",
-          "install",
-          "-g",
-          "-f",
-          "-A",
-          "--name",
-          "pboss",
-          spec,
-        ],
+        command,
         manual: false,
         note:
           denoPin?.note ??
-          "Deno re-links the global command to the new release in place.",
+          (denoPin?.bypass
+            ? "Deno re-links the global command in place (the supply-chain age " +
+              "hold is bypassed for this explicitly chosen package)."
+            : "Deno re-links the global command to the new release in place."),
       };
     }
     case "brew":
@@ -440,18 +444,49 @@ export function isSafeVersion(v: string | undefined | null): v is string {
 }
 
 /**
- * The deno channel's window-aware pin, resolved by the caller (index.ts)
- * via fetchDenoEligibility BEFORE the plan is built.
+ * The deno channel's version choice, resolved by the caller (index.ts)
+ * via fetchDenoEligibility + probeDenoMinDepAge BEFORE the plan is built.
  *
- *   { version } → command pins npm:pboss@<version>/deno-entry (the newest
- *                 version Deno can resolve; note explains any hold)
- *   null        → no deno-resolvable version exports ./deno-entry yet —
- *                 manual plan, the note says when the window passes
- *   undefined   → unpinned spec (legacy/tests; callers should resolve)
+ *   { version, bypass } → bypass: install the registry's TRUE latest with
+ *                         --minimum-dependency-age=0 (the hold disabled);
+ *                         version may be null when the registry could not
+ *                         be read — the unpinned spec + the flag still
+ *                         resolves latest instead of falling back
+ *   { version }          → the newest version Deno can resolve; note
+ *                         explains any hold (older denos)
+ *   null                → no deno-resolvable version exports ./deno-entry
+ *                         yet AND no bypass — manual plan, the note says
+ *                         when the window passes
  */
 export interface DenoPin {
-  version: string;
+  /** The version to pin (null: the unpinned npm:pboss spec). */
+  version: string | null;
+  /** Local deno knows --minimum-dependency-age: disable the age hold. */
+  bypass?: boolean;
   note?: string;
+}
+
+/**
+ * Whether the local deno knows the supply-chain hold's escape hatch —
+ * probed from `deno install --help`, never version-parsed (an unknown
+ * flag is a hard error on older denos, which have no hold to bypass).
+ * Runs through the runtime adapter's ASYNC capture(): the deno adapter
+ * has no synchronous spawn (spawnSync there is a hard throw), and pboss
+ * itself usually runs under the very deno being probed. `spawner` is
+ * injectable for tests; a missing deno is simply "no flag".
+ */
+export async function probeDenoMinDepAge(
+  spawner: (cmd: string[]) => Promise<{ stdout: string; stderr: string; exitCode: number | null }> = (cmd) =>
+    R.process.capture(cmd),
+  denoBin: string = "deno",
+): Promise<boolean> {
+  try {
+    const r = await spawner([denoBin, "install", "--help"]);
+    if (r.exitCode !== null && r.exitCode !== 0) return false;
+    return helpTextSupportsMinDepAge(`${r.stdout}\n${r.stderr}`);
+  } catch {
+    return false;
+  }
 }
 
 /**

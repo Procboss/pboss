@@ -84,6 +84,7 @@ import {
   buildUpgradePlan,
   compareVersions,
   fetchLatestVersion,
+  probeDenoMinDepAge,
   runUpgradePlan,
   verifyInstalledVersion,
   writeChannelStamp,
@@ -2354,16 +2355,29 @@ ${colorize("Notes:", "dim")}
     }
 
     // Deno's supply-chain window (deno-eligibility.ts): versions published
-    // < 24 h ago are unresolvable — the registry's latest may not be
-    // installable for another day. The deno channel therefore pins to the
-    // newest version Deno can actually resolve, and the comparison target
-    // becomes that version (not latest), so the upgrade neither announces
-    // nor attempts an install Deno would refuse.
+    // < 24 h ago are unresolvable by default — an unpinned spec silently
+    // falls back and exact pins error. Deno's OWN escape hatch is the
+    // --minimum-dependency-age flag: when the local deno knows it, the
+    // upgrade installs the registry's TRUE latest (the version package.json
+    // carried into the publish) instead of waiting out the window. Only
+    // denos without the flag keep the window-aware pin below.
     let denoPin: DenoPin | null | undefined;
     let effectiveLatest = latest;
     if (channel === "deno") {
-      const eligibility = await fetchDenoEligibility();
-      if (eligibility === null) {
+      const [eligibility, minDepAge] = await Promise.all([
+        fetchDenoEligibility(),
+        probeDenoMinDepAge(),
+      ]);
+      if (minDepAge) {
+        // The flag disables the hold for this resolution — pin the true
+        // latest; unpinned + flag when the registry could not be read.
+        effectiveLatest = latest;
+        denoPin = {
+          version: eligibility?.latest ?? null,
+          bypass: true,
+          note: `Deno's 24-hour supply-chain hold is bypassed for this upgrade (--minimum-dependency-age=0).`,
+        };
+      } else if (eligibility === null) {
         // Registry packument unreachable — fall back to the unpinned spec;
         // Deno's own resolution decides (never worse than pre-window).
         denoPin = undefined;
@@ -2589,10 +2603,17 @@ ${colorize("Notes:", "dim")}
 
     // 2. Install/update the published package for the new runtime (spec §13).
     // Deno resolves its spec through the supply-chain window (deno-eligibility):
-    // pinned to the newest version Deno can actually resolve, or delivered
-    // via npm when no deno-entry version is resolvable yet.
+    // with the local deno's own --minimum-dependency-age escape hatch the
+    // registry's true latest installs immediately; without it, pinned to the
+    // newest version Deno can actually resolve, or delivered via npm when no
+    // deno-entry version is resolvable yet.
     console.log(`Installing the published pboss package for ${runtimeLabel(selected)} …`);
-    const installPlan = await resolvePbossInstallArgv(selected);
+    const installPlan = await resolvePbossInstallArgv(
+      selected,
+      undefined,
+      fetch,
+      () => probeDenoMinDepAge(),
+    );
     if (installPlan.note) console.log(colorize(`  ${installPlan.note}`, "cyan"));
     if (installPlan.via === "npm" && !R.misc.which("npm")) {
       console.error(

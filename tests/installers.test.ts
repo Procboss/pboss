@@ -98,6 +98,25 @@ fi
 exit 0`;
 }
 
+/** A deno stub that ALSO knows the supply-chain hold's escape hatch — its
+ *  `install --help` prints the --min-dep-age line exactly like Deno ≥ 2.9.
+ *  This is what flips the installer into the bypass path: the spec pins
+ *  the registry's TRUE latest and the command carries the flag. */
+function minDepAgeDenoStub(): string {
+  return `if [ "$1" = "install" ] && [ "$2" = "--help" ]; then
+  echo "  --min-dep-age <VALUE>  (Unstable) The age in minutes"
+  exit 0
+fi
+if [ "$1" = "install" ] || [ "$1" = "add" ]; then
+  ${LOG}
+  d=$(dirname "$0")
+  mkdir -p "$d"
+  printf '%s\\n' '#!/bin/sh' 'echo "pboss $*" >> "\${STUB_LOG:-/dev/null}"' 'echo "pboss v9.9.9"' > "$d/pboss"
+  chmod +x "$d/pboss"
+fi
+exit 0`;
+}
+
 /** A bun stub that mirrors real Bun >= 1.4: it refuses to install when its
  * global state holds a nameless ("") dependency entry — the exact poison a
  * `bun add -g .` inside a package directory leaves behind. */
@@ -618,6 +637,81 @@ describe("installers: sims — the Deno supply-chain window", () => {
     expect(ps1).toContain("-25).ToUnixTimeSeconds()");
     expect(ps1).toContain('[version]"1.6.0"');
   });
+
+  test("source pins: the age-hold bypass — probe + flag, in both installers", () => {
+    // The probe (never version-parsed — an unknown flag hard-errors on
+    // older denos) and Deno's own escape hatch, value 0.
+    expect(sh).toContain("deno_supports_min_dep_age");
+    expect(sh).toContain("--minimum-dependency-age=0");
+    expect(sh).toContain("'--min-dep-age'");
+    expect(ps1).toContain('-match "--min-dep-age"');
+    expect(ps1).toContain('"--minimum-dependency-age=0"');
+  });
+
+  test(
+    "--runtime=deno on a flag-aware deno: the TRUE latest installs with the bypass flag",
+    () => {
+      if (!POSIX) return;
+      const home = mkdtempSync(join(tmpdir(), "pboss-inst-bp1-"));
+      const fixture = join(home, "packument.json");
+      // The owner's exact report state: 1.6.1 published 2 h ago (inside the
+      // window — unpinned would silently land on 1.5.3, a broken shim).
+      writeFileSync(fixture, packumentFixture({ "1.5.3": 24 * 7, "1.6.0": 24 * 10, "1.6.1": 2 }, "1.6.1"));
+      try {
+        const r = runInstaller(["--runtime=deno"], {
+          runtimes: ["deno", "node"],
+          customStubs: { deno: minDepAgeDenoStub(), curl: PACKUMENT_CURL },
+          extraEnv: { STUB_PACKUMENT: fixture },
+        });
+        expect(r.code).toBe(0);
+        expect(r.log).toContain(
+          "deno install -g -f -A --minimum-dependency-age=0 --name pboss npm:pboss@1.6.1/deno-entry",
+        );
+        // The window pin is GONE — no 1.6.0, no npm delivery.
+        expect(r.log).not.toContain("npm:pboss@1.6.0");
+        expect(r.log).not.toContain("npm install -g");
+        expect(r.out).toContain("bypassed for this install");
+        expect(r.log).toContain("pboss --runtime=deno --version");
+      } finally {
+        rmSync(home, { recursive: true, force: true });
+      }
+    },
+    30000,
+  );
+
+  test(
+    "--runtime=deno on a flag-aware deno, registry unreachable: unpinned spec STILL carries the flag",
+    () => {
+      if (!POSIX) return;
+      const r = runInstaller(["--runtime=deno"], {
+        runtimes: ["deno", "node"],
+        customStubs: { deno: minDepAgeDenoStub() },
+      });
+      expect(r.code).toBe(0);
+      expect(r.log).toContain(
+        "deno install -g -f -A --minimum-dependency-age=0 --name pboss npm:pboss/deno-entry",
+      );
+      expect(r.out).toContain("age hold disabled");
+    },
+    30000,
+  );
+
+  test(
+    "PBOSS_VERSION on a flag-aware deno: the user's own pin + the flag",
+    () => {
+      if (!POSIX) return;
+      const r = runInstaller(["--runtime=deno"], {
+        runtimes: ["deno", "node"],
+        customStubs: { deno: minDepAgeDenoStub() },
+        extraEnv: { PBOSS_VERSION: "1.6.1" },
+      });
+      expect(r.code).toBe(0);
+      expect(r.log).toContain(
+        "deno install -g -f -A --minimum-dependency-age=0 --name pboss npm:pboss@1.6.1/deno-entry",
+      );
+    },
+    30000,
+  );
 
   test(
     "--runtime=deno: the spec pins the newest deno-resolvable version (a fresh latest is held back)",

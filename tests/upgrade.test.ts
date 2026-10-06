@@ -10,6 +10,7 @@ import {
   buildUpgradePlan,
   compareVersions,
   fetchLatestVersion,
+  probeDenoMinDepAge,
   runUpgradePlan,
   healWindowsShims,
   isSafeVersion,
@@ -669,5 +670,72 @@ describe("buildUpgradePlan: the deno channel's supply-chain window", () => {
     expect(plan.command).toEqual([]);
     expect(plan.note).toContain("24-hour supply-chain");
     expect(plan.note).toContain("Re-run `pboss upgrade`");
+  });
+
+  /* ── the age-hold bypass (Deno ≥ 2.9 knows --minimum-dependency-age) ─── */
+
+  test("bypass + version: the registry's TRUE latest, flag in the command", () => {
+    // The owner's report state: 1.6.1 published hours ago (inside the
+    // window), local deno knows the flag → upgrade goes straight to it.
+    const plan = buildUpgradePlan("deno", "linux", "1.6.1", { version: "1.6.1", bypass: true });
+    expect(plan.command).toEqual([
+      "deno", "install", "-g", "-f", "-A",
+      "--minimum-dependency-age=0",
+      "--name", "pboss", "npm:pboss@1.6.1/deno-entry",
+    ]);
+    expect(plan.manual).toBe(false);
+    expect(plan.note).toContain("bypassed");
+  });
+
+  test("bypass + null version (registry unreadable): the unpinned spec STILL carries the flag", () => {
+    const plan = buildUpgradePlan("deno", "linux", "1.6.1", { version: null, bypass: true });
+    expect(plan.command).toEqual([
+      "deno", "install", "-g", "-f", "-A",
+      "--minimum-dependency-age=0",
+      "--name", "pboss", "npm:pboss/deno-entry",
+    ]);
+    expect(plan.manual).toBe(false);
+  });
+
+  test("a pin WITHOUT bypass never carries the flag (old denos must not see it)", () => {
+    const plan = buildUpgradePlan("deno", "linux", "1.6.1", { version: "1.6.0", note: "held" });
+    expect(plan.command).not.toContain("--minimum-dependency-age=0");
+    expect(plan.note).toBe("held");
+  });
+});
+
+describe("upgrade: probeDenoMinDepAge (the flag probe)", () => {
+  /** A spawner stub: resolves with the given help output (exit 0). */
+  const helps = (text: string) => async () => ({
+    stdout: text,
+    stderr: "",
+    exitCode: 0 as number | null,
+  });
+
+  test("a deno whose help lists the alias → supported", async () => {
+    // The real 2.9.7 help line.
+    expect(await probeDenoMinDepAge(helps("  --min-dep-age <VALUE>  (Unstable) The age"))).toBe(true);
+  });
+
+  test("an older deno's help (no flag) → NOT supported", async () => {
+    expect(await probeDenoMinDepAge(helps("Install a script globally\n  -A, --allow-all"))).toBe(false);
+  });
+
+  test("the probe reads stderr too (help prints there on some denos)", async () => {
+    expect(
+      await probeDenoMinDepAge(async () => ({ stdout: "", stderr: "  --min-dep-age <VALUE>", exitCode: 0 })),
+    ).toBe(true);
+  });
+
+  test("a failing/missing deno is simply no-flag — never a throw", async () => {
+    expect(await probeDenoMinDepAge(async () => ({ stdout: "", stderr: "deno: not found", exitCode: 127 }))).toBe(false);
+    const throwing = () => { throw new Error("spawn failed"); };
+    expect(await probeDenoMinDepAge(throwing as never)).toBe(false);
+  });
+
+  test("the probe asks `deno install --help` — nothing else", async () => {
+    const seen: string[][] = [];
+    await probeDenoMinDepAge(async (cmd) => { seen.push(cmd); return { stdout: "", stderr: "", exitCode: 0 }; });
+    expect(seen).toEqual([["deno", "install", "--help"]]);
   });
 });

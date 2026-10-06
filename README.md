@@ -94,7 +94,7 @@ bun install -g pboss
 **Deno**
 
 ```bash
-deno install -g -A --name pboss npm:pboss/deno-entry
+deno install -g -A --minimum-dependency-age=0 --name pboss npm:pboss/deno-entry
 ```
 
 Deno is deny-by-default — `-A` grants what a process manager needs. The
@@ -105,12 +105,14 @@ explicit equivalent (`--allow-run --allow-read --allow-write --allow-net
 > **Deno's 24-hour supply-chain hold:** Deno refuses to resolve npm versions
 > published within the last day — an unpinned spec silently installs the
 > PREVIOUS release (and before 1.6.0, one without the Deno entrypoint: a
-> `Failed resolving binary export` error). The universal installer handles
-> this automatically (it pins the newest version Deno can resolve, and
-> falls back to npm as the delivery vehicle during the one-time transition
-> while still executing on Deno). With the manual command, pin explicitly
-> when a release is fresh:
-> `deno install -g -A --name pboss npm:pboss@<version>/deno-entry`.
+> `Failed resolving binary export` error). The `--minimum-dependency-age=0`
+> flag in the command above disables that hold for this install, so the
+> spec resolves the release just published (it is Deno's own escape hatch,
+> available in Deno 2.9+ — on older Deno, which has no hold, omit the
+> flag). The universal installer passes the flag automatically whenever
+> your Deno supports it, and pins the exact version it installs; to pin
+> manually, use `deno install -g -A --minimum-dependency-age=0 --name pboss
+> npm:pboss@<version>/deno-entry`.
 
 ### The Runtime Selection
 

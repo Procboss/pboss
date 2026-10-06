@@ -35,7 +35,7 @@ import { homedir } from "node:os";
 import { randomUUID } from "node:crypto";
 import { PBOSS_HOME } from "./constants";
 import { getRuntime } from "./runtime";
-import { fetchDenoEligibility } from "./deno-eligibility";
+import { DENO_MIN_DEP_AGE_FLAG, fetchDenoEligibility } from "./deno-eligibility";
 
 const R = getRuntime();
 
@@ -338,8 +338,10 @@ async function defaultInstallSpawn(cmd: string[]): Promise<number> {
 
 /* ── installing pboss FOR a runtime (spec §4: the published package) ─────── */
 
-/** The command that installs/updates the published package for a runtime. */
-export function pbossInstallArgv(runtime: RuntimeChoice, version?: string): string[] {
+/** The command that installs/updates the published package for a runtime.
+ *  `bypass` (deno only): pass Deno's own age-hold escape hatch so the spec
+ *  resolves the release just published instead of falling back. */
+export function pbossInstallArgv(runtime: RuntimeChoice, version?: string, bypass = false): string[] {
   const spec = version ? `pboss@${version}` : "pboss@latest";
   switch (runtime) {
     case "node":
@@ -352,16 +354,10 @@ export function pbossInstallArgv(runtime: RuntimeChoice, version?: string): stri
       // (verified: `deno install -g -f -A --name pboss npm:pboss/deno-entry`
       // runs dist/cli.deno.js with args forwarded). -f replaces an existing
       // install (deno refuses to overwrite otherwise).
-      return [
-        "deno",
-        "install",
-        "-g",
-        "-f",
-        "-A",
-        "--name",
-        "pboss",
-        `npm:pboss${version ? `@${version}` : ""}/deno-entry`,
-      ];
+      const argv = ["deno", "install", "-g", "-f", "-A"];
+      if (bypass) argv.push(DENO_MIN_DEP_AGE_FLAG);
+      argv.push("--name", "pboss", `npm:pboss${version ? `@${version}` : ""}/deno-entry`);
+      return argv;
   }
 }
 
@@ -382,23 +378,54 @@ export interface PbossInstallCommand {
 /**
  * Resolve the install command for a runtime, honoring Deno's npm
  * supply-chain window (versions published < 24 h ago are unresolvable —
- * see deno-eligibility.ts). For deno WITHOUT an explicit version this
- * pins the spec to the newest deno-resolvable version instead of letting
- * the unpinned specifier silently land on an older one; when no
- * deno-entry-capable version is resolvable yet it falls back to npm as
- * the delivery vehicle (mirroring the bun branch's npm fallback) and
- * says so.
+ * see deno-eligibility.ts). When the local deno knows Deno's own escape
+ * hatch (`--minimum-dependency-age=0`, probed — never version-guessed),
+ * the command carries the flag and pins the registry's TRUE latest: the
+ * version package.json carried into the publish installs immediately.
+ * Older denos keep the window-aware pin; when no deno-entry-capable
+ * version is resolvable yet, npm delivers the package (the bin wrapper
+ * dispatches to deno at run time) and the command says so.
+ *
+ * `minDepAgeProber` defaults to "no flag" — deterministic for tests; the
+ * live caller (the runtime-change flow) passes the real probe so the
+ * bypass engages exactly when the local deno supports it.
  */
 export async function resolvePbossInstallArgv(
   runtime: RuntimeChoice,
   version?: string,
   fetcher: typeof fetch = fetch,
+  minDepAgeProber: () => Promise<boolean> = async () => false,
 ): Promise<PbossInstallCommand> {
-  if (runtime !== "deno" || version) {
+  if (runtime !== "deno") {
     return { argv: pbossInstallArgv(runtime, version), via: runtime };
   }
 
-  const eligibility = await fetchDenoEligibility(fetcher);
+  // An explicit version is the user's own pin — honored as-is, with the
+  // flag when available (a freshly published pin would otherwise error).
+  if (version) {
+    const bypass = await minDepAgeProber();
+    return { argv: pbossInstallArgv("deno", version, bypass), via: "deno" };
+  }
+
+  const [eligibility, bypass] = await Promise.all([
+    fetchDenoEligibility(fetcher),
+    minDepAgeProber(),
+  ]);
+
+  if (bypass) {
+    // Deno ≥ 2.9: the flag disables the hold for this resolution —
+    // install the registry's true latest; unpinned + flag when the
+    // registry could not be read.
+    return {
+      argv: pbossInstallArgv("deno", eligibility?.latest ?? undefined, true),
+      via: "deno",
+      note:
+        eligibility?.latest === undefined
+          ? "Could not read the registry ahead of the install — installing the unpinned spec with Deno's age hold disabled."
+          : "Deno's 24-hour supply-chain hold is bypassed for this install (--minimum-dependency-age=0).",
+    };
+  }
+
   if (eligibility === null) {
     // Registry unreachable: degrade to the unpinned spec and let Deno's own
     // resolution decide (safe once 1.6.0 is outside the window).

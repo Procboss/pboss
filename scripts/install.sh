@@ -367,6 +367,16 @@ deno_hold_text() {
   printf '%s' "within the next 24 hours"
 }
 
+# Whether this deno knows the supply-chain hold's OWN escape hatch: the
+# --minimum-dependency-age flag (alias --min-dep-age; value 0 disables the
+# age policy for that resolution — Deno's error hint names it). Probing the
+# help text beats version parsing: the flag ships WITH the policy, and an
+# unknown flag is a hard error on older denos — which have no hold to
+# bypass anyway. Usage: deno_supports_min_dep_age <deno-binary>.
+deno_supports_min_dep_age() {
+  "$1" install --help 2>&1 | grep -q -- '--min-dep-age'
+}
+
 # ── 4. Install the PUBLISHED pboss package through the runtime's own ─────
 #    package ecosystem (spec: never a clone, never a source build).
 PKG_SPEC="pboss"
@@ -426,17 +436,46 @@ Bun refuses every later global install until it is healed.)"
     PM_CHOICE="deno"
     # Deno executes package bins as modules — the .sh wrapper cannot serve
     # that path — so deno installs the published entry subpath directly
-    # (same file the wrapper dispatches to: dist/cli.deno.js). The spec is
-    # PINNED to the newest version Deno can resolve: its 24-hour
-    # supply-chain window rejects fresher releases (see 3d above); the
-    # message below echoes the resolved spec so the operator sees exactly
-    # what is being installed.
+    # (same file the wrapper dispatches to: dist/cli.deno.js).
+    #
+    # Version policy — Deno's 24-hour supply-chain window rejects npm
+    # versions published within the last day (ranges fall back silently,
+    # exact pins error), so a naive `npm:pboss/deno-entry` installs the
+    # PREVIOUS release (and before 1.6.0, one without ./deno-entry — a
+    # broken shim). Deno ships its own escape hatch: --minimum-dependency-age=0
+    # disables the hold for this resolution. When the local deno knows the
+    # flag (deno_supports_min_dep_age above) the spec is pinned to the
+    # registry's TRUE latest — the version package.json carried into the
+    # publish — and fresh installs get the current release immediately.
+    # Older denos keep the window-aware pin (see 3d above); the message
+    # echoes the resolved spec so the operator sees exactly what runs.
     DENO_SPEC=""
+    DENO_AGE_FLAG=""
+    if deno_supports_min_dep_age "$RUNTIME_BIN"; then
+      DENO_AGE_FLAG="--minimum-dependency-age=0"
+    fi
     if [ "${PKG_SPEC}" != "pboss" ]; then
-      # An explicit PBOSS_VERSION is the user's own pin — honored as-is.
+      # An explicit PBOSS_VERSION is the user's own pin — honored as-is
+      # (the flag keeps a freshly published pin installable too).
       DENO_SPEC="npm:pboss@${PKG_SPEC#pboss@}/deno-entry"
-      printf '%s\n' "${CYAN}Installing the published pboss package globally (deno install -g ${DENO_SPEC})…${RESET}"
+      printf '%s\n' "${CYAN}Installing the published pboss package globally (deno install -g ${DENO_AGE_FLAG:+$DENO_AGE_FLAG }${DENO_SPEC})…${RESET}"
+    elif [ -n "$DENO_AGE_FLAG" ]; then
+      # Deno ≥ 2.9: the age hold is disabled for this resolution — install
+      # the registry's latest, not yesterday's fallback.
+      deno_resolve_window
+      if [ -n "$DENO_LATEST" ]; then
+        DENO_SPEC="npm:pboss@${DENO_LATEST}/deno-entry"
+        printf '%s\n' "${CYAN}Installing the published pboss package globally (deno install -g ${DENO_AGE_FLAG} ${DENO_SPEC})…${RESET}"
+        printf '%s\n' "${YELLOW}ℹ Deno's 24-hour supply-chain hold is bypassed for this install — v${DENO_LATEST} is the newest release.${RESET}"
+      else
+        # Registry unreachable, but the flag still beats the silent
+        # fallback to an older version.
+        DENO_SPEC="npm:pboss/deno-entry"
+        printf '%s\n' "${CYAN}Installing the published pboss package globally (deno install -g ${DENO_AGE_FLAG} ${DENO_SPEC})…${RESET}"
+        printf '%s\n' "${YELLOW}⚠ Could not read the registry ahead of the install — installing the unpinned spec with Deno's age hold disabled.${RESET}"
+      fi
     else
+      # Older deno — the window-aware pin (spec §3d).
       deno_resolve_window
       if [ -n "$DENO_BEST" ]; then
         DENO_SPEC="npm:pboss@${DENO_BEST}/deno-entry"
@@ -450,6 +489,7 @@ Bun refuses every later global install until it is healed.)"
         # the wrapper dispatches to Deno at run time; the selection stays deno.
         printf '%s\n' "${YELLOW}⚠ Deno's 24-hour supply-chain protection is holding back every pboss version that supports Deno${RESET}"
         printf '%s\n' "${YELLOW}  (latest v${DENO_LATEST:-?} becomes resolvable $(deno_hold_text)).${RESET}"
+        printf '%s\n' "${YELLOW}  Tip: upgrade Deno (deno upgrade) — current releases install the newest pboss immediately.${RESET}"
         if command -v npm >/dev/null 2>&1; then
           printf '%s\n' "${YELLOW}  Falling back to npm as the delivery vehicle — pboss still RUNS on Deno (the runtime selection stays deno).${RESET}"
           install_via_npm
@@ -465,7 +505,11 @@ Bun refuses every later global install until it is healed.)"
       fi
     fi
     if [ -n "$DENO_SPEC" ]; then
-      "$RUNTIME_BIN" install -g -f -A --name pboss "$DENO_SPEC" || die "deno install -g failed."
+      if [ -n "$DENO_AGE_FLAG" ]; then
+        "$RUNTIME_BIN" install -g -f -A "$DENO_AGE_FLAG" --name pboss "$DENO_SPEC" || die "deno install -g failed."
+      else
+        "$RUNTIME_BIN" install -g -f -A --name pboss "$DENO_SPEC" || die "deno install -g failed."
+      fi
       PM_DIR="$INVOKE_HOME/.deno/bin"
     fi
     ;;
