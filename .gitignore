@@ -39,3 +39,4 @@ _release.yml
 pboss_1.1.0_amd64.snap
 *.snap
 deno.lock
+deno.lock
