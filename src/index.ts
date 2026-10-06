@@ -32,6 +32,7 @@ import {
   RUNTIME_FILE,
   type RuntimeChoice,
 } from "./runtime-config";
+import { launcherRuntimeFromEnv } from "./runtime-overrides";
 
 const R = getRuntime();
 import readline from "node:readline";
@@ -591,6 +592,13 @@ export class PBossCLI {
   // -------------------------------------------------------------------------
 
   async cmdStart(args: string[]) {
+    // Issue #40: the launcher's runtime hand-off. `pboss start --runtime=bun
+    // ./x.ts` — the wrapper consumed the flag (the JS level never parses
+    // it) and exported PBOSS_LAUNCHER_RUNTIME; the start paths below attach
+    // it to the wire messages so the daemon pins the process/ecosystem in
+    // ~/.pboss/runtime-overrides. An override NEVER writes .runtime.
+    const launcherRuntime = launcherRuntimeFromEnv(process.env);
+
     // Issue #28: `pboss start --config <file>` (also `--config=<file>`) must
     // load that file as the ecosystem config. Previously the flag was not
     // recognized at all: it fell through as an "unknown flag", its VALUE was
@@ -678,6 +686,12 @@ export class PBossCLI {
         if (raw) {
           config.apps = config.apps.map((app) => ({ ...app, raw: true }));
         }
+        // Issue #40: the launcher override applies to the WHOLE ecosystem —
+        // every process inside the file — and is pinned under the config's
+        // absolute path (loadEcosystemConfig stamped config.configPath).
+        if (launcherRuntime) {
+          config.runtime = launcherRuntime;
+        }
         // Issue #28: `noDaemon: true` in the config file must switch to
         // foreground mode exactly like the `--no-daemon` CLI flag. It is
         // honored at the top level AND per-app (the config reference lists
@@ -715,7 +729,11 @@ export class PBossCLI {
         const scriptAbs = resolve(target);
         if (!(await R.filesystem.exists(scriptAbs))) {
           try {
-            const states = await this.pboss.startTarget(target);
+            // Issue #40: a resume with --runtime RE-PINs what it touches.
+            const states = await this.pboss.startTarget(
+              target,
+              launcherRuntime ? { runtime: launcherRuntime } : {}
+            );
             this.printNamespaceSummary("Started", states, target);
             printProcessTable(states);
 
@@ -745,6 +763,13 @@ export class PBossCLI {
         if (!opts.script) {
           console.error(colorize("Error: no script specified", "red"));
           process.exit(1);
+        }
+
+        // Issue #40: pin this process under the launcher's runtime — the
+        // daemon writes the store entry (process base name) and every
+        // future spawn of the name resolves it first.
+        if (launcherRuntime) {
+          opts.runtime = launcherRuntime;
         }
 
         opts.script = resolve(opts.script);
@@ -3158,7 +3183,12 @@ ${colorize("Notes:", "dim")}
                                   script before the CLI runs): run one
                                   invocation under a runtime; with no
                                   ~/.pboss/.runtime yet it initializes
-                                  the persistent selection
+                                  the persistent selection. On a start it
+                                  also PINS that process (or the whole
+                                  ecosystem) to the runtime — restarts,
+                                  reloads and reboots keep using it, while
+                                  the default in ~/.pboss/.runtime is
+                                  never changed
     ping                          Check if daemon is alive
     kill                          Kill the daemon and all processes
     sendSignal <sig> <id|name>    Send OS signal to process

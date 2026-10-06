@@ -35,6 +35,13 @@
    commandRuntime,
    isJsTsFile,
  } from "./install-mode";
+ import {
+   effectiveProcessRuntime,
+   baseProcessName,
+   writeRuntimeOverride,
+   removeRuntimeOverrides,
+ } from "./runtime-overrides";
+ import type { RuntimeChoice } from "./runtime-config";
  import { ignore } from "./error-handling";
  import { EventEmitter } from "events";
  import {
@@ -644,6 +651,30 @@ const R = getRuntime();
       throw new Error(`Script not found: ${options.script}`);
     }
 
+    // Issue #40: a start carrying a launcher runtime override
+    // (`pboss start --runtime=bun ./script.ts` — the wrapper handed the
+    // value down through PBOSS_LAUNCHER_RUNTIME) PINS the process, by the
+    // name it will run under, in ~/.pboss/runtime-overrides. The pin — not
+    // ~/.pboss/.runtime, which is never touched by an override — is what
+    // every future spawn (restart/reload/reboot/resurrect) resolves first.
+    // Best-effort: a store that cannot be written must not fail the start;
+    // the runtime still applies to THIS invocation through the spawn chain
+    // (options.runtime feeds usesNodeRuntime, and the container's config
+    // resolves the pin by name).
+    if (options.runtime) {
+      const pinName =
+        options.name || path.basename(options.script).replace(/\.\w+$/, "") || `app-${this.nextId}`;
+      try {
+        await writeRuntimeOverride(pinName, options.runtime);
+      } catch (err) {
+        ignore(`persist the runtime override for "${pinName}"`, err);
+        console.warn(
+          `[pboss] could not save the runtime override for "${pinName}" — ` +
+            `this start uses ${options.runtime}, later restarts may not`
+        );
+      }
+    }
+
     const existing = this.findExistingProcesses(options, options.script);
     if (existing.length > 0) {
       // node:cluster apps run as ONE wrapper container — a re-start with a
@@ -842,6 +873,17 @@ const R = getRuntime();
     }
     if (!isJsTsFile(options.script)) return false;
     try {
+      // Issue #40: mirror buildWorkerCommand's route resolution — a pinned
+      // runtime (this start's launcher override, a saved override for the
+      // name, or the ecosystem's) decides clustering exactly the way the
+      // spawn will: a bun-pinned app must NOT cluster through node:cluster.
+      // A name-less start is addressed by its script basename, matching the
+      // name startInternal derives for the pin.
+      const name =
+        options.name || path.basename(options.script).replace(/\.\w+$/, "");
+      const rt = options.runtime ??
+        (await effectiveProcessRuntime(name, options.ecosystemPath));
+      if (rt) return rt === "node";
       return commandRuntime(await resolveScriptInterpreter(options.script)) === "node";
     } catch {
       // Nothing on this machine can run the script — start() surfaces the
@@ -1038,13 +1080,32 @@ const R = getRuntime();
 
     // Issue #31: namespace delete is serialized + best-effort — every
     // member is removed even if one refuses to stop.
+    //
+    // Issue #40: deleting a process also drops its name-keyed runtime
+    // override — a later `pboss start <script>` without --runtime is a
+    // NORMAL start again (the machine default), never silently diverted
+    // by a dead process's pin. Ecosystem config keys are deliberately KEPT:
+    // the file's pin is the ecosystem's memory (`pboss restart <config>`
+    // and a re-start keep honoring it).
+    const dropOverridePins = async (victims: { name: string }[]) => {
+      const names = victims.map((c) => baseProcessName(c.name));
+      if (names.length === 0) return;
+      try {
+        await removeRuntimeOverrides(names);
+      } catch (err) {
+        ignore(`drop runtime overrides for "${target}"`, err);
+      }
+    };
+
     const group = this.resolveGroupTarget(target);
     if (group) {
-      return this.withNamespaceLock(group.ns, () =>
+      const states = await this.withNamespaceLock(group.ns, () =>
         this.stopNamespaceGroup(group.ns, group.containers, true, "delete", {
           remove: true,
         })
       );
+      await dropOverridePins(group.containers);
+      return states;
     }
     const containers = this.resolveTargetOrThrow(target, "delete");
     const states: ProcessState[] = [];
@@ -1056,6 +1117,7 @@ const R = getRuntime();
       // the container only knows about stopping, not deletion.
       this.emitProcessEvent(c, "process:delete", "user");
     }
+    await dropOverridePins(containers);
     await this.persist();
     return states;
   }
@@ -1113,6 +1175,10 @@ const R = getRuntime();
        cronRestart: options.cron,
        interpreter: options.interpreter,
        interpreterArgs: options.interpreterArgs,
+       // Issue #40: the ecosystem file this app came from — persisted in
+       // the dump so post-reboot spawns keep resolving the ecosystem's
+       // runtime override.
+       ecosystemPath: options.ecosystemPath,
        mergeLogs: options.mergeLogs ?? false,
        raw: options.raw ?? false,
        logDateFormat: options.logDateFormat,
@@ -1175,15 +1241,24 @@ const R = getRuntime();
 
     async deleteAll(): Promise<ProcessState[]> {
       const states: ProcessState[] = [];
+      const removedNames: string[] = [];
       for (const c of this.processes.values()) {
         await c.stop(true);
         states.push(c.getState());
+        removedNames.push(baseProcessName(c.name));
         this.emitProcessEvent(c, "process:delete", "user");
       }
       this.healthChecker.stopAll();
       this.cronManager.cancelAll();
       this.processes.clear();
       this.nextId = 0;
+      // Issue #40: every name-keyed runtime override goes with the fleet
+      // (ecosystem config keys stay — the files' own memory).
+      try {
+        await removeRuntimeOverrides(removedNames);
+      } catch (err) {
+        ignore("drop runtime overrides for the deleted fleet", err);
+      }
       await this.persist();
       return states;
     }
@@ -1571,6 +1646,30 @@ const R = getRuntime();
     const states: ProcessState[] = [];
     const failures: string[] = [];
 
+    // Issue #40: a start carrying a launcher runtime override
+    // (`pboss start --runtime=deno ecosystem.config.ts`) pins the WHOLE
+    // ecosystem under its ABSOLUTE config path, and every app carries that
+    // path into its persisted description — so a later `pboss restart
+    // <name>` or a post-reboot resurrect keeps resolving the ecosystem's
+    // pin for every process inside it. Never touches ~/.pboss/.runtime.
+    if (config.runtime && config.configPath) {
+      try {
+        await writeRuntimeOverride(config.configPath, config.runtime);
+      } catch (err) {
+        ignore(`persist the ecosystem runtime override for ${config.configPath}`, err);
+        console.warn(
+          `[pboss] could not save the ecosystem runtime override for ${config.configPath} — ` +
+            `this start uses ${config.runtime}, later restarts may not`
+        );
+      }
+    }
+    const ecoPath = config.configPath;
+    if (ecoPath) {
+      for (const app of config.apps) {
+        if (!app.ecosystemPath) app.ecosystemPath = ecoPath;
+      }
+    }
+
     // Issue #33: validate + plan BEFORE starting anything — cycles and
     // malformed dependsOn fail with zero processes touched.
     const units = this.dependencies.planEcosystemUnits(config);
@@ -1661,7 +1760,38 @@ const R = getRuntime();
     * The dump is re-saved so a stopped namespace resumed here survives the
     * next reboot as running (the Task-37 default-persistence contract).
     */
-   async startTarget(target: string | number): Promise<ProcessState[]> {
+   async startTarget(
+     target: string | number,
+     launcherRuntime?: RuntimeChoice
+   ): Promise<ProcessState[]> {
+     // Issue #40: resuming with an explicit `pboss start --runtime=x <name>`
+     // RE-PINS every process this resume touches (the freshest explicit
+     // choice replaces the stored pin), before anything starts — the spawn
+     // chain then resolves the updated pin. Best-effort, like every pin
+     // write.
+     if (launcherRuntime) {
+       const group0 = this.resolveGroupTarget(target);
+       const fleet0 = group0
+         ? group0.containers
+         : target === "all"
+           ? Array.from(this.processes.values())
+           : this.resolveTarget(target);
+       const names = fleet0.map((c) => baseProcessName(c.name));
+       if (names.length > 0) {
+         try {
+           for (const name of names) {
+             await writeRuntimeOverride(name, launcherRuntime);
+           }
+         } catch (err) {
+           ignore(`re-pin runtime overrides for "${target}"`, err);
+           console.warn(
+             `[pboss] could not save the runtime override for "${target}" — ` +
+               `this resume uses ${launcherRuntime}, later restarts may not`
+           );
+         }
+       }
+     }
+
      // Issue #31: namespace-group target → atomic resume under the
      // namespace lock.
      const group = this.resolveGroupTarget(target);

@@ -29,7 +29,7 @@ The full documentation lives at [docs.procboss.com](https://docs.procboss.com)
 
 ## Highlights
 
-- **First-class Bun, Node.js, and Deno** — pboss runs natively on all three. An unstated app runtime inherits the main runtime running pboss (`bun run` under Bun, `node` under Node with TypeScript through [tsx](https://github.com/privatenumber/tsx), `deno run -A` under Deno); compiled installs fall back to discovering Bun → Deno → Node.
+- **First-class Bun, Node.js, and Deno** — pboss runs natively on all three. An unstated app runtime resolves a saved `--runtime` pin first, then the `~/.pboss/.runtime` default, then inherits the main runtime running pboss (`bun run` under Bun, `node` under Node with TypeScript through [tsx](https://github.com/privatenumber/tsx), `deno run -A` under Deno); compiled installs fall back to discovering Bun → Deno → Node.
 - **Cluster mode** — N instances, per-worker env, zero-downtime rolling reloads; Node apps cluster through `node:cluster` with one shared port.
 - **Namespaces** — group processes (`--namespace my-app`) and operate on the group: `pboss restart my-app`, `pboss delete my-app` (confirmed; `--force` skips). Atomic startup with rollback ([#31](https://github.com/Procboss/pboss/issues/31)): a failed member rolls back only what that start brought up; members already running are never touched; namespace-less processes stay fully independent.
 - **Dependencies** ([#33](https://github.com/Procboss/pboss/issues/33)) — `dependsOn: ["postgres", "redis"]`: pboss resolves the graph (ProcBoss apps first, then systemd units like `postgresql.service`), starts stopped app dependencies recursively in topological order (independent branches concurrently), checks system services without ever managing them, refuses cycles upfront, rolls back only what an invocation started, and keeps boot recovery dependency-ordered. `pboss deps api` (and `--reverse`) inspects the graph; required/optional policies; failures are machine-readable on the API.
@@ -131,6 +131,14 @@ the runtime is **your** explicit, persistent choice, stored in
   is configured yet it *initializes* the persistent selection; when a
   different runtime is configured it overrides for that invocation only
   and tells you how to change it permanently.
+- **Runtime overrides** — on a start, `--runtime` also *pins* what it
+  starts: `pboss start --runtime=bun app.ts` keeps that process on Bun
+  across restarts, reloads and reboots, and
+  `pboss start --runtime=deno ecosystem.config.ts` pins every app in the
+  file — while `~/.pboss/.runtime` keeps holding the untouched default.
+  Pins live in `~/.pboss/runtime-overrides` (see the docs' Runtime
+  overrides section); deleting a process drops its pin, and re-starting
+  with another `--runtime` re-pins it.
 - **`pboss runtime`** — show the configured runtime, the executing engine,
   and how pboss was installed.
 - **`pboss runtime change`** — switch permanently: interactive, installs the

@@ -181,11 +181,17 @@ Resolution order, every `pboss` invocation:
    it, strips it from the command line the CLI receives, and (when
    `~/.pboss/.runtime` does not exist yet) writes the persistent selection.
    When a different runtime is configured it overrides for that invocation
-   only and tells you how to change it permanently.
-2. `~/.pboss/.runtime` — the persistent selection (survives upgrades and
+   only and tells you how to change it permanently. On a start it also
+   pins the process/ecosystem to the runtime — see Runtime overrides below.
+2. A saved runtime override for the invocation's target, from
+   `~/.pboss/runtime-overrides` — `pboss restart my-api` where my-api was
+   pinned to Bun dispatches under Bun (issue #40). The launcher resolves
+   the store BEFORE the default because it must know the runtime before
+   the JS entry runs; a miss simply falls through.
+3. `~/.pboss/.runtime` — the persistent selection (survives upgrades and
    reinstalls; written by `pboss --runtime=<x>`, `pboss runtime change`, the
    first-run prompt, and the installers).
-3. Interactive selection on first run (Node is the default; Enter picks it).
+4. Interactive selection on first run (Node is the default; Enter picks it).
    Non-interactive environments with no selection fail honestly with the
    `--runtime=` options — never a guess from PATH.
 
@@ -206,6 +212,36 @@ Deno's 24-hour supply-chain hold (see the Deno Global Install section); the
 universal installer passes it too, pinning the newest release, while
 `runtime change` and `upgrade` run the same unpinned command; older Denos
 pin the newest resolvable version instead.
+
+### Runtime overrides
+
+`pboss start --runtime=bun app.ts` does more than run one invocation under
+Bun — it **pins** that process to Bun, persistently, in
+`~/.pboss/runtime-overrides`. Restart it, reload it, reboot the machine:
+it keeps using Bun, while `~/.pboss/.runtime` — the default every other
+process follows — is never touched. Changing the default stays
+`pboss runtime change`.
+
+On a config file, the same flag pins the whole ecosystem — every process
+inside it, by the file's absolute path:
+
+```bash
+pboss start --runtime=deno ecosystem.config.ts   # every app in the file runs on Deno
+pboss restart ecosystem.config.ts                # ...and still does, after reboots too
+```
+
+Effective runtime for a managed process, in order:
+
+1. a saved override — the process's own name (a cluster's base name),
+   then its ecosystem file
+2. the `~/.pboss/.runtime` default
+3. the normal chain — inherit the main runtime running pboss, then
+   machine-wide discovery
+
+A stated `interpreter` (config file or `--interpreter`) always wins — the
+per-app setting stays the most explicit choice. Deleting a process drops
+its pin, so a later plain start is a normal start again; an ecosystem file
+keeps its pin until you re-start it with a different `--runtime`.
 
 ---
 

@@ -70,6 +70,13 @@ export default class Daemon {
   
   async initialize(_daemonEnabled: boolean = true) {
 
+    // Issue #40 hygiene: the launcher's runtime hand-off
+    // (PBOSS_LAUNCHER_RUNTIME, set by the bin wrapper when --runtime was
+    // supplied) was consumed by the CLI that SPAWNED this daemon. Worker envs
+    // are built from the daemon's process.env — scrub it here so a pinned
+    // start's channel never leaks into unrelated worker processes forever.
+    delete process.env.PBOSS_LAUNCHER_RUNTIME;
+
     // PATH self-healing for minimal environments: a daemon spawned by a
     // systemd/launchd unit (especially one generated BEFORE the
     // multi-location Bun search existed) runs with a PATH that lacks
@@ -293,7 +300,12 @@ export default class Daemon {
         case "startTarget": {
           // Resume existing processes by id/name/namespace (issue #27) —
           // distinct from "start", which creates a process from a script.
-          const states = await pm.startTarget(msg.data.target);
+          // Issue #40: data.runtime (the wrapper's --runtime hand-off) lets
+          // the resume RE-PIN the processes it touches.
+          const states = await pm.startTarget(
+            msg.data.target,
+            msg.data?.runtime
+          );
           return { type: "startTarget", data: states, success: true, id: msg.id };
         }
         case "stop": {

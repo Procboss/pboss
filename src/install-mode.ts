@@ -41,6 +41,7 @@ import { homedir } from "os";
 import { ignore } from "./error-handling";
 import { getRuntime } from "./runtime";
 import type { RuntimeName } from "./runtime";
+import type { RuntimeChoice } from "./runtime-config";
 
 /**
  * True when pboss is running as a compiled standalone executable.
@@ -435,6 +436,67 @@ export function inheritMainRuntime(
     return tsx ? tsx.cmd : [main.exec, "--experimental-strip-types"];
   }
   return [main.exec];
+}
+
+/**
+ * The interpreter prefix for a runtime the USER pinned — the issue-#40
+ * override chain (a saved override, or the ~/.pboss/.runtime default)
+ * resolved to node | bun | deno. The route mirrors inheritMainRuntime's
+ * per-runtime shapes (bun run / deno run -A / node, TypeScript through
+ * tsx or --experimental-strip-types) but discovers the executable
+ * machine-wide, because the pinning runtime may differ from the one
+ * supervising the process: a bun daemon may spawn a node-pinned worker.
+ *
+ * Throws an actionable error when the pinned runtime is not installed —
+ * an explicit pin is never silently swapped for a different runtime
+ * (the same honesty the wrapper applies at dispatch time).
+ */
+export async function runtimeCommandPrefix(
+  runtime: RuntimeChoice,
+  script: string
+): Promise<string[]> {
+  const describe = () =>
+    runtime === "bun" ? bunSearchDescription() : runtime === "deno"
+      ? "PATH, ~/.deno/bin"
+      : "PATH";
+
+  if (runtime === "bun") {
+    const bun = await findBun();
+    if (!bun) {
+      throw new Error(
+        `Cannot run "${script}" with Bun (runtime override): Bun was not found ` +
+          `(${bunSearchDescription()}). Install it from https://bun.sh, or start ` +
+          `the process again with --runtime=<node|deno> to re-pin it.`
+      );
+    }
+    return [bun, "run"];
+  }
+
+  if (runtime === "deno") {
+    const deno = await findDeno();
+    if (!deno) {
+      throw new Error(
+        `Cannot run "${script}" with Deno (runtime override): Deno was not found ` +
+          `(${describe()}). Install it from https://deno.com, or start the ` +
+          `process again with --runtime=<node|bun> to re-pin it.`
+      );
+    }
+    return [deno, "run", "-A"];
+  }
+
+  const node = await findNode();
+  if (!node) {
+    throw new Error(
+      `Cannot run "${script}" with Node (runtime override): Node was not found ` +
+        `(${describe()}). Install it from https://nodejs.org, or start the ` +
+        `process again with --runtime=<bun|deno> to re-pin it.`
+    );
+  }
+  if (isTypeScriptFile(script)) {
+    const tsx = await findTsx(node, script);
+    return tsx ? tsx.cmd : [node, "--experimental-strip-types"];
+  }
+  return [node];
 }
 
 /**

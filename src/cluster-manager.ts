@@ -19,7 +19,9 @@ import {
   commandRuntime,
   findBun,
   nodeSupportsTypeStripping,
+  runtimeCommandPrefix,
 } from "./install-mode";
+import { effectiveProcessRuntime } from "./runtime-overrides";
 import { mergeDenoPermissions } from "./deno-permissions";
 import { getRuntime } from "./runtime";
 import type { PBChild } from "./runtime";
@@ -83,7 +85,17 @@ export class ClusterManager {
      } else {
        const ext = path.extname(config.script).slice(1).toLowerCase();
        if (ext === "ts" || ext === "tsx" || ext === "jsx" || ext === "mjs" || ext === "cjs" || ext === "js") {
-         cmd.push(...await resolveScriptInterpreter(config.script));
+         // Issue #40 — an unstated interpreter resolves through the override
+         // chain BEFORE the inherit/discovery fallback: 1) runtime-overrides
+         // (the process's own name / cluster base, then its ecosystem config
+         // path), 2) ~/.pboss/.runtime (the machine-wide default), 3) the
+         // previous inherit/discovery behavior. A STATED interpreter (the
+         // branch above) always wins — the app-level setting stays the most
+         // explicit, per-app choice, distinct from this global mechanism.
+         const pinned = await effectiveProcessRuntime(config.name, config.ecosystemPath);
+         cmd.push(...(pinned
+           ? await runtimeCommandPrefix(pinned, config.script)
+           : await resolveScriptInterpreter(config.script)));
        } else if (ext === "py") {
          cmd.push(process.platform === "win32" ? "python" : "python3");
        } else if (ext === "go") {
@@ -174,7 +186,13 @@ export class ClusterManager {
     ) {
       route = [config.interpreter];
     } else {
-      route = await resolveScriptInterpreter(config.script);
+      // Issue #40: the same override chain as buildWorkerCommand's js/ts
+      // branch — a cluster app and a single instance of the same app must
+      // resolve the same runtime.
+      const pinned = await effectiveProcessRuntime(config.name, config.ecosystemPath);
+      route = pinned
+        ? await runtimeCommandPrefix(pinned, config.script)
+        : await resolveScriptInterpreter(config.script);
     }
     if (commandRuntime(route) !== "node") {
       // Defensive: the ProcessManager only sets nodeCluster after resolving

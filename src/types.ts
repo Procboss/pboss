@@ -154,6 +154,15 @@ export interface ProcessDescription {
   cronRestart?: string;
   interpreter?: string;
   interpreterArgs?: string[];
+  /**
+   * Issue #40: the ABSOLUTE ecosystem config path this process was started
+   * from — set by ProcessManager.startEcosystem, persisted in the dump, and
+   * read at every spawn so a whole-ecosystem runtime override
+   * (`pboss start --runtime=deno ecosystem.config.ts`) keeps applying to
+   * every process inside it across restarts and reboots. Absent for CLI
+   * script starts (their override is keyed by the process name instead).
+   */
+  ecosystemPath?: string;
   mergeLogs: boolean;
   /** Also forward child stdout/stderr to pboss's own stdout/stderr. */
   raw: boolean;
@@ -339,6 +348,24 @@ export interface StartOptions {
    * an ecosystem file. Ignored when the app runs under bun/node.
    */
   permissions?: string[];
+  /**
+   * Issue #40: the LAUNCHER runtime override for this start — the value the
+   * bin wrapper handed down through PBOSS_LAUNCHER_RUNTIME after consuming
+   * `pboss start --runtime=<x>`. The CLI sets it; the daemon pins it in
+   * ~/.pboss/runtime-overrides (process base name / ecosystem config path)
+   * and every future spawn of that process/ecosystem reuses it. NEVER
+   * written to ~/.pboss/.runtime — an override, not a default change.
+   * Distinct from the app-level `interpreter` (which stays the most
+   * explicit, per-app choice and wins over this pin).
+   */
+  runtime?: "node" | "bun" | "deno";
+  /**
+   * Issue #40: the ABSOLUTE path of the ecosystem file this app came from
+   * (set on each app by ProcessManager.startEcosystem; carried into the
+   * persisted ProcessDescription as `ecosystemPath`). Not part of the
+   * user-facing config-file schema.
+   */
+  ecosystemPath?: string;
 }
 
 export interface EcosystemConfig {
@@ -347,6 +374,20 @@ export interface EcosystemConfig {
   deploy?: Record<string, DeployConfig>;
   /** Standalone scheduled commands — see `pboss cron run` / CronJobConfig. */
   crons?: CronJobConfig[];
+  /**
+   * Issue #40: the ABSOLUTE source path, set by loadEcosystemConfig — the
+   * identity under which a whole-ecosystem runtime override is pinned
+   * (`pboss start --runtime=deno <file>` → runtime-overrides[absPath]).
+   * Not part of the user-facing schema; the loader stamps it.
+   */
+  configPath?: string;
+  /**
+   * Issue #40: the LAUNCHER runtime override the CLI attached for this
+   * start (from the wrapper's PBOSS_LAUNCHER_RUNTIME channel). Applies to
+   * EVERY app in the file; the daemon pins it under configPath and each
+   * app's description carries the path so spawns keep resolving it.
+   */
+  runtime?: "node" | "bun" | "deno";
 }
 
 /** Lifecycle state of a standalone cron job. */

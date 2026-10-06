@@ -134,8 +134,14 @@ describe("README.md: the untouched core contract survives removals", () => {
     expect(readme).toContain("pboss --runtime=bun");
     // 2026-09-29: the runtime-selection rule (node:cluster task) — unstated
     // runtimes inherit the MAIN runtime running pboss; Node apps cluster
-    // through node:cluster with one shared port.
-    expect(readme).toContain("An unstated app runtime inherits the main runtime running pboss");
+    // through node:cluster with one shared port. 2026-10-07 (issue #40):
+    // resolution consults a saved --runtime pin first, then the .runtime
+    // default, then the main-runtime inheritance.
+    expect(readme).toContain(
+      "An unstated app runtime resolves a saved `--runtime` pin first, then the `~/.pboss/.runtime` default, then inherits the main runtime running pboss",
+    );
+    // Issue #40: the pin mechanism is documented in the README itself.
+    expect(readme).toContain("Pins live in `~/.pboss/runtime-overrides`");
     expect(readme).toContain("Node apps cluster through `node:cluster` with one shared port");
     expect(readme).toContain("## Quick Start");
     expect(readme).toContain("pboss start"); // the issue-#29 auto-detection story

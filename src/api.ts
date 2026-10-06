@@ -130,6 +130,13 @@ export async function loadEcosystemConfig(filePath: string): Promise<EcosystemCo
 
   const cwd = path.dirname(abs);
 
+  // Issue #40: stamp the ABSOLUTE source path — the identity under which a
+  // whole-ecosystem runtime override is pinned (`pboss start --runtime=deno
+  // <file>`), and what each app's persisted description carries so every
+  // future spawn (restart/reload/reboot) keeps resolving the ecosystem's
+  // pin. Overwrites nothing the user wrote (the field is loader-stamped).
+  config.configPath = abs;
+
   // Issue #28: a config may legitimately contain only top-level options
   // (e.g. `module.exports = { noDaemon: true }`). Default `apps` to an empty
   // array instead of crashing on `config.apps.map` below.
@@ -587,10 +594,17 @@ export class PBoss extends EventEmitter<PBossEvents> {
    * Throws when nothing matches `target` (a clear error, not a silent
    * no-op).
    */
-  async startTarget(target: string | number): Promise<ProcessState[]> {
+  async startTarget(
+    target: string | number,
+    opts: { runtime?: "node" | "bun" | "deno" } = {}
+  ): Promise<ProcessState[]> {
+    // Issue #40: opts.runtime is the wrapper's --runtime hand-off — the
+    // daemon RE-PINs every process this resume touches under it.
+    const data: { target: string; runtime?: string } = { target: String(target) };
+    if (opts.runtime) data.runtime = opts.runtime;
     const res = await this.sendOrThrow({
       type: "startTarget",
-      data: { target: String(target) },
+      data,
     });
     return res.data;
   }
