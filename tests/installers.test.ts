@@ -322,7 +322,7 @@ describe("installers: sims — the explicit runtime flow", () => {
       if (!POSIX) return;
       const r = runInstaller(["--runtime=deno"], { runtimes: ["deno", "node"] });
       expect(r.code).toBe(0);
-      expect(r.log).toContain("deno install -g -f -A --name pboss npm:pboss/deno-entry");
+      expect(r.log).toContain("deno install -g -A --name pboss --reload --force npm:pboss/deno-entry");
       expect(r.log).toContain("pboss --runtime=deno --version");
       expect(r.log).not.toContain("npm install -g");
     },
@@ -648,6 +648,18 @@ describe("installers: sims — the Deno supply-chain window", () => {
     expect(ps1).toContain('"--minimum-dependency-age=0"');
   });
 
+  test("source pins: --reload --force on every deno install, in both installers", () => {
+    // 2026-10-06, owner request: a stale cached packument keeps serving the
+    // previous resolution even past the hold bypass, so every deno install
+    // re-resolves against the live registry and overwrites the existing
+    // installation in place (the long form of -f, matching the documented
+    // command in README/DOCS).
+    expect(sh).toContain('install -g -A "$DENO_AGE_FLAG" --name pboss --reload --force "$DENO_SPEC"');
+    expect(sh).toContain('install -g -A --name pboss --reload --force "$DENO_SPEC"');
+    expect(ps1).toContain("deno install -g -A $denoAgeFlag --name pboss --reload --force $denoSpec");
+    expect(ps1).toContain("deno install -g -A --name pboss --reload --force $denoSpec");
+  });
+
   test(
     "--runtime=deno on a flag-aware deno: the TRUE latest installs with the bypass flag",
     () => {
@@ -665,7 +677,7 @@ describe("installers: sims — the Deno supply-chain window", () => {
         });
         expect(r.code).toBe(0);
         expect(r.log).toContain(
-          "deno install -g -f -A --minimum-dependency-age=0 --name pboss npm:pboss@1.6.1/deno-entry",
+          "deno install -g -A --minimum-dependency-age=0 --name pboss --reload --force npm:pboss@1.6.1/deno-entry",
         );
         // The window pin is GONE — no 1.6.0, no npm delivery.
         expect(r.log).not.toContain("npm:pboss@1.6.0");
@@ -689,7 +701,7 @@ describe("installers: sims — the Deno supply-chain window", () => {
       });
       expect(r.code).toBe(0);
       expect(r.log).toContain(
-        "deno install -g -f -A --minimum-dependency-age=0 --name pboss npm:pboss/deno-entry",
+        "deno install -g -A --minimum-dependency-age=0 --name pboss --reload --force npm:pboss/deno-entry",
       );
       expect(r.out).toContain("age hold disabled");
     },
@@ -707,7 +719,7 @@ describe("installers: sims — the Deno supply-chain window", () => {
       });
       expect(r.code).toBe(0);
       expect(r.log).toContain(
-        "deno install -g -f -A --minimum-dependency-age=0 --name pboss npm:pboss@1.6.1/deno-entry",
+        "deno install -g -A --minimum-dependency-age=0 --name pboss --reload --force npm:pboss@1.6.1/deno-entry",
       );
     },
     30000,
@@ -728,7 +740,7 @@ describe("installers: sims — the Deno supply-chain window", () => {
           extraEnv: { STUB_PACKUMENT: fixture },
         });
         expect(r.code).toBe(0);
-        expect(r.log).toContain("deno install -g -f -A --name pboss npm:pboss@1.6.0/deno-entry");
+        expect(r.log).toContain("deno install -g -A --name pboss --reload --force npm:pboss@1.6.0/deno-entry");
         expect(r.log).not.toContain("npm:pboss@1.6.1");
         expect(r.out).toContain("supply-chain hold: installing v1.6.0 (latest is v1.6.1)");
         expect(r.log).toContain("pboss --runtime=deno --version");
@@ -777,7 +789,7 @@ describe("installers: sims — the Deno supply-chain window", () => {
       if (!POSIX) return;
       const r = runInstaller(["--runtime=deno"], { runtimes: ["deno", "node"] });
       expect(r.code).toBe(0);
-      expect(r.log).toContain("deno install -g -f -A --name pboss npm:pboss/deno-entry");
+      expect(r.log).toContain("deno install -g -A --name pboss --reload --force npm:pboss/deno-entry");
       expect(r.out).toContain("Could not read the registry ahead of the install");
     },
     30000,
@@ -792,7 +804,7 @@ describe("installers: sims — the Deno supply-chain window", () => {
         extraEnv: { PBOSS_VERSION: "1.6.0" },
       });
       expect(r.code).toBe(0);
-      expect(r.log).toContain("deno install -g -f -A --name pboss npm:pboss@1.6.0/deno-entry");
+      expect(r.log).toContain("deno install -g -A --name pboss --reload --force npm:pboss@1.6.0/deno-entry");
     },
     30000,
   );

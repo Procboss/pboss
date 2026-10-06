@@ -94,13 +94,18 @@ bun install -g pboss
 **Deno**
 
 ```bash
-deno install -g -A --minimum-dependency-age=0 --name pboss npm:pboss/deno-entry
+deno install -g -A --minimum-dependency-age=0 --name pboss --reload --force npm:pboss/deno-entry
 ```
 
 Deno is deny-by-default — `-A` grants what a process manager needs. The
 explicit equivalent (`--allow-run --allow-read --allow-write --allow-net
 --allow-env --allow-sys`) and the full permission table live in the
 [installation docs](https://docs.procboss.com/installation#denos-permission-system).
+
+`--reload` re-resolves the spec against the live registry instead of Deno's
+local cache (a stale cached resolution is the other way an old version
+sticks around), and `--force` overwrites an existing installation — so the
+same command installs, reinstalls, and upgrades in place.
 
 > **Deno's 24-hour supply-chain hold:** Deno refuses to resolve npm versions
 > published within the last day — an unpinned spec silently installs the
@@ -112,7 +117,7 @@ explicit equivalent (`--allow-run --allow-read --allow-write --allow-net
 > flag). The universal installer passes the flag automatically whenever
 > your Deno supports it, and pins the exact version it installs; to pin
 > manually, use `deno install -g -A --minimum-dependency-age=0 --name pboss
-> npm:pboss@<version>/deno-entry`.
+> --reload --force npm:pboss@<version>/deno-entry`.
 
 ### The Runtime Selection
 

@@ -31,7 +31,8 @@
 #
 # (Deno's own global installs do not run this file — deno executes package
 #  bins as modules, so its installer targets the published entry subpath:
-#  `deno install -g -A --name pboss npm:pboss/deno-entry`.)
+#  `deno install -g -A --minimum-dependency-age=0 --name pboss --reload
+#  --force npm:pboss/deno-entry`.)
 #
 # All arguments — including spaces, quotes, empty strings and everything
 # after `--` — are forwarded VERBATIM via "$@". The flag is stripped by the
