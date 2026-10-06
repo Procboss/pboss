@@ -200,12 +200,11 @@ because deno executes npm package bins as modules — a shell wrapper cannot
 serve that path; the deno command runs `dist/cli.deno.js` directly, and
 `pboss --runtime=deno` (which the installer and `runtime change` run for
 you) persists the selection the wrapper architecture reads. The
-`--min-dep-age=0` flag (short for `--minimum-dependency-age=0`) disables
-Deno's 24-hour supply-chain hold for that install (see the Deno Global
-Install section); the installers,
-`runtime change` and `upgrade` pass it automatically whenever the local
-Deno supports it and run the same unpinned command; older Denos pin the
-newest resolvable version instead.
+`--min-dep-age=0` flag disables Deno's 24-hour supply-chain hold (see
+the Deno Global Install section); the universal installer passes it too,
+pinning the newest release, while `runtime change` and `upgrade` run the
+same unpinned command; older Denos pin the newest resolvable version
+instead.
 
 ---
 
@@ -251,7 +250,9 @@ deno install -g -A --min-dep-age=0 --name pboss --reload --force npm:pboss/deno-
 
 Deno is deny-by-default — `-A` grants what a process manager needs. The explicit equivalent is `--allow-run --allow-read --allow-write --allow-net --allow-env --allow-sys`. `--reload` re-resolves the spec against the live registry instead of Deno's local cache (a stale cached resolution is the other way an old version sticks around), and `--force` overwrites an existing installation — the same command installs, reinstalls, and upgrades in place.
 
-**Deno's 24-hour supply-chain hold:** Deno refuses npm versions published within the last day — an unpinned spec silently installs the previous release (before 1.6.0, one without the Deno entrypoint: a broken `Failed resolving binary export` shim), and an exact pin of a fresh version errors with `Could not find npm package`. The `--min-dep-age=0` flag in the command above is Deno's own escape hatch (the short form of `--minimum-dependency-age=0`): it disables the hold for that install so the spec resolves the release just published. On Deno releases older than 2.9 there is no hold (and no flag — omit it). The universal installer, `runtime change` and `pboss upgrade` pass the flag automatically whenever the local Deno supports it and run this exact unpinned command; older Denos pin the newest resolvable version instead. To pin manually, use `npm:pboss@<version>/deno-entry` together with the flag.
+**Deno's 24-hour supply-chain hold:** Deno refuses npm versions published within the last day — an unpinned spec silently installs the previous release (before 1.6.0, one without the Deno entrypoint: a broken `Failed resolving binary export` shim), and an exact pin of a fresh version errors with `Could not find npm package`. The `--min-dep-age=0` flag in the command above is Deno's own escape hatch: it disables the hold so the spec resolves the release just published — Deno releases older than 2.9 have no hold (and no flag — omit it).
+
+The universal installer passes the flag too — pinning the newest release for a deterministic install — while `runtime change` and `pboss upgrade` run this exact unpinned command; older Denos pin the newest resolvable version instead. To pin manually, use `npm:pboss@<version>/deno-entry` together with the flag.
 
 ---
 
@@ -1903,7 +1904,9 @@ The machine credential in `~/.pboss/cloud.json` is a **permanent cache**: it liv
 <!-- 2026-10-04: the universal installer is back (runtime-aware) — the table
      row above reflects the .runtime-driven channel. -->
 
-Machines installed before the stamp existed are covered by runtime detection from the executable's own location (`…/Cellar/pboss/…` → brew, `/snap/pboss/…` → snap, a `node_modules` path → npm/bun, a repo checkout → source) — and, for Deno, by the runtime **actually executing** pboss: a deno global install runs the published entry directly from deno's npm cache (a path no rule matches) and never runs npm's postinstall (so no stamp is ever written), which makes the executing runtime the one signal that cannot be stale — an npm-era stamp or `.runtime` left over from an install that was replaced cannot outvote it. If the detection is wrong anyway, `pboss upgrade --channel brew` repairs it and persists the answer (every channel is accepted, deno included).
+Machines installed before the stamp existed are covered by runtime detection from the executable's own location (`…/Cellar/pboss/…` → brew, `/snap/pboss/…` → snap, a `node_modules` path → npm/bun, a repo checkout → source) — and, for Deno, by the runtime **actually executing** pboss: a deno global install runs the published entry straight from deno's npm cache and never runs npm's postinstall, so no stamp is ever written and the executing runtime is the one signal that cannot be stale.
+
+An npm-era stamp or `.runtime` left over from an install that was replaced cannot outvote it. If the detection is wrong anyway, `pboss upgrade --channel brew` repairs it and persists the answer (every channel is accepted, deno included).
 
 ```bash
 pboss upgrade --check       # dry run: current/latest/channel/command, changes nothing
