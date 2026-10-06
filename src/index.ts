@@ -1008,14 +1008,20 @@ export class PBossCLI {
 
   /**
    * Interactive [y/N] prompt. Non-TTY stdin (scripts, CI, pipes) can never
-   * answer — that counts as "no", with a hint that --force exists so
-   * scripted namespace deletes stay possible without a pty.
+   * answer — that counts as "no", with the caller's bypass hint so scripted
+   * runs stay possible without a pty (--force for deletes, --yes/-y for
+   * upgrades). EOF mid-prompt (Ctrl+D, a closing terminal, a detached pipe)
+   * is ALSO "no": a question promise left dangling over an emptied event
+   * loop is a hard error on deno — "Top-level await promise never resolved",
+   * aimed at the entry's `await import("./cli.js")` — and an exit-13 on
+   * node/bun, so the interface's close event settles it with the safe
+   * answer (owner report, live-reproduced on deno 2.9.7, 2026-10-06).
    */
-  private async confirm(question: string): Promise<boolean> {
+  private async confirm(question: string, bypass = "--force"): Promise<boolean> {
     if (!process.stdin.isTTY) {
       console.error(
         colorize(
-          "Refusing without a terminal — re-run with --force to skip this confirmation.",
+          `Refusing without a terminal — re-run with ${bypass} to skip this confirmation.`,
           "yellow"
         )
       );
@@ -1026,9 +1032,28 @@ export class PBossCLI {
         input: process.stdin,
         output: process.stdout,
       });
-      rl.question(`${question} [y/N] `, (answer) => {
-        rl.close();
-        resolvePromise(/^(y|yes)$/i.test(answer.trim()));
+      let settled = false;
+      const settle = (answer: boolean) => {
+        if (settled) return;
+        settled = true;
+        try {
+          rl.close();
+        } catch {
+          /* already closed by the EOF path */
+        }
+        resolvePromise(answer);
+      };
+      rl.question(`${question} [y/N] `, (answer) =>
+        settle(/^(y|yes)$/i.test(answer.trim()))
+      );
+      // Ctrl+D closes the interface WITHOUT answering — the old code let
+      // the promise dangle here. EOF is not "yes".
+      rl.on("close", () => {
+        // rl.close() inside settle() re-fires this event after a REAL
+        // answer — only an unanswered close is the EOF-as-no case.
+        if (settled) return;
+        console.log(colorize("(input closed — treating as no)", "dim"));
+        settle(false);
       });
     });
   }
@@ -2562,7 +2587,10 @@ ${colorize("Notes:", "dim")}
     }
 
     if (!assumeYes) {
-      const ok = await this.confirm(`Upgrade pboss v${VERSION} → v${latest} via ${plan.label}?`);
+      const ok = await this.confirm(
+        `Upgrade pboss v${VERSION} → v${latest} via ${plan.label}?`,
+        "--yes (-y)"
+      );
       if (!ok) {
         console.log(colorize("Upgrade cancelled.", "yellow"));
         return;
