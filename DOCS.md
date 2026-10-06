@@ -411,11 +411,12 @@ first-class option (owner request, 2026-10-06): state WHAT the app may do
 instead of handing it the kitchen-sink `deno run -A` default.
 
 ```bash
-# CLI flag (short -P — -p is --port, PM2 parity): comma-separated list
+# CLI flag (short --perms — no letter form: -p is --port): comma-separated list
 pboss start server.ts --interpreter deno --permissions allow-net,allow-read=./config
 
-# same, = spelling
+# same, = spellings
 pboss start server.ts --interpreter deno --permissions=allow-net,allow-read=./config
+pboss start server.ts --interpreter deno --perms=allow-net,allow-read=./config
 
 # a zero-permission deno app (the -A default is dropped, nothing replaces it)
 pboss start worker.ts --interpreter deno --permissions none
@@ -528,7 +529,7 @@ pboss start server.ts --name api --wait-ready --listen-timeout 10000
 | `--env <KEY=VAL>` | Environment variable (repeatable) | — |
 | `--interpreter <bin>` | Custom interpreter binary | Auto-detected |
 | `--interpreter-args <args>` | Arguments for the interpreter | — |
-| `--permissions, -P <list>` | **Deno only** (runtime-unique — ignored under bun/node): comma-separated permission list, e.g. `allow-read,allow-net=api.com,deny-write`; `all` = `-A`, `none` = no permissions. Entries already present in `--interpreter-args` are never duplicated. `-p` is `--port`, so the short form is `-P` | — |
+| `--permissions, --perms <list>` | **Deno only** (runtime-unique — ignored under bun/node): comma-separated permission list, e.g. `allow-read,allow-net=api.com,deny-write`; `all` = `-A`, `none` = no permissions. Entries already present in `--interpreter-args` are never duplicated. `-p` is `--port`, so the short form is `--perms` — no single-letter alias (a `-P`/`-p` typo would set the port); `-P` itself is refused with an error | — |
 | `--node-args <args>` | Additional runtime arguments | — |
 | `--max-memory-restart <size>` | Restart when memory exceeds limit | — |
 | `--max-restarts <n>` | Maximum consecutive restarts | `16` |

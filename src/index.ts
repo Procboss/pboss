@@ -158,8 +158,9 @@ const START_VALUE_FLAGS = new Set([
   "--depends-on",
   "--on-ns-member-exit",
   // Deno permissions (runtime-unique): comma list, same spellings the
-  // parser takes. Short form is -P — -p is --port (PM2 parity).
-  "--permissions", "-P",
+  // parser takes. Short form is --perms — deliberately NOT a single letter:
+  // -p is --port (PM2 parity) and a -P/-p typo would set the port silently.
+  "--permissions", "--perms",
   // Already extracted by cmdStart before the scan runs; listed so the two
   // scanners can never disagree if that ordering ever changes.
   "--config", "-c",
@@ -373,10 +374,10 @@ export class PBossCLI {
           break;
         // Deno permissions (runtime-unique, owner request 2026-10-06):
         // comma-separated entries, validated inline — the same normalizer
-        // the daemon runs at spawn time. Short form is -P (-p is --port).
-        // The = spelling is handled in the default branch below.
+        // the daemon runs at spawn time. Short form is --perms (no single
+        // letter — -p is --port; the = spellings are in the default branch).
         case "--permissions":
-        case "-P": {
+        case "--perms": {
           const value = args[++i];
           if (value === undefined || value === "") {
             console.error(
@@ -550,11 +551,12 @@ export class PBossCLI {
           opts.sourceMapSupport = true;
           break;
         default:
-          // --permissions=<list> — the = spelling the docs show. Handled
-          // here (not as a case) because it is one token: nothing is consumed
-          // beyond it, so it is NOT a value flag for the target scanner.
-          if (arg.startsWith("--permissions=")) {
-            const value = arg.slice("--permissions=".length);
+          // --permissions=<list> / --perms=<list> — the = spellings the docs
+          // show. Handled here (not as cases) because each is one token:
+          // nothing is consumed beyond it, so it is NOT a value flag for the
+          // target scanner.
+          if (arg.startsWith("--permissions=") || arg.startsWith("--perms=")) {
+            const value = arg.slice(arg.indexOf("=") + 1);
             if (value === "") {
               console.error(
                 colorize("Error: --permissions= requires a comma-separated permission list", "red")
@@ -600,6 +602,22 @@ export class PBossCLI {
     const { configPath: explicitConfig, rest: restArgs } = extractConfigFlag(args);
     args = restArgs;
     let configPath = explicitConfig;
+
+    // The removed -P short form (owner call, 2026-10-06): one shift-key away
+    // from -p (--port), it was exactly the silent typo trap — -p "allow-read"
+    // would have set the PORT. 1.6.4 was never published, so refusing beats
+    // guessing. Refused LOUDLY and EARLY, before the target scan, so the
+    // value after it can never be mistaken for the script.
+    if (args.includes("-P")) {
+      console.error(
+        colorize(
+          "Error: -P is not a flag — -p is --port (one shift-key apart; a typo " +
+            "would silently set the port). Use --permissions or --perms.",
+          "red"
+        )
+      );
+      process.exit(1);
+    }
 
     // Issue #29: `pboss start` with no target (no --config and no positional)
     // auto-detects a config file in the current working directory before
@@ -3113,12 +3131,12 @@ ${colorize("Notes:", "dim")}
     --cwd <path>                  Working directory
     --interpreter <bin>           Custom interpreter
     --interpreter-args <args>     Arguments for the interpreter
-    --permissions, -P <list>     Deno permissions (runtime-unique —
-                                  ignored under bun/node): comma list of
-                                  allow-read, allow-net=host, deny-write,
-                                  all (-A), none. Entries already in
-                                  --interpreter-args are never duplicated;
-                                  -p is --port, so the short form is -P
+    --permissions, --perms <list>  Deno permissions (runtime-unique —
+                                   ignored under bun/node): comma list of
+                                   allow-read, allow-net=host, deny-write,
+                                   all (-A), none. Entries already in
+                                   --interpreter-args are never duplicated;
+                                   -p is --port, so there is no letter form
     --node-args <args>            Extra runtime arguments
     --max-memory-restart <size>   e.g. 200M, 1G
     --max-restarts <N>            Max restart attempts

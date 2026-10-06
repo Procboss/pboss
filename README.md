@@ -248,11 +248,13 @@ or stops a system service it does not own.
 
 **Deno permissions** — the first runtime-unique feature: state WHAT a deno
 app may do instead of the kitchen-sink `deno run -A` default. Short form is
-`-P` (`-p` is `--port`, PM2 parity); the `--permissions=` spelling works too.
+`--perms` — deliberately no single-letter alias: `-p` is already `--port`
+(PM2 parity), and a `-P`/`-p` typo would silently set the port. The
+`--permissions=` / `--perms=` spellings work too.
 
 ```bash
 pboss start server.ts --interpreter deno --permissions allow-net,allow-read=./config
-pboss start worker.ts --interpreter deno -P none        # zero-permission deno app
+pboss start worker.ts --interpreter deno --perms none        # zero-permission deno app
 ```
 
 ```js

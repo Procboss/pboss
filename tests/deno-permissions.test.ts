@@ -293,19 +293,29 @@ describe("deno permissions — buildWorkerCommand", () => {
 describe("deno permissions — static pins", () => {
   const src = readFileSync(join(REPO, "src", "index.ts"), "utf8");
 
-  test("parseStartFlags takes --permissions and -P as VALUE flags", () => {
+  test("parseStartFlags takes --permissions and --perms as VALUE flags", () => {
     expect(src).toMatch(/case "--permissions":/);
-    expect(src).toMatch(/case "-P":/);
-    expect(src).toContain('"--permissions", "-P"'); // START_VALUE_FLAGS member
+    expect(src).toMatch(/case "--perms":/);
+    expect(src).toContain('"--permissions", "--perms"'); // START_VALUE_FLAGS member
+    expect(src).not.toContain('"--permissions", "-P"'); // the letter form is GONE
   });
 
-  test("the = spelling is handled (--permissions=list)", () => {
+  test("the = spellings are handled (--permissions=list, --perms=list)", () => {
     expect(src).toContain('arg.startsWith("--permissions=")');
+    expect(src).toContain('arg.startsWith("--perms=")');
   });
 
-  test("the help advertises the flag and says why it is not -p", () => {
-    expect(src).toMatch(/--permissions, -P <list>/);
+  test("the help advertises the flag and says why there is no letter form", () => {
+    expect(src).toMatch(/--permissions, --perms <list>/);
     expect(src).toMatch(/-p is --port/);
+  });
+
+  test("-P is refused loudly before the target scan, never silently ignored", () => {
+    // The guard sits in cmdStart ahead of findStartTarget — without it,
+    // `-P allow-read` would donate its VALUE to the script-target slot.
+    expect(src).toMatch(/args\.includes\("-P"\)/);
+    expect(src).toMatch(/-P is not a flag/);
+    expect(src).not.toMatch(/case "-P":/); // and it is not a parse case either
   });
 
   test("README documents the flag, the config array, and the dedup rule", () => {
@@ -491,7 +501,7 @@ describe("deno permissions — e2e (real CLI + real deno)", () => {
     );
 
     test.skipIf(!canDeno)(
-      "the = spelling and the -P short form both work; describe reports the list",
+      "the = spellings and the --perms short form both work; describe reports the list",
       async () => {
         const home = await freshHome("spellings");
         writeDenoApp(home, "alt.mjs");
@@ -506,19 +516,58 @@ describe("deno permissions — e2e (real CLI + real deno)", () => {
           const desc = await runCli(["describe", "alt"], home);
           expect(desc.out).toMatch(/Permissions\s+: allow-read, allow-write \(deno\)/);
 
-          // -P short form on a fresh app (also proves -P ≠ -p: no port parse)
+          // --perms short form on a fresh app, plus its own = spelling —
+          // neither can collide with -p (--port), which is the point.
           writeDenoApp(home, "alt2.mjs");
           const res2 = await runCli(
-            ["start", "./alt2.mjs", "--interpreter", "deno", "-P", "allow-read,allow-write"],
+            ["start", "./alt2.mjs", "--interpreter", "deno", "--perms", "allow-read,allow-write"],
             home
           );
           expect(res2.code).toBe(0);
           expect(await waitFor(join(home, "alt2.ran"))).toBe(true);
+
+          writeDenoApp(home, "alt3.mjs");
+          const res3 = await runCli(
+            ["start", "./alt3.mjs", "--interpreter", "deno", "--perms=allow-read,allow-write"],
+            home
+          );
+          expect(res3.code).toBe(0);
+          expect(await waitFor(join(home, "alt3.ran"))).toBe(true);
         } finally {
           await cleanup(home);
         }
       },
       180000
+    );
+
+    test.skipIf(!canDeno)(
+      "-P is refused with a pointed error — never treated as the port, never silent",
+      async () => {
+        const home = await freshHome("removed-p");
+        try {
+          // With a script present: the guard fires before anything spawns.
+          const res = await runCli(
+            ["start", "./x.mjs", "--interpreter", "deno", "-P", "allow-read"],
+            home
+          );
+          expect(res.code).toBe(1);
+          expect(res.err).toMatch(/-P is not a flag/);
+          expect(res.err).toMatch(/--perms/);
+
+          // Without a script: the old failure mode was the permission list
+          // being eaten as the TARGET — the guard must beat that too.
+          const res2 = await runCli(
+            ["start", "-P", "allow-read,allow-write"],
+            home
+          );
+          expect(res2.code).toBe(1);
+          expect(res2.err).toMatch(/-P is not a flag/);
+          expect(res2.err).not.toMatch(/no script at/); // the target-scan error, not this
+        } finally {
+          await cleanup(home);
+        }
+      },
+      120000
     );
 
     test.skipIf(!canDeno)(
