@@ -280,6 +280,11 @@ switch ($selected) {
         # own help text — never version-parsed), the spec is pinned to the
         # registry's TRUE latest and fresh installs get the current
         # release immediately. Older denos keep the window-aware pin.
+        # Every deno install also carries --reload --force (2026-10-06):
+        # a stale cached packument keeps serving the previous resolution
+        # even past the hold, so --reload re-resolves against the live
+        # registry, and --force overwrites an existing pboss installation
+        # — the same command installs, reinstalls, and upgrades in place.
         $denoSpec = "npm:pboss/deno-entry"
         $denoPinSet = $false
         $denoAgeFlag = $null
@@ -293,9 +298,9 @@ switch ($selected) {
             $denoSpec = "npm:pboss@$($pkgSpec.Split('@')[1])/deno-entry"
             $denoPinSet = $true
             if ($denoAgeFlag) {
-                Write-Host "Installing the published pboss package globally (deno install -g $denoAgeFlag $denoSpec)..." -ForegroundColor Cyan
+                Write-Host "Installing the published pboss package globally (deno install -g $denoAgeFlag --reload --force $denoSpec)..." -ForegroundColor Cyan
             } else {
-                Write-Host "Installing the published pboss package globally (deno install -g $denoSpec)..." -ForegroundColor Cyan
+                Write-Host "Installing the published pboss package globally (deno install -g --reload --force $denoSpec)..." -ForegroundColor Cyan
             }
         } elseif ($denoAgeFlag) {
             # Deno >= 2.9: the age hold is disabled for this resolution —
@@ -308,12 +313,12 @@ switch ($selected) {
             if ($denoLatest) {
                 $denoSpec = "npm:pboss@$denoLatest/deno-entry"
                 $denoPinSet = $true
-                Write-Host "Installing the published pboss package globally (deno install -g $denoAgeFlag $denoSpec)..." -ForegroundColor Cyan
+                Write-Host "Installing the published pboss package globally (deno install -g $denoAgeFlag --reload --force $denoSpec)..." -ForegroundColor Cyan
                 Write-Host "Deno's 24-hour supply-chain hold is bypassed for this install — v$denoLatest is the newest release." -ForegroundColor Yellow
             } else {
                 # Registry unreachable, but the flag still beats the silent
                 # fallback to an older version.
-                Write-Host "Installing the published pboss package globally (deno install -g $denoAgeFlag $denoSpec)..." -ForegroundColor Cyan
+                Write-Host "Installing the published pboss package globally (deno install -g $denoAgeFlag --reload --force $denoSpec)..." -ForegroundColor Cyan
                 Write-Host "Could not read the registry ahead of the install — installing the unpinned spec with Deno's age hold disabled." -ForegroundColor Yellow
             }
         } else {
@@ -376,9 +381,9 @@ switch ($selected) {
         }
         if ($pmChoice -eq "deno") {
             if ($denoAgeFlag) {
-                & deno install -g -f -A $denoAgeFlag --name pboss $denoSpec
+                & deno install -g -A $denoAgeFlag --name pboss --reload --force $denoSpec
             } else {
-                & deno install -g -f -A --name pboss $denoSpec
+                & deno install -g -A --name pboss --reload --force $denoSpec
             }
             if ($LASTEXITCODE -ne 0) { Write-Host "✗ deno install -g failed." -ForegroundColor Red; exit 1 }
             $pmBinDir = Join-Path $env:USERPROFILE ".deno\bin"

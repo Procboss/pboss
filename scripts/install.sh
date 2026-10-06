@@ -449,6 +449,12 @@ Bun refuses every later global install until it is healed.)"
     # publish — and fresh installs get the current release immediately.
     # Older denos keep the window-aware pin (see 3d above); the message
     # echoes the resolved spec so the operator sees exactly what runs.
+    #
+    # Every deno install also carries --reload --force (2026-10-06): a
+    # stale cached packument keeps serving the previous resolution even
+    # past the hold, so --reload re-resolves against the live registry,
+    # and --force overwrites an existing pboss installation — the same
+    # command installs, reinstalls, and upgrades in place.
     DENO_SPEC=""
     DENO_AGE_FLAG=""
     if deno_supports_min_dep_age "$RUNTIME_BIN"; then
@@ -458,20 +464,20 @@ Bun refuses every later global install until it is healed.)"
       # An explicit PBOSS_VERSION is the user's own pin — honored as-is
       # (the flag keeps a freshly published pin installable too).
       DENO_SPEC="npm:pboss@${PKG_SPEC#pboss@}/deno-entry"
-      printf '%s\n' "${CYAN}Installing the published pboss package globally (deno install -g ${DENO_AGE_FLAG:+$DENO_AGE_FLAG }${DENO_SPEC})…${RESET}"
+      printf '%s\n' "${CYAN}Installing the published pboss package globally (deno install -g ${DENO_AGE_FLAG:+$DENO_AGE_FLAG }--reload --force ${DENO_SPEC})…${RESET}"
     elif [ -n "$DENO_AGE_FLAG" ]; then
       # Deno ≥ 2.9: the age hold is disabled for this resolution — install
       # the registry's latest, not yesterday's fallback.
       deno_resolve_window
       if [ -n "$DENO_LATEST" ]; then
         DENO_SPEC="npm:pboss@${DENO_LATEST}/deno-entry"
-        printf '%s\n' "${CYAN}Installing the published pboss package globally (deno install -g ${DENO_AGE_FLAG} ${DENO_SPEC})…${RESET}"
+        printf '%s\n' "${CYAN}Installing the published pboss package globally (deno install -g ${DENO_AGE_FLAG} --reload --force ${DENO_SPEC})…${RESET}"
         printf '%s\n' "${YELLOW}ℹ Deno's 24-hour supply-chain hold is bypassed for this install — v${DENO_LATEST} is the newest release.${RESET}"
       else
         # Registry unreachable, but the flag still beats the silent
         # fallback to an older version.
         DENO_SPEC="npm:pboss/deno-entry"
-        printf '%s\n' "${CYAN}Installing the published pboss package globally (deno install -g ${DENO_AGE_FLAG} ${DENO_SPEC})…${RESET}"
+        printf '%s\n' "${CYAN}Installing the published pboss package globally (deno install -g ${DENO_AGE_FLAG} --reload --force ${DENO_SPEC})…${RESET}"
         printf '%s\n' "${YELLOW}⚠ Could not read the registry ahead of the install — installing the unpinned spec with Deno's age hold disabled.${RESET}"
       fi
     else
@@ -479,7 +485,7 @@ Bun refuses every later global install until it is healed.)"
       deno_resolve_window
       if [ -n "$DENO_BEST" ]; then
         DENO_SPEC="npm:pboss@${DENO_BEST}/deno-entry"
-        printf '%s\n' "${CYAN}Installing the published pboss package globally (deno install -g ${DENO_SPEC})…${RESET}"
+        printf '%s\n' "${CYAN}Installing the published pboss package globally (deno install -g --reload --force ${DENO_SPEC})…${RESET}"
         if [ -n "$DENO_LATEST" ] && [ "$DENO_BEST" != "$DENO_LATEST" ]; then
           printf '%s\n' "${YELLOW}ℹ Deno's 24-hour supply-chain hold: installing v${DENO_BEST} (latest is v${DENO_LATEST}).${RESET}"
         fi
@@ -500,15 +506,15 @@ Bun refuses every later global install until it is healed.)"
         # Registry unreachable — the unpinned spec, Deno's own resolution
         # decides (safe once 1.6.0 is outside the window).
         DENO_SPEC="npm:pboss/deno-entry"
-        printf '%s\n' "${CYAN}Installing the published pboss package globally (deno install -g ${DENO_SPEC})…${RESET}"
+        printf '%s\n' "${CYAN}Installing the published pboss package globally (deno install -g --reload --force ${DENO_SPEC})…${RESET}"
         printf '%s\n' "${YELLOW}⚠ Could not read the registry ahead of the install — installing the unpinned spec; Deno may resolve an older version.${RESET}"
       fi
     fi
     if [ -n "$DENO_SPEC" ]; then
       if [ -n "$DENO_AGE_FLAG" ]; then
-        "$RUNTIME_BIN" install -g -f -A "$DENO_AGE_FLAG" --name pboss "$DENO_SPEC" || die "deno install -g failed."
+        "$RUNTIME_BIN" install -g -A "$DENO_AGE_FLAG" --name pboss --reload --force "$DENO_SPEC" || die "deno install -g failed."
       else
-        "$RUNTIME_BIN" install -g -f -A --name pboss "$DENO_SPEC" || die "deno install -g failed."
+        "$RUNTIME_BIN" install -g -A --name pboss --reload --force "$DENO_SPEC" || die "deno install -g failed."
       fi
       PM_DIR="$INVOKE_HOME/.deno/bin"
     fi
