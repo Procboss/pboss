@@ -15,9 +15,11 @@
 #   and src/runtime-config.ts; tests/wrapper.test.ts pins the texts):
 #
 #   1. --runtime=<x> / --runtime <x>   anywhere before the `--` sentinel —
-#      an explicit per-invocation override. Not persisted here: the CLI
-#      prints the "Using <x> for this invocation" notice and (when no
-#      selection exists yet) initializes ~/.pboss/.runtime itself.
+#      an explicit per-invocation override. This flag belongs to THE
+#      WRAPPER (owner spec, 2026-10-07): it exists so the bin script can
+#      detect which runtime to use to call pboss, and it is consumed HERE —
+#      validated, persisted when no selection exists yet, and STRIPPED from
+#      the argv below. The JavaScript CLI never sees it.
 #   2. ~/.pboss/.runtime               the persistent selection (written by
 #      `pboss --runtime=<x>`, `pboss runtime change`, or the first-run
 #      prompt below). PBOSS_HOME overrides the directory.
@@ -34,9 +36,10 @@
 #  `deno install -g -A --min-dep-age=0 --name pboss --reload
 #  --force npm:pboss/deno-entry`.)
 #
-# All arguments — including spaces, quotes, empty strings and everything
-# after `--` — are forwarded VERBATIM via "$@". The flag is stripped by the
-# CLI, not here, so the wrapper's scan can stay read-only and order-safe.
+# Every other argument — spaces, quotes, empty strings, tabs, unicode, and
+# everything after `--` — is forwarded VERBATIM via "$@" (the strip loop
+# rebuilds the positional parameters only to drop the flag itself; each
+# element stays byte-exact).
 
 # ── 0. ProcBoss home (tests + portability: PBOSS_HOME overrides ~/.pboss) ──
 PBOSS_HOME_DIR="${PBOSS_HOME:-$HOME/.pboss}"
@@ -72,8 +75,51 @@ for ARG in "$@"; do
 done
 [ "$EXPECT_VALUE" = 1 ] && die "--runtime requires a value: node | bun | deno"
 
+# ── 2b. Strip the flag — the CLI never sees --runtime ────────────────────
+# The flag is the WRAPPER's (owner spec, 2026-10-07): rebuild the positional
+# parameters without it (and its value). `for ARG in "$@"` expands ONCE
+# (POSIX), so the loop's snapshot survives the `set --` calls below, and
+# `set -- "$@" "$ARG"` appends byte-exact — no re-quoting, no word
+# splitting, empty strings intact. Everything from `--` onward is the
+# command's own argv and is never touched (the sentinel itself is kept).
+if [ -n "$RUNTIME_FLAG" ]; then
+  STRIP_BEGUN=0
+  SKIP_VALUE=0
+  PAST_SENTINEL=0
+  for ARG in "$@"; do
+    if [ "$STRIP_BEGUN" = 0 ]; then
+      set --
+      STRIP_BEGUN=1
+    fi
+    if [ "$SKIP_VALUE" = 1 ]; then
+      SKIP_VALUE=0
+      continue
+    fi
+    if [ "$PAST_SENTINEL" = 1 ]; then
+      set -- "$@" "$ARG"
+      continue
+    fi
+    case "$ARG" in
+      --runtime) SKIP_VALUE=1 ;;
+      --runtime=*) ;;
+      --) PAST_SENTINEL=1; set -- "$@" "$ARG" ;;
+      *) set -- "$@" "$ARG" ;;
+    esac
+  done
+fi
+
 # normalize: trim + lowercase
 normalize_runtime() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | tr -d ' \t\r\n'; }
+
+# Display labels for the override notice ("Using Bun for this invocation.").
+runtime_display() {
+  case "$1" in
+    node) printf '%s' "Node" ;;
+    bun) printf '%s' "Bun" ;;
+    deno) printf '%s' "Deno" ;;
+    *) printf '%s' "$1" ;;
+  esac
+}
 
 if [ -n "$RUNTIME_FLAG" ]; then
   # ── 3a. Explicit override — validate, never silently guess ─────────────
@@ -89,6 +135,26 @@ Supported runtimes:
   deno"
       ;;
   esac
+  if [ -f "$RUNTIME_FILE" ]; then
+    # A DIFFERENT valid selection is overridden for this invocation only:
+    # say so and name the permanent switch — the file is never touched.
+    CONFIGURED_RUNTIME="$(normalize_runtime "$(cat "$RUNTIME_FILE" 2>/dev/null)")"
+    case "$CONFIGURED_RUNTIME" in
+      node | bun | deno)
+        if [ "$CONFIGURED_RUNTIME" != "$RUNTIME" ]; then
+          printf 'Using %s for this invocation.\n\n' "$(runtime_display "$RUNTIME")"
+          printf 'Configured runtime remains: %s\n\n' "$(runtime_display "$CONFIGURED_RUNTIME")"
+          printf 'To permanently change the runtime:\n  pboss runtime change\n\n'
+        fi
+        ;;
+    esac
+  else
+    # No selection yet — the flag initializes it (spec §16): plain text,
+    # one lowercase word, the same discipline as the first-run prompt.
+    mkdir -p "$PBOSS_HOME_DIR" 2>/dev/null || true
+    printf '%s\n' "$RUNTIME" > "$RUNTIME_FILE" 2>/dev/null ||
+      printf 'warning: could not save the runtime selection to %s\n' "$RUNTIME_FILE" >&2
+  fi
 elif [ -f "$RUNTIME_FILE" ]; then
   # ── 3b. The persistent selection ────────────────────────────────────────
   RUNTIME="$(normalize_runtime "$(cat "$RUNTIME_FILE" 2>/dev/null)")"

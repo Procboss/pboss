@@ -6,8 +6,10 @@
 # THE ARCHITECTURE — identical contract to bin/pboss.sh:
 #
 #   1. --runtime=<x> / --runtime <x>   anywhere before the `--` sentinel —
-#      explicit per-invocation override (the CLI prints the notice and
-#      initializes the selection when none exists yet).
+#      explicit per-invocation override. This flag belongs to THE WRAPPER
+#      (owner spec, 2026-10-07): the bin script consumes it — validates,
+#      persists when no selection exists yet, prints the override notice,
+#      and STRIPS it from the argv below. The JavaScript CLI never sees it.
 #   2. ~\.pboss\.runtime              the persistent selection (PBOSS_HOME
 #      overrides the directory).
 #   3. Interactive selection           first run only; Enter = Node.
@@ -17,7 +19,9 @@
 #
 # Windows reaches this file through the PowerShell installer (install.ps1
 # writes a pboss.cmd that invokes it) or by calling pboss.ps1 directly.
-# Arguments are forwarded with PowerShell's native splatting (@args).
+# Every other argument is forwarded with PowerShell's native splatting
+# (@cliArgs) — byte-exact, spaces, quotes, empty strings and everything
+# after `--` included.
 
 $ErrorActionPreference = "Stop"
 
@@ -54,6 +58,31 @@ function Test-Runtime([string]$value) {
     return ($n -eq "node" -or $n -eq "bun" -or $n -eq "deno")
 }
 
+function Runtime-Display([string]$value) {
+    switch ($value) {
+        "node" { return "Node" }
+        "bun" { return "Bun" }
+        "deno" { return "Deno" }
+        default { return $value }
+    }
+}
+
+# ── 2b. Strip the flag — the CLI never sees --runtime ──────────────────────
+# The flag is the WRAPPER's (owner spec, 2026-10-07): rebuild the argv
+# without it (and its value). Everything from `--` onward is the command's
+# own argv and is never touched (the sentinel itself is kept).
+$cliArgs = @()
+$stripSkipValue = $false
+$stripPastSentinel = $false
+foreach ($arg in $args) {
+    if ($stripSkipValue) { $stripSkipValue = $false; continue }
+    if ($stripPastSentinel) { $cliArgs += $arg; continue }
+    if ($arg -eq "--runtime") { $stripSkipValue = $true; continue }
+    if ($arg -like "--runtime=*") { continue }
+    if ($arg -eq "--") { $stripPastSentinel = $true }
+    $cliArgs += $arg
+}
+
 # ── 3. Resolve the runtime: flag → persisted selection → prompt ────────────
 $runtime = $null
 
@@ -62,6 +91,25 @@ if ($runtimeFlag) {
     $runtime = Normalize-Runtime $runtimeFlag
     if (-not (Test-Runtime $runtime)) {
         Fail "Unsupported runtime: $runtimeFlag`n`nSupported runtimes:`n  node`n  bun`n  deno"
+    }
+    if (Test-Path $runtimeFile -PathType Leaf) {
+        # A DIFFERENT valid selection is overridden for this invocation only:
+        # say so and name the permanent switch — the file is never touched.
+        $configured = Normalize-Runtime (Get-Content $runtimeFile -Raw)
+        if ((Test-Runtime $configured) -and $configured -ne $runtime) {
+            Write-Host "Using $(Runtime-Display $runtime) for this invocation."
+            Write-Host ""
+            Write-Host "Configured runtime remains: $(Runtime-Display $configured)"
+            Write-Host ""
+            Write-Host "To permanently change the runtime:"
+            Write-Host "  pboss runtime change"
+            Write-Host ""
+        }
+    } else {
+        # No selection yet — the flag initializes it: plain text, one
+        # lowercase word, the same discipline as the first-run prompt.
+        New-Item -ItemType Directory -Path $pbossHomeDir -Force | Out-Null
+        Set-Content -Path $runtimeFile -Value $runtime -Encoding ascii
     }
 } elseif (Test-Path $runtimeFile) {
     # 3b. The persistent selection.
@@ -111,7 +159,7 @@ switch ($runtime) {
                   "  remove '$runtimeFile' to choose again")
         }
         if (-not (Test-Path $cli)) { Fail "pboss install incomplete: $cli is missing — reinstall pboss." }
-        & node $cli @args
+        & node $cli @cliArgs
         exit $LASTEXITCODE
     }
     "bun" {
@@ -123,7 +171,7 @@ switch ($runtime) {
                   "  remove '$runtimeFile' to choose again")
         }
         if (-not (Test-Path $cli)) { Fail "pboss install incomplete: $cli is missing — reinstall pboss." }
-        & bun $cli @args
+        & bun $cli @cliArgs
         exit $LASTEXITCODE
     }
     "deno" {
@@ -135,7 +183,7 @@ switch ($runtime) {
                   "  remove '$runtimeFile' to choose again")
         }
         if (-not (Test-Path $cli)) { Fail "pboss install incomplete: $cli is missing — reinstall pboss." }
-        & deno run -A $cli @args
+        & deno run -A $cli @cliArgs
         exit $LASTEXITCODE
     }
     default {

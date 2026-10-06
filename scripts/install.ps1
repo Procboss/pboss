@@ -16,8 +16,9 @@
 #   `pboss upgrade`'s universal channel, or a manual re-run of this
 #   installer — honors it, never re-asks it), or the interactive prompt on
 #   a first install (Node is the default; Enter picks it). The selection is
-#   persisted by pboss itself into ~\.pboss\.runtime and stays there
-#   across upgrades until `pboss runtime change` says otherwise.
+#   persisted by this installer (and by the pboss bin wrapper itself) into
+#   ~\.pboss\.runtime and stays there across upgrades until
+#   `pboss runtime change` says otherwise.
 #
 #   This installer NEVER infers a runtime from whatever happens to be
 #   installed. The selected runtime is authoritative: if the user chose Bun
@@ -458,7 +459,7 @@ if (-not ($selected -eq "deno" -and $pmChoice -eq "deno")) {
     }
 }
 
-# ── 5. Verify + initialize the persistent runtime selection ─────────────
+# ── 5. Verify + persist the runtime selection ───────────────────────────
 $pbossBin = (Get-Command pboss -ErrorAction SilentlyContinue).Source
 if (-not $pbossBin -and $pmBinDir) {
     foreach ($cand in @("pboss.cmd", "pboss.ps1", "pboss")) {
@@ -473,17 +474,29 @@ if (-not $pbossBin) {
     exit 1
 }
 
-Write-Host "Initializing the runtime selection..." -ForegroundColor Cyan
-& $pbossBin --runtime=$selected --version | Out-Null
-if ($LASTEXITCODE -ne 0) {
-    Write-Host "⚠ Could not initialize the runtime selection — run:  pboss --runtime=$selected" -ForegroundColor Yellow
+# Persist the selection OURSELVES. The file is the WRAPPER's contract (plain
+# text, one lowercase word — pboss.ps1 reads it on every run), and
+# --runtime is a launcher flag now (owner spec, 2026-10-07): the bin script
+# consumes it, never the CLI. Writing the file directly works on EVERY
+# channel — including deno's, whose shim runs the entry with no wrapper —
+# and the pboss --version call below is the end-to-end smoke check.
+Write-Host "Persisting the runtime selection..." -ForegroundColor Cyan
+New-Item -ItemType Directory -Path $pbossHomeDir -Force | Out-Null
+try {
+    Set-Content -Path $runtimeFile -Value $selected -Encoding ascii
+} catch {
+    Write-Host "⚠ Could not write $runtimeFile — run:  pboss --runtime=$selected" -ForegroundColor Yellow
 }
 if ((Test-Path $runtimeFile) -and ((Get-Content $runtimeFile -Raw).Trim().ToLower() -eq $selected)) {
     Write-Host "✓ Runtime persisted: $selected ($runtimeFile)" -ForegroundColor Green
 }
 
 $installedV = (& $pbossBin --version 2>$null | ForEach-Object { $_.Split(' ')[-1] }) -replace 'v', ''
-Write-Host "✓ pboss is available: $pbossBin" -ForegroundColor Green
+if ($installedV) {
+    Write-Host "✓ pboss is available: $pbossBin" -ForegroundColor Green
+} else {
+    Write-Host "⚠ pboss did not answer --version — open a NEW terminal and run:  pboss --version" -ForegroundColor Yellow
+}
 
 # ── 6. Record the install channel — `pboss upgrade` upgrades in place ────
 if (-not (Test-Path $pbossHomeDir)) {

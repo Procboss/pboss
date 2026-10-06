@@ -3,16 +3,19 @@
  * architecture's core contract).
  *
  *   ~/.pboss/.runtime — plain text, one lowercase word (node | bun | deno)
- *   --runtime=<x>     — one-invocation override; initializes when absent,
- *                       never silently overwrites an existing selection
+ *   --runtime=<x>     — a LAUNCHER flag (owner spec, 2026-10-07): the bin
+ *                       wrapper (pboss.sh / pboss.ps1) consumes it — strips
+ *                       it, persists when absent — and the CLI never sees
+ *                       it; reaching the CLI directly is a usage error
  *   pboss runtime     — status: the configured selection + executing engine
  *   pboss runtime change — the interactive switcher (atomic; installs the
  *                       runtime and the published package before committing)
  *
- * Unit cases cover the canonical list, normalization, the flag scan (both
- * spellings, the `--` sentinel, missing values), the .runtime round-trip
- * and the install-command table (deno's entry subpath!). E2E cases run the
- * real CLI on a hermetic PBOSS_HOME — same harness as issue-28/34/config-file.
+ * Unit cases cover the canonical list, normalization, the .runtime
+ * round-trip and the install-command table (deno's entry subpath!). E2E
+ * cases run the real CLI on a hermetic PBOSS_HOME — same harness as
+ * issue-28/34/config-file — pinning the direct-invocation error for the
+ * launcher flag.
  */
 import { describe, test, expect } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync } from "node:fs";
@@ -22,7 +25,6 @@ import {
   SUPPORTED_RUNTIMES,
   isValidRuntime,
   normalizeRuntime,
-  scanRuntimeFlag,
   readConfiguredRuntime,
   readRuntimeFileRaw,
   writeRuntimeSelection,
@@ -30,7 +32,6 @@ import {
   invalidRuntimeConfigMessage,
   pbossInstallArgv,
   resolvePbossInstallArgv,
-  runtimeSpawnArgv,
   nodeDistPlatform,
   extractNodeTarballName,
   firstRunPromptText,
@@ -91,43 +92,6 @@ describe("runtime-config: the spec error texts", () => {
     expect(parseRuntimeAnswer(" Bun ")).toBe("bun");
     expect(parseRuntimeAnswer("node")).toBe("node");
     expect(parseRuntimeAnswer("42")).toBeNull();
-  });
-});
-
-/* ── unit: the --runtime flag scan (the wrappers' twin) ─────────────────── */
-
-describe("runtime-config: scanRuntimeFlag", () => {
-  test("no flag → argv untouched", () => {
-    const r = scanRuntimeFlag(["start", "app.js", "--name", "x"]);
-    expect(r.explicit).toBe(false);
-    expect(r.missingValue).toBe(false);
-    expect(r.rest).toEqual(["start", "app.js", "--name", "x"]);
-  });
-
-  test("= form anywhere, both spellings", () => {
-    expect(scanRuntimeFlag(["--runtime=bun", "list"]).value).toBe("bun");
-    expect(scanRuntimeFlag(["list", "--runtime", "bun"]).value).toBe("bun");
-    expect(scanRuntimeFlag(["--runtime", "deno", "list"]).rest).toEqual(["list"]);
-    expect(scanRuntimeFlag(["list", "--runtime=bun"]).rest).toEqual(["list"]);
-  });
-
-  test("the flag is consumed exactly once (value pairs skip their value)", () => {
-    const r = scanRuntimeFlag(["--runtime", "bun", "start", "app.js"]);
-    expect(r.value).toBe("bun");
-    expect(r.rest).toEqual(["start", "app.js"]);
-  });
-
-  test("everything after `--` is untouchable — the app's own argv", () => {
-    const r = scanRuntimeFlag(["start", "app.js", "--", "--runtime=bun"]);
-    expect(r.explicit).toBe(false);
-    expect(r.rest).toEqual(["start", "app.js", "--", "--runtime=bun"]);
-  });
-
-  test("a value flag at the end is a missing value, not a guess", () => {
-    const r = scanRuntimeFlag(["list", "--runtime"]);
-    expect(r.missingValue).toBe(true);
-    expect(r.explicit).toBe(false);
-    expect(r.rest).toEqual(["list", "--runtime"]);
   });
 });
 
@@ -194,17 +158,6 @@ describe("runtime-config: install commands", () => {
     expect(pbossInstallArgv("deno", "1.6.0").at(-1)).toBe("npm:pboss@1.6.0/deno-entry");
   });
 
-  test("deno launches need the permission flags; node/bun are plain", () => {
-    expect(runtimeSpawnArgv("deno", "/x/cli.deno.js", ["a"])).toEqual([
-      "deno",
-      "run",
-      "-A",
-      "/x/cli.deno.js",
-      "a",
-    ]);
-    expect(runtimeSpawnArgv("node", "/x/cli.node.js", ["a"])).toEqual(["node", "/x/cli.node.js", "a"]);
-  });
-
   test("the node rootless install maps platforms and finds tarballs", () => {
     expect(nodeDistPlatform("linux", "x64")).toBe("linux-x64");
     expect(nodeDistPlatform("darwin", "arm64")).toBe("darwin-arm64");
@@ -246,49 +199,32 @@ async function runCli(args: string[], home: string) {
   return { out: stripAnsi(out), err: stripAnsi(err), code: code ?? 0 };
 }
 
-describe("runtime-config: e2e — --runtime on the real CLI", () => {
+describe("runtime-config: e2e — --runtime is a LAUNCHER flag (direct CLI = honest error)", () => {
   const home = mkdtempSync(join(tmpdir(), "pboss-rtcli-"));
   const runtimeFile = join(home, ".runtime");
 
-  test("--runtime=bun with no selection INITIALIZES it and runs", async () => {
-    const r = await runCli(["--runtime=bun", "--version"], home);
-    expect(r.code).toBe(0);
-    expect(r.out).toContain("pboss v");
-    expect(readFileSync(runtimeFile, "utf8")).toBe("bun\n");
+  test("--runtime=<x> reaching the CLI directly is a usage error — both spellings", async () => {
+    // Owner spec, 2026-10-07: the bin script (pboss.sh / pboss.ps1) consumes
+    // --runtime; the JavaScript level never parses it. Direct invocation
+    // (node dist/cli.js …, a deno shim running the entry) gets the honest
+    // error that names the launcher and the permanent switch.
+    for (const spelling of ["--runtime=bun", ["--runtime", "bun"]]) {
+      const r = await runCli(Array.isArray(spelling) ? spelling : [spelling, "--version"], home);
+      expect(r.code).toBe(1);
+      expect(r.err + r.out).toContain("--runtime is a launcher flag");
+      expect(r.err + r.out).toContain("pboss runtime change");
+    }
+    // Nothing was persisted, nothing was dispatched.
+    expect(() => readFileSync(runtimeFile, "utf8")).toThrow();
   });
 
-  test("--runtime=X with a DIFFERENT selection: override notice, file untouched", async () => {
-    const r = await runCli(["--runtime=node", "--version"], home);
-    expect(r.code).toBe(0);
-    expect(r.out).toContain("Using Node for this invocation.");
-    expect(r.out).toContain("Configured runtime remains: Bun");
-    expect(r.out).toContain("To permanently change the runtime:");
-    expect(r.out).toContain("pboss runtime change");
-    expect(readFileSync(runtimeFile, "utf8")).toBe("bun\n"); // NOT overwritten
-  });
-
-  test("--runtime=X matching the selection: no noise, just runs", async () => {
-    const r = await runCli(["--runtime=bun", "--version"], home);
-    expect(r.code).toBe(0);
-    expect(r.out).not.toContain("Configured runtime remains");
-    expect(r.out).toContain("pboss v");
-  });
-
-  test("invalid values die with the exact unsupported-runtime text", async () => {
-    const r = await runCli(["--runtime=xyz", "--version"], home);
-    expect(r.code).toBe(1);
-    expect(r.err).toContain("Unsupported runtime: xyz");
-    expect(r.err).toContain("Supported runtimes:");
-  });
-
-  test("a bare --runtime (no value) is a usage error", async () => {
+  test("a bare --runtime (no value) hits the same launcher-flag error", async () => {
     const r = await runCli(["--runtime"], home);
     expect(r.code).toBe(1);
-    expect(r.err + r.out).toContain("--runtime requires a value");
+    expect(r.err + r.out).toContain("--runtime is a launcher flag");
   });
 
-  test("the flag works in any position, and after `--` it is the app's", async () => {
-    expect((await runCli(["--version", "--runtime=bun"], home)).code).toBe(0);
+  test("after `--` it is the app's own argv — never the launcher's business", async () => {
     // NOTE: `bun run script -- X` eats the FIRST `--` as its own separator —
     // the doubled `--` is what delivers a literal leading `--` to the CLI
     // (node dist/cli.js -- X has no such artifact; same rule as the

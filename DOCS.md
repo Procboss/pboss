@@ -177,10 +177,11 @@ on the system (issue #38), and a Node-only machine works with Bun nowhere.
 Resolution order, every `pboss` invocation:
 
 1. `--runtime=<node|bun|deno>` anywhere before `--` — one invocation under
-   that runtime. When `~/.pboss/.runtime` does not exist yet it **initializes**
-   the persistent selection; when a different runtime is configured it
-   overrides for that invocation only and tells you how to change it
-   permanently.
+   that runtime. This is a **launcher flag**: the wrapper itself validates
+   it, strips it from the command line the CLI receives, and (when
+   `~/.pboss/.runtime` does not exist yet) writes the persistent selection.
+   When a different runtime is configured it overrides for that invocation
+   only and tells you how to change it permanently.
 2. `~/.pboss/.runtime` — the persistent selection (survives upgrades and
    reinstalls; written by `pboss --runtime=<x>`, `pboss runtime change`, the
    first-run prompt, and the installers).
@@ -197,14 +198,14 @@ pboss --runtime=bun     # one invocation under Bun
 Deno installs the published **entry subpath**
 (`deno install -g -A --min-dep-age=0 --name pboss --reload --force npm:pboss/deno-entry`)
 because deno executes npm package bins as modules — a shell wrapper cannot
-serve that path; the deno command runs `dist/cli.deno.js` directly, and
-`pboss --runtime=deno` (which the installer and `runtime change` run for
-you) persists the selection the wrapper architecture reads. The
-`--min-dep-age=0` flag disables Deno's 24-hour supply-chain hold (see
-the Deno Global Install section); the universal installer passes it too,
-pinning the newest release, while `runtime change` and `upgrade` run the
-same unpinned command; older Denos pin the newest resolvable version
-instead.
+serve that path; the deno command runs `dist/cli.deno.js` directly, and the
+installer persists the selection to `~/.pboss/.runtime` itself (the file
+the wrapper architecture reads — `--runtime` being a launcher flag, deno's
+shim has no wrapper to consume it). The `--min-dep-age=0` flag disables
+Deno's 24-hour supply-chain hold (see the Deno Global Install section); the
+universal installer passes it too, pinning the newest release, while
+`runtime change` and `upgrade` run the same unpinned command; older Denos
+pin the newest resolvable version instead.
 
 ---
 

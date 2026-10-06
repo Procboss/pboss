@@ -126,10 +126,11 @@ the runtime is **your** explicit, persistent choice, stored in
 - **First run** — if nothing is configured yet, `pboss` asks once
   (interactive terminals only) and saves the answer. On a machine with no
   selection and no terminal, pass the flag explicitly: `pboss --runtime=bun`.
-- **`--runtime=<node|bun|deno>`** — run one invocation under a runtime.
-  When nothing is configured yet it *initializes* the persistent selection;
-  when a different runtime is configured it overrides for that invocation
-  only and tells you how to change it permanently.
+- **`--runtime=<node|bun|deno>`** — run one invocation under a runtime. A
+  launcher flag: the wrapper consumes it before the CLI runs. When nothing
+  is configured yet it *initializes* the persistent selection; when a
+  different runtime is configured it overrides for that invocation only
+  and tells you how to change it permanently.
 - **`pboss runtime`** — show the configured runtime, the executing engine,
   and how pboss was installed.
 - **`pboss runtime change`** — switch permanently: interactive, installs the

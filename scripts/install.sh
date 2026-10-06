@@ -14,8 +14,9 @@
 #   `pboss upgrade`'s universal channel, or a manual curl | sh refresh —
 #   honors it, never re-asks it), or the interactive prompt on a first
 #   install (Node is the default; Enter picks it). The selection is
-#   persisted by pboss itself into ~/.pboss/.runtime and stays there
-#   across upgrades until `pboss runtime change` says otherwise.
+#   persisted by this installer (and by the pboss bin wrapper itself) into
+#   ~/.pboss/.runtime and stays there across upgrades until
+#   `pboss runtime change` says otherwise.
 #
 #   This installer NEVER infers a runtime from whatever happens to be
 #   installed. The selected runtime is authoritative: if the user chose Bun
@@ -117,13 +118,13 @@ if [ -n "$RUNTIME" ]; then
       ;;
   esac
 elif [ -f "$RUNTIME_FILE" ]; then
-  # The persisted selection (spec §14): ~/.pboss/.runtime — written by pboss
-  # itself (first run, `pboss runtime change`, or this installer's init
-  # step). A re-run of this installer must honor it, never re-ask a
-  # question the machine has already answered. Invalid content is NOT
-  # swallowed (spec §20 — the wrapper and the CLI die on this same file
-  # with the same text): a broken selection must never be silently
-  # replaced by a guess.
+  # The persisted selection (spec §14): ~/.pboss/.runtime — written by the
+  # pboss bin wrapper (`pboss --runtime=<x>`, the first-run prompt), by
+  # `pboss runtime change`, or by this installer's persist step. A re-run
+  # of this installer must honor it, never re-ask a question the machine
+  # has already answered. Invalid content is NOT swallowed (spec §20 — the
+  # wrapper and the CLI die on this same file with the same text): a broken
+  # selection must never be silently replaced by a guess.
   PERSISTED_RUNTIME="$(normalize_runtime "$(cat "$RUNTIME_FILE" 2>/dev/null || printf '%s' '')")"
   case "$PERSISTED_RUNTIME" in
     node | bun | deno)
@@ -565,7 +566,7 @@ if [ -n "$PM_DIR" ] && [ -d "$PM_DIR" ]; then
   esac
 fi
 
-# ── 5. Verify + initialize the persistent runtime selection ──────────────
+# ── 5. Verify + persist the runtime selection ──────────────────────────
 PBOSS_BIN="$(command -v pboss 2>/dev/null || true)"
 if [ -z "$PBOSS_BIN" ] && [ -n "$PM_DIR" ] && [ -x "$PM_DIR/pboss" ]; then
   PBOSS_BIN="$PM_DIR/pboss"
@@ -577,19 +578,27 @@ fi
   exit 1
 }
 
-# Tell the newly installed pboss which runtime was selected — this PERSISTS
-# it to ~/.pboss/.runtime (the CLI saves it; every later `pboss` — including
-# upgrades — reads it back and dispatches accordingly).
-printf '%s\n' "${CYAN}Initializing the runtime selection…${RESET}"
-"$PBOSS_BIN" --runtime="$RUNTIME" --version >/dev/null 2>&1 || {
-  printf '%s\n' "${YELLOW}⚠ Could not initialize the runtime selection — run:  pboss --runtime=$RUNTIME${RESET}"
-}
+# Persist the selection OURSELVES. The file is the WRAPPER's contract (plain
+# text, one lowercase word — bin/pboss.sh reads it on every run), and
+# `--runtime` is a launcher flag now (owner spec, 2026-10-07): the bin
+# script consumes it, never the CLI. Writing the file directly works on
+# EVERY channel — including deno's, whose shim runs the entry without any
+# wrapper to consume a flag — and the `pboss --version` call below is the
+# end-to-end smoke check (the wrapper dispatches BY this file).
+printf '%s\n' "${CYAN}Persisting the runtime selection…${RESET}"
+mkdir -p "$PBOSS_HOME_DIR"
+printf '%s\n' "$RUNTIME" > "$RUNTIME_FILE" 2>/dev/null ||
+  printf '%s\n' "${YELLOW}⚠ Could not write ${RUNTIME_FILE} — run:  pboss --runtime=${RUNTIME}${RESET}"
 if [ "$(normalize_runtime "$(cat "$RUNTIME_FILE" 2>/dev/null || printf '%s' '')")" = "$RUNTIME" ]; then
   printf '%s\n' "${GREEN}✓ Runtime persisted: ${RUNTIME} (${RUNTIME_FILE})${RESET}"
 fi
 
 INSTALLED_V="$("$PBOSS_BIN" --version 2>/dev/null | awk '{print $NF}' | tr -d 'v')"
-printf '%s\n' "${GREEN}✓ pboss is available: $PBOSS_BIN${RESET}"
+if [ -n "$INSTALLED_V" ]; then
+  printf '%s\n' "${GREEN}✓ pboss is available: $PBOSS_BIN${RESET}"
+else
+  printf '%s\n' "${YELLOW}⚠ pboss did not answer --version — open a NEW terminal and run:  pboss --version${RESET}"
+fi
 
 # ── 6. Record the install channel — `pboss upgrade` upgrades in place ────
 STAMP_DIR="$PBOSS_HOME_DIR"
@@ -597,7 +606,7 @@ mkdir -p "$STAMP_DIR"
 printf '{"channel":"universal","pm":"%s","by":"install.sh","stampedAt":%s,"version":"%s"}\n' \
   "$PM_CHOICE" "$(date +%s)" "${INSTALLED_V:-unknown}" \
   > "$STAMP_DIR/channel.json"
-[ -n "$INVOKE_USER" ] && chown "${INVOKE_USER}:" "$STAMP_DIR" "$STAMP_DIR/channel.json" 2>/dev/null || true
+[ -n "$INVOKE_USER" ] && chown "${INVOKE_USER}:" "$STAMP_DIR" "$STAMP_DIR/channel.json" "$RUNTIME_FILE" 2>/dev/null || true
 
 # ── 7. PATH self-heal — the PM bin dir stays on PATH in future shells ────
 heal_path_in_rc() {

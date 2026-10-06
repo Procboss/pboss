@@ -85,10 +85,34 @@ describe("wrapper: bin/pboss.sh contract (source pins)", () => {
   });
 
   test("arguments are forwarded VERBATIM via \"$@\" (spaces, quotes, --)", () => {
-    // The wrapper never rebuilds argv — it scans read-only and execs with
-    // the original positional parameters intact.
-    expect(SH.match(/"\$@"/g)?.length).toBeGreaterThanOrEqual(4); // each dispatch + help
+    // The wrapper rebuilds argv only to strip the pre-sentinel --runtime
+    // flag (owner spec, 2026-10-07); every kept element — and everything
+    // after `--` — stays byte-exact through the positional parameters.
+    expect(SH.match(/"\$@"/g)?.length).toBeGreaterThanOrEqual(4); // strip rebuild + dispatch
     expect(SH).toContain("--) break ;;");
+  });
+
+  test("the wrapper STRIPS the flag — the CLI never sees --runtime", () => {
+    // The strip rebuilds the positional parameters without the flag (and
+    // its value), stops at the `--` sentinel, and appends byte-exact
+    // (`set -- "$@" "$ARG"` never re-parses element contents).
+    expect(SH).toContain("# ── 2b. Strip the flag — the CLI never sees --runtime");
+    expect(SH).toContain('set -- "$@" "$ARG"');
+    expect(SH).toContain("--runtime) SKIP_VALUE=1 ;;");
+    expect(SH).toContain("--runtime=*) ;;");
+    expect(SH).toContain("PAST_SENTINEL=1");
+  });
+
+  test("the flag initializes the selection; an override prints the notice (both wrapper-side)", () => {
+    // Init (no .runtime yet) — the save the JS entry used to perform, now
+    // owned by the bin script itself.
+    expect(SH).toContain('printf \'%s\\n\' "$RUNTIME" > "$RUNTIME_FILE"');
+    // The one-invocation override notice — the same text the CLI printed
+    // before the flag moved to the bin level; the file is never touched.
+    expect(SH).toContain("Using %s for this invocation.");
+    expect(SH).toContain("Configured runtime remains: %s");
+    expect(SH).toContain("To permanently change the runtime:");
+    expect(SH).toContain("pboss runtime change");
   });
 
   test("the package dir is resolved through the symlink chain (npm links)", () => {
@@ -119,9 +143,9 @@ describe("wrapper: bin/pboss.sh contract (source pins)", () => {
 describe("wrapper: bin/pboss.ps1 contract (source pins)", () => {
   test("pwsh shebang; dispatch table mirrors the sh twin", () => {
     expect(PS1.startsWith("#!/usr/bin/env pwsh\n")).toBe(true);
-    expect(PS1).toContain('& node $cli @args');
-    expect(PS1).toContain('& bun $cli @args');
-    expect(PS1).toContain('& deno run -A $cli @args');
+    expect(PS1).toContain('& node $cli @cliArgs');
+    expect(PS1).toContain('& bun $cli @cliArgs');
+    expect(PS1).toContain('& deno run -A $cli @cliArgs');
     expect(PS1).toContain('cli.node.js');
     expect(PS1).toContain('cli.bun.js');
     expect(PS1).toContain('cli.deno.js');
@@ -135,6 +159,20 @@ describe("wrapper: bin/pboss.ps1 contract (source pins)", () => {
     // Read-Host renders the prompt with its own colon: "Select runtime [1]:"
     expect(PS1).toContain('Read-Host "Select runtime [1]"');
     expect(PS1).toContain("ProcBoss needs a runtime selection.");
+  });
+
+  test("the ps1 twin strips the flag and splats @cliArgs (never raw $args)", () => {
+    // Owner spec, 2026-10-07 — the PowerShell wrapper owns the flag too:
+    // strip + save + notice, then dispatch the clean argv.
+    expect(PS1).toContain("$cliArgs += $arg");
+    expect(PS1).toContain('$arg -eq "--runtime"');
+    expect(PS1).toContain('$arg -like "--runtime=*"');
+    expect(PS1).toContain("Set-Content -Path $runtimeFile -Value $runtime");
+    expect(PS1).toContain("Configured runtime remains:");
+    // No dispatch path splats the raw $args anymore.
+    expect(PS1).not.toContain("& node $cli @args");
+    expect(PS1).not.toContain("& bun $cli @args");
+    expect(PS1).not.toContain("& deno run -A $cli @args");
   });
 
   test("PS 5.1-safe: no null-coalescing operator", () => {
@@ -185,27 +223,11 @@ describe("wrapper: one runtime list across every implementation", () => {
 
 /* ── e2e: the REAL wrapper on scrubbed PATH farms ──────────────────────── */
 
-/** The real entry's --runtime contract, mirrored in the probe (same rule):
- *  strip the flag like the CLI does, and INITIALIZE ~/.pboss/.runtime when
- *  none exists (the save the real entry performs). */
-const PROBE_STRIP = `
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
-const a = process.argv.slice(2);
-const out = [];
-let rt = null;
-for (let i = 0; i < a.length; i++) {
-  if (a[i] === "--") { out.push(...a.slice(i)); break; }
-  if (a[i] === "--runtime") { rt = a[i + 1]; i++; continue; }
-  if (a[i].startsWith("--runtime=")) { rt = a[i].slice(10); continue; }
-  out.push(a[i]);
-}
-if (rt) {
-  const home = process.env.PBOSS_HOME || join(process.env.HOME || "", ".pboss");
-  const file = join(home, ".runtime");
-  if (!existsSync(file)) { mkdirSync(home, { recursive: true }); writeFileSync(file, rt.trim().toLowerCase() + "\\n"); }
-}
-console.log(JSON.stringify(out));
+/** The real entry's contract, mirrored in the probe: the WRAPPER strips
+ *  --runtime and saves the selection — the entry receives clean argv and
+ *  never parses the flag (owner spec, 2026-10-07: bin-level execution). */
+const PROBE = `
+console.log(JSON.stringify(process.argv.slice(2)));
 `;
 
 /** A fake package layout with the REAL wrapper + echo-probe entries. */
@@ -216,19 +238,19 @@ function probePackage() {
   mkdirSync(join(pkg, "dist"), { recursive: true });
   writeFileSync(join(pkg, "package.json"), JSON.stringify({ name: "probe", version: "1.0.0", type: "module" }));
   // Echo argv as JSON — proves byte-exact forwarding through the wrapper.
-  // The --runtime flag is stripped the same way the real entry strips it.
-  // (The REAL built entries are exercised by their own describe block below;
-  //  the registry install path — build, pack, install, run — lives in
-  //  tests/issue-38.test.ts.)
-  writeFileSync(join(pkg, "dist", "cli.node.js"), `#!/usr/bin/env node\n${PROBE_STRIP}`);
-  writeFileSync(join(pkg, "dist", "cli.bun.js"), `#!/usr/bin/env bun\n${PROBE_STRIP}`);
+  // The WRAPPER strips --runtime and saves the selection (owner spec,
+  // 2026-10-07 — the flag is bin-level); the entry sees clean argv, exactly
+  // like the real CLI. (The REAL built entries are exercised by their own
+  // describe block below; the registry install path — build, pack, install,
+  // run — lives in tests/issue-38.test.ts.)
+  writeFileSync(join(pkg, "dist", "cli.node.js"), `#!/usr/bin/env node\n${PROBE}`);
+  writeFileSync(join(pkg, "dist", "cli.bun.js"), `#!/usr/bin/env bun\n${PROBE}`);
   writeFileSync(
     join(pkg, "dist", "cli.deno.js"),
-    // The same --runtime contract as the node/bun probes, in Deno-native
-    // APIs: strip the flag, and INITIALIZE ~/.pboss/.runtime when none
-    // exists (the save the real entry performs — the assertion the deno
-    // farm reads back after dispatch).
-    `const a = Deno.args; const out = [];\nlet rt = null;\nfor (let i = 0; i < a.length; i++) {\n  if (a[i] === "--") { out.push(...a.slice(i)); break; }\n  if (a[i] === "--runtime") { rt = a[i + 1]; i++; continue; }\n  if (a[i].startsWith("--runtime=")) { rt = a[i].slice(10); continue; }\n  out.push(a[i]);\n}\nif (rt) {\n  const home = Deno.env.get("PBOSS_HOME") || (Deno.env.get("HOME") + "/.pboss");\n  const file = home + "/.runtime";\n  let exists = true;\n  try { Deno.readTextFileSync(file); } catch { exists = false; }\n  if (!exists) { Deno.mkdirSync(home, { recursive: true }); Deno.writeTextFileSync(file, rt.trim().toLowerCase() + "\\n"); }\n}\nconsole.log(JSON.stringify(out));\n`,
+    // The same clean-argv echo, in Deno-native APIs — the WRAPPER already
+    // stripped the flag and saved the selection (the file assertions the
+    // deno farm reads back after dispatch).
+    `console.log(JSON.stringify(Deno.args));\n`,
   );
   writeFileSync(join(pkg, "bin", "pboss.sh"), SH);
   chmodSync(join(pkg, "bin", "pboss.sh"), 0o755);
@@ -435,13 +457,48 @@ describe("wrapper: e2e — runtime farms", () => {
         // (The echo probes are runtime-agnostic; distinguish by entry marker.)
         writeFileSync(
           join(farm.pkg, "dist", "cli.node.js"),
-          `#!/usr/bin/env node\nconsole.log("ENTRY-NODE ");\n${PROBE_STRIP}`,
+          `#!/usr/bin/env node\nconsole.log("ENTRY-NODE ");\n${PROBE}`,
         );
         const r = runWrapper(farm.bin + "/pboss", ["--runtime=node", "q"], scrub, home);
         expect(r.code, `wrapper stderr:\n${r.err}`).toBe(0);
         expect(r.out).toContain("ENTRY-NODE");
         expect(r.out).toContain('["q"]');
+        // The wrapper prints the same override notice the CLI used to print
+        // (owner spec, 2026-10-07 — the flag moved to the bin level).
+        expect(r.out).toContain("Using Node for this invocation.");
+        expect(r.out).toContain("Configured runtime remains: Bun");
+        expect(r.out).toContain("To permanently change the runtime:");
+        expect(r.out).toContain("pboss runtime change");
         expect(readFileSync(join(home, ".runtime"), "utf8")).toBe("bun\n"); // untouched
+      } finally {
+        rmSync(farm.farm, { recursive: true, force: true });
+        rmSync(scrub, { recursive: true, force: true });
+      }
+    },
+    30000,
+  );
+
+  test.skipIf(!POSIX || !BUN_BIN)(
+    "both spellings and any pre-sentinel position are stripped — the entry sees clean argv",
+    () => {
+      const farm = probePackage();
+      const scrub = runtimeFarm(["bun"]);
+      const home = join(farm.farm, "home");
+      mkdirSync(home, { recursive: true });
+      writeFileSync(join(home, ".runtime"), "bun\n", "utf8");
+      try {
+        // The space form consumes its value.
+        const space = runWrapper(farm.bin + "/pboss", ["--runtime", "bun", "list"], scrub, home);
+        expect(space.code, `wrapper stderr:\n${space.err}`).toBe(0);
+        expect(space.out.trim()).toBe('["list"]');
+        // Mid-position, with a neighboring flag-like token kept intact.
+        const mid = runWrapper(farm.bin + "/pboss", ["start", "app.js", "--runtime=bun", "--name", "x"], scrub, home);
+        expect(mid.code, `wrapper stderr:\n${mid.err}`).toBe(0);
+        expect(mid.out.trim()).toBe('["start","app.js","--name","x"]');
+        // A matching selection + flag: no notice, no noise.
+        const quiet = runWrapper(farm.bin + "/pboss", ["--runtime=bun", "--version"], scrub, home);
+        expect(quiet.code).toBe(0);
+        expect(quiet.out.trim()).toBe('["--version"]');
       } finally {
         rmSync(farm.farm, { recursive: true, force: true });
         rmSync(scrub, { recursive: true, force: true });
@@ -564,12 +621,15 @@ describe("wrapper: e2e — interactive first-run (pty)", () => {
  *
  * The echo probes above prove the WRAPPER (resolution, forwarding, saves)
  * but never import the shared core — they cannot see bundle-level breakage.
- * This block dispatches the REAL dist/cli.*.js entries under each available
- * runtime on a scrubbed PATH, asserting the full product path: entry →
- * core → --runtime save → version answer. It is the layer that catches
- * Deno's ESM strictness (bare `from "events"` is a hard error there, while
- * Node and Bun accept it — the 1.6.0 deno entry shipped broken until the
- * build gained the node:-prefix rewrite).
+ * This block runs the REAL dist/cli.*.js entries DIRECTLY under each
+ * available runtime on a scrubbed PATH, asserting the full product path:
+ * entry → core → version answer. It is the layer that catches Deno's ESM
+ * strictness (bare `from "events"` is a hard error there, while Node and
+ * Bun accept it — the 1.6.0 deno entry shipped broken until the build
+ * gained the node:-prefix rewrite). No --runtime here: that flag is the
+ * launcher's now (owner spec, 2026-10-07) — a direct entry invocation
+ * with it would be the CLI's honest usage error; the wrapper+flag+save
+ * flow is pinned by the probe farms and tests/issue-38.test.ts.
  *
  * dist/ is a build artifact: on a fresh clone run
  * `bun run ./scripts/build-dist.ts` (the issue-38 suite builds it too when
@@ -590,16 +650,16 @@ describe("wrapper: e2e — the REAL built entries (needs dist/)", () => {
   }
 
   const cases: [runtime: string, bin: string | null, entryArgs: (entry: string) => string[]][] = [
-    ["node", NODE_BIN, (e) => [e, "--runtime=node", "--version"]],
-    ["bun", BUN_BIN, (e) => [e, "--runtime=bun", "--version"]],
+    ["node", NODE_BIN, (e) => [e, "--version"]],
+    ["bun", BUN_BIN, (e) => [e, "--version"]],
     // deno's entry always runs through `deno run -A` (no shebang can carry
     // the permission flags) — exactly how bin/pboss.sh dispatches it.
-    ["deno", DENO_BIN, (e) => ["run", "-A", e, "--runtime=deno", "--version"]],
+    ["deno", DENO_BIN, (e) => ["run", "-A", e, "--version"]],
   ];
 
   for (const [runtime, bin, entryArgs] of cases) {
     test.skipIf(!POSIX || !DIST_BUILT || !bin)(
-      `real ${runtime} entry: answers --version and saves the selection`,
+      `real ${runtime} entry: the bundle answers --version (direct — no launcher flag)`,
       () => {
         const farm = mkdtempSync(join(tmpdir(), "pboss-realfarm-"));
         const scrub = runtimeFarm([runtime]);
@@ -610,7 +670,9 @@ describe("wrapper: e2e — the REAL built entries (needs dist/)", () => {
           const r = runEntry(bin!, entryArgs(entry), scrub, home);
           expect(r.code, `entry stderr:\n${r.err}`).toBe(0);
           expect(r.out).toMatch(/pboss v\d+\.\d+\.\d+/);
-          expect(readFileSync(join(home, ".runtime"), "utf8")).toBe(`${runtime}\n`);
+          // Direct entry runs never touch the selection — the launcher
+          // owns it (a direct --runtime would be the usage error instead).
+          expect(() => readFileSync(join(home, ".runtime"), "utf8")).toThrow();
         } finally {
           rmSync(farm, { recursive: true, force: true });
           rmSync(scrub, { recursive: true, force: true });

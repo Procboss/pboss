@@ -19,7 +19,6 @@ import path, { resolve, extname, join } from "path";
 import { getRuntime, runtimeDescription, runtimeDisplayName } from "./runtime";
 import { installModeDescription } from "./install-mode";
 import {
-  handleRuntimeFlag,
   isValidRuntime,
   normalizeRuntime,
   resolvePbossInstallArgv,
@@ -3155,8 +3154,10 @@ ${colorize("Notes:", "dim")}
     runtime change                Switch the persistent runtime choice
                                   (interactive; installs the runtime and the
                                   pboss package for it if needed)
-    --runtime=<node|bun|deno>     Run this invocation under a runtime; with
-                                  no ~/.pboss/.runtime yet it initializes
+    --runtime=<node|bun|deno>     Launcher flag (consumed by the pboss bin
+                                  script before the CLI runs): run one
+                                  invocation under a runtime; with no
+                                  ~/.pboss/.runtime yet it initializes
                                   the persistent selection
     ping                          Check if daemon is alive
     kill                          Kill the daemon and all processes
@@ -3242,7 +3243,23 @@ ${colorize("Notes:", "dim")}
   async run(argv: string[]) {
     const command = argv[0];
     const commandArgs = argv.slice(1);
-    
+
+    // `--runtime` is a LAUNCHER flag (owner spec, 2026-10-07): the bin
+    // script (pboss.sh / pboss.ps1) consumes it before the CLI runs. A
+    // token reaching the CLI directly means the invocation bypassed the
+    // launcher (e.g. `node dist/cli.js --runtime=bun`, or a deno shim
+    // running the entry as a module) — an honest usage error, never a
+    // silent parse at the JS level.
+    if (typeof command === "string" && (command === "--runtime" || command.startsWith("--runtime="))) {
+      console.error(
+        "--runtime is a launcher flag — the pboss bin script (pboss.sh / pboss.ps1)" +
+          " consumes it to pick the runtime; it never reaches the CLI.\n\n" +
+          "Invoke pboss through its launcher (pboss --runtime=<node|bun|deno> …), or switch\n" +
+          "permanently with: pboss runtime change",
+      );
+      process.exit(1);
+    }
+
     this.noDaemon = argv.includes("--no-daemon") || argv.includes("-d");
     if (this.noDaemon) {
       this.pboss = new PBoss({ noDaemon: true });
@@ -3365,13 +3382,6 @@ ${colorize("Notes:", "dim")}
       case "--version":
         console.log(`${APP_NAME} v${VERSION}`);
         break;
-      case "--runtime":
-        // `--runtime=<x>` is a VALUE flag now (handled before the CLI runs
-        // — src/runtime-config.ts). Reaching this case means a bare
-        // `--runtime` without a value: an honest usage error, not a guess.
-        console.error("--runtime requires a value: node | bun | deno");
-        process.exit(1);
-        break;
       case "runtime":
         if (commandArgs[0] === "change") {
           await this.cmdRuntimeChange(commandArgs.slice(1));
@@ -3431,9 +3441,8 @@ ${colorize("Notes:", "dim")}
 
 async function main() {
   await ensureDirs();
-  const argv = await handleRuntimeFlag(process.argv.slice(2));
   const cli = new PBossCLI();
-  await cli.run(argv);
+  await cli.run(process.argv.slice(2));
 }
 
 // Runs when this file is the EXECUTED SCRIPT (bun run src/index.ts). The

@@ -30,9 +30,11 @@ const cmd = readFileSync(CMD_PATH, "utf8");
  *   - The selected runtime is installed when missing (bun/deno official
  *     installers; node = the official dist tarball, rootless).
  *   - The PUBLISHED package is installed through the selected runtime's own
- *     package ecosystem — npm / bun / deno install -g — never a clone.
- *   - The installer then calls `pboss --runtime=<x> --version`, which
- *     persists the selection to ~/.pboss/.runtime.
+ *   package ecosystem — npm / bun / deno install -g — never a clone.
+ *   - The installer then persists the selection to ~/.pboss/.runtime ITSELF
+ *     (--runtime is a launcher flag, owner spec 2026-10-07 — the CLI never
+ *     parses it, and deno's shim has no wrapper to consume it), and the
+ *     pboss --version smoke check dispatches BY that file.
  *
  * The functional sims are machine-independent (Task 67 lesson): temp HOME and
  * stub `node`/`npm`/`bun`/`deno`/`curl`/`pboss` on PATH — never the real
@@ -253,9 +255,13 @@ describe("installers: the runtime-aware contract (source pins)", () => {
     expect(sh).toContain("--name pboss");
   });
 
-  test("the installer initializes the selection through pboss itself", () => {
-    expect(sh).toContain('"$PBOSS_BIN" --runtime="$RUNTIME" --version');
+  test("the installer persists the selection itself (the file is the wrapper's)", () => {
+    expect(sh).toContain('printf \'%s\\n\' "$RUNTIME" > "$RUNTIME_FILE"');
     expect(sh).toContain("Runtime persisted: ${RUNTIME}");
+    // The init-through-pboss call is GONE: --runtime is a launcher flag now
+    // (owner spec, 2026-10-07) and deno's channel has no wrapper — the
+    // smoke check is the plain `pboss --version` below.
+    expect(sh).not.toContain('--runtime="$RUNTIME" --version');
   });
 
   test("PBOSS_VERSION pins the exact release", () => {
@@ -274,7 +280,8 @@ describe("installers: the runtime-aware contract (source pins)", () => {
     expect(ps1).toContain("Kindly select your runtime:");
     expect(ps1).toContain("Unsupported runtime:");
     expect(ps1).toContain("npm:pboss/deno-entry");
-    expect(ps1).toContain("--runtime=$selected --version");
+    expect(ps1).toContain("Set-Content -Path $runtimeFile -Value $selected");
+    expect(ps1).not.toContain("--runtime=$selected --version");
     // The Windows-only extra: wrapper shims (npm's own .cmd cannot run .sh).
     expect(ps1).toContain("pboss.ps1");
     expect(ps1).toContain("pboss.cmd");
@@ -300,8 +307,11 @@ describe("installers: sims — the explicit runtime flow", () => {
       // --prefix spelling — both are the same npm global install).
       expect(r.log).toContain("npm install -g");
       expect(r.log).toContain("pboss");
-      // The initializer call — this is what persists ~/.pboss/.runtime.
-      expect(r.log).toContain("pboss --runtime=node --version");
+      // The selection is persisted by the installer itself, and the smoke
+      // check dispatches through it (plain --version, no launcher flag).
+      expect(r.out).toContain("Runtime persisted: node");
+      expect(r.log).toContain("pboss --version");
+      expect(r.log).not.toContain("pboss --runtime=node");
       expect(r.out).toContain("pboss is available");
     },
     30000,
@@ -315,7 +325,8 @@ describe("installers: sims — the explicit runtime flow", () => {
       expect(r.code).toBe(0);
       expect(r.out).toContain("Selected runtime: bun");
       expect(r.log).toContain("bun install -g pboss");
-      expect(r.log).toContain("pboss --runtime=bun --version");
+      expect(r.out).toContain("Runtime persisted: bun");
+      expect(r.log).not.toContain("pboss --runtime=bun");
       // node was present AND ignored — the selection is authoritative.
       expect(r.log).not.toContain("npm install -g");
     },
@@ -329,7 +340,8 @@ describe("installers: sims — the explicit runtime flow", () => {
       const r = runInstaller(["--runtime=deno"], { runtimes: ["deno", "node"] });
       expect(r.code).toBe(0);
       expect(r.log).toContain("deno install -g -A --name pboss --reload --force npm:pboss/deno-entry");
-      expect(r.log).toContain("pboss --runtime=deno --version");
+      expect(r.out).toContain("Runtime persisted: deno");
+      expect(r.log).not.toContain("pboss --runtime=deno");
       expect(r.log).not.toContain("npm install -g");
     },
     30000,
@@ -487,7 +499,8 @@ describe("installers: the persisted runtime selection (re-runs never re-ask)", (
       expect(r.out).not.toContain("Kindly select your runtime");
       expect(r.err).not.toContain("ProcBoss needs a runtime selection.");
       expect(r.log).toContain("bun install -g pboss");
-      expect(r.log).toContain("pboss --runtime=bun --version");
+      expect(r.out).toContain("Runtime persisted: bun");
+      expect(r.log).not.toContain("pboss --runtime=bun");
       // The persisted selection is authoritative — node being present
       // changes nothing.
       expect(r.log).not.toContain("npm install -g");
@@ -532,12 +545,16 @@ describe("installers: the persisted runtime selection (re-runs never re-ask)", (
     "an explicit --runtime REPAIRS an invalid persisted selection",
     () => {
       if (!POSIX) return;
+      // Old flow: the invalid file was left in place (the CLI only wrote
+      // when the file was ABSENT). The installer's direct write now really
+      // repairs it — the read-back check proves the content flipped.
       const r = runInstaller(["--runtime=node"], {
         runtimes: ["node"],
         runtimeFile: "kubernetes\n",
       });
       expect(r.code).toBe(0);
       expect(r.out).toContain("Selected runtime: node");
+      expect(r.out).toContain("Runtime persisted: node");
       expect(r.log).toContain("npm install -g");
     },
     30000,
@@ -613,7 +630,7 @@ describe("installers: sims — the Bun heal + fallback", () => {
         expect(existsSync(join(globalDir, "bun.lock"))).toBe(false);
         // ... and the install itself ran on the healed state.
         expect(r.log).toContain("bun install -g pboss");
-        expect(r.log).toContain("pboss --runtime=bun --version");
+        expect(r.out).toContain("Runtime persisted: bun");
       } finally {
         rmSync(bunHome, { recursive: true, force: true });
       }
@@ -634,7 +651,7 @@ describe("installers: sims — the Bun heal + fallback", () => {
       // It tried bun first; npm delivered; the runtime selection is intact.
       expect(r.log).toContain("bun install -g pboss");
       expect(r.log).toContain("npm install -g pboss");
-      expect(r.log).toContain("pboss --runtime=bun --version");
+      expect(r.out).toContain("Runtime persisted: bun");
     },
     30000,
   );
@@ -778,7 +795,8 @@ describe("installers: sims — the Deno supply-chain window", () => {
         expect(r.log).not.toContain("npm:pboss@1.6.0");
         expect(r.log).not.toContain("npm install -g");
         expect(r.out).toContain("bypassed for this install");
-        expect(r.log).toContain("pboss --runtime=deno --version");
+        expect(r.out).toContain("Runtime persisted: deno");
+        expect(r.log).not.toContain("pboss --runtime=deno");
       } finally {
         rmSync(home, { recursive: true, force: true });
       }
@@ -838,7 +856,7 @@ describe("installers: sims — the Deno supply-chain window", () => {
         expect(r.log).toContain("deno install -g -A --name pboss --reload --force npm:pboss@1.6.0/deno-entry");
         expect(r.log).not.toContain("npm:pboss@1.6.1");
         expect(r.out).toContain("supply-chain hold: installing v1.6.0 (latest is v1.6.1)");
-        expect(r.log).toContain("pboss --runtime=deno --version");
+        expect(r.out).toContain("Runtime persisted: deno");
         expect(r.log).not.toContain("npm install -g");
       } finally {
         rmSync(home, { recursive: true, force: true });
@@ -870,7 +888,7 @@ describe("installers: sims — the Deno supply-chain window", () => {
         expect(r.out).toContain("holding back every pboss version that supports Deno");
         expect(r.out).toContain("delivery vehicle");
         // The runtime selection is still deno — the wrapper dispatches to it.
-        expect(r.log).toContain("pboss --runtime=deno --version");
+        expect(r.out).toContain("Runtime persisted: deno");
       } finally {
         rmSync(home, { recursive: true, force: true });
       }

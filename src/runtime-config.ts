@@ -13,9 +13,16 @@
  *
  * Resolution order (mirrored by the wrappers, pinned by tests):
  *   1. `~/.pboss/.runtime`            — persistent, survives upgrades
- *   2. `--runtime=<x>` (pre-`--`)     — one-invocation override; initializes
- *                                        the file when none exists, never
- *                                        silently overwrites an existing one
+ *   2. `--runtime=<x>` (pre-`--`)     — one-invocation override — a
+ *                                        LAUNCHER flag (owner spec,
+ *                                        2026-10-07): bin/pboss.sh and
+ *                                        bin/pboss.ps1 own it — they
+ *                                        validate it, strip it before the
+ *                                        CLI runs, and initialize the file
+ *                                        when none exists. The JavaScript
+ *                                        level NEVER parses it; a token
+ *                                        that reaches the CLI directly is
+ *                                        an honest usage error.
  *   3. interactive selection          — first run; Node is the default
  *
  * The system NEVER infers the runtime from whatever happens to be on PATH
@@ -153,87 +160,6 @@ export async function writeRuntimeSelection(
       throw err;
     }
   }
-}
-
-/* ── the --runtime flag (mirrors the wrappers' scan; spec §16/§17) ──────── */
-
-export type RuntimeFlagScan = {
-  /** True when a --runtime flag appeared before the `--` sentinel. */
-  explicit: boolean;
-  /** The raw value as typed (unvalidated). */
-  value: string | null;
-  /** True when `--runtime` was the last pre-sentinel token (missing value). */
-  missingValue: boolean;
-  /** argv with the flag (and its value) removed — everything else verbatim. */
-  rest: string[];
-};
-
-/**
- * Scan argv for `--runtime=<x>` / `--runtime <x>` anywhere before `--`.
- * Everything after `--` belongs to the command's own argv and is NEVER
- * touched (the same rule the CLI's start-flag parser applies).
- */
-export function scanRuntimeFlag(argv: string[]): RuntimeFlagScan {
-  const rest: string[] = [];
-  let explicit = false;
-  let value: string | null = null;
-  let missingValue = false;
-  let i = 0;
-  while (i < argv.length) {
-    const arg = argv[i]!;
-    if (arg === "--") {
-      rest.push(...argv.slice(i)); // sentinel + everything after, verbatim
-      break;
-    }
-    if (arg === "--runtime") {
-      const next = argv[i + 1];
-      if (next === undefined) {
-        missingValue = true; // value flag at the end — the caller errors
-        rest.push(arg);
-      } else {
-        explicit = true;
-        value = next;
-        i += 2;
-        continue;
-      }
-    } else if (arg.startsWith("--runtime=")) {
-      explicit = true;
-      value = arg.slice("--runtime=".length);
-      i += 1;
-      continue;
-    } else {
-      rest.push(arg);
-    }
-    i += 1;
-  }
-  return { explicit, value, missingValue, rest };
-}
-
-/* ── engine + entrypoint plumbing ──────────────────────────────────────── */
-
-/** The dist entry a runtime dispatches to (bin/pboss.sh's dispatch table). */
-export function runtimeEntryFile(runtime: RuntimeChoice): string {
-  return `cli.${runtime}.js`;
-}
-
-/**
- * Absolute path of the per-runtime entry SIBLING to the executing module,
- * or null when this layout ships no built entries (a source checkout).
- */
-export function siblingRuntimeEntry(runtime: RuntimeChoice): string | null {
-  const main = R.misc.mainPath();
-  if (!main) return null;
-  const candidate = join(dirname(main), runtimeEntryFile(runtime));
-  return existsSync(candidate) ? candidate : null;
-}
-
-/**
- * Spawn argv that launches a runtime entry: plain `[<rt>, entry, ...]` for
- * node/bun; `deno run -A` (the entry needs Deno's permissions up front).
- */
-export function runtimeSpawnArgv(runtime: RuntimeChoice, entry: string, args: string[]): string[] {
-  if (runtime === "deno") return [runtime, "run", "-A", entry, ...args];
-  return [runtime, entry, ...args];
 }
 
 /* ── ensuring a runtime exists (installer + `pboss runtime change`) ─────── */
@@ -548,72 +474,3 @@ export async function promptRuntimeSelection(promptText: string): Promise<Runtim
   }
 }
 
-/* ── the CLI-side `--runtime` handling (spec §7 step 2, §16) ────────────── */
-
-/**
- * The entry-level --runtime contract, shared by every JS entry
- * (dist/cli.js, dist/cli.<runtime>.js, and the dev sources):
- *
- *   no flag                     → argv untouched (the wrapper already resolved
- *                                 the runtime; direct invocations simply run)
- *   --runtime=<x>, no .runtime  → validate, ENSURE the runtime, SAVE it,
- *                                 then run under it (re-exec when the current
- *                                 engine differs)
- *   --runtime=<x>, .runtime set → one-invocation override: print the notice,
- *                                 do NOT overwrite the file, re-exec under it
- *
- * Returns the argv the CLI should run with (the flag consumed).
- */
-export async function handleRuntimeFlag(
-  argv: string[],
-  opts: { file?: string; spawnFn?: (cmd: string[]) => Promise<number> } = {},
-): Promise<string[]> {
-  const scan = scanRuntimeFlag(argv);
-  if (scan.missingValue) {
-    process.stderr.write("--runtime requires a value: node | bun | deno\n");
-    process.exit(1);
-  }
-  if (!scan.explicit || scan.value === null) return argv;
-
-  const raw = scan.value;
-  const runtime = normalizeRuntime(raw);
-  if (!isValidRuntime(runtime)) {
-    process.stderr.write(`${unsupportedRuntimeMessage(raw)}\n`);
-    process.exit(1);
-  }
-
-  // Initialize-or-override against the persisted selection (spec §16).
-  const configured = await readRuntimeFileRaw(opts.file);
-  if (configured === null || configured === "") {
-    await writeRuntimeSelection(runtime, opts.file);
-  } else if (isValidRuntime(configured)) {
-    // Guard proved the normalized form is one of the three; keep the label
-    // honest without re-widening the type.
-    const configuredRuntime = normalizeRuntime(configured) as RuntimeChoice;
-    if (configuredRuntime !== runtime) {
-      process.stdout.write(
-        `Using ${runtimeLabel(runtime)} for this invocation.\n\n` +
-          `Configured runtime remains: ${runtimeLabel(configuredRuntime)}\n\n` +
-          "To permanently change the runtime:\n" +
-          "  pboss runtime change\n\n",
-      );
-    }
-  }
-
-  // When the current engine is not the requested runtime, hand the
-  // invocation to the runtime-specific entry (the wrapper's dispatch step —
-  // direct invocations get the same behavior).
-  const current = R.name;
-  if (runtime !== current) {
-    const entry = siblingRuntimeEntry(runtime);
-    if (entry) {
-      const spawnFn = opts.spawnFn ?? defaultInstallSpawn;
-      const code = await spawnFn(runtimeSpawnArgv(runtime, entry, scan.rest));
-      process.exit(code);
-    }
-    process.stderr.write(
-      `This pboss layout ships no built ${runtimeLabel(runtime)} entry — continuing under ${runtimeLabel(current)}.\n`,
-    );
-  }
-  return scan.rest;
-}

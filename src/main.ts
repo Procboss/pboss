@@ -8,10 +8,10 @@
  * under the bundled file (Node/Deno execute it without import.meta.main),
  * this explicit entry is what actually boots the CLI.
  *
- * `--runtime=<x>` is handled BEFORE the CLI runs: it initializes the
- * persistent selection (~/.pboss/.runtime) when none exists, prints the
- * one-invocation override notice otherwise, and re-execs the matching
- * runtime entry when the current engine differs (src/runtime-config.ts).
+ * `--runtime=<x>` never reaches this file: it is a LAUNCHER flag
+ * (owner spec, 2026-10-07) — bin/pboss.sh / bin/pboss.ps1 consume it,
+ * strip it, persist the selection when none exists, and dispatch to the
+ * runtime entry (src/runtime-config.ts owns the file contract).
  *
  * https://procboss.com
  * License: GPL-3.0-only
@@ -19,9 +19,7 @@
 
 import { PBossCLI } from "./index";
 import { ensureDirs } from "./utils";
-import { handleRuntimeFlag } from "./runtime-config";
 
 await ensureDirs();
-const argv = await handleRuntimeFlag(process.argv.slice(2));
 const cli = new PBossCLI();
-await cli.run(argv);
+await cli.run(process.argv.slice(2));
