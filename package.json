@@ -1,6 +1,6 @@
 {
   "name": "pboss",
-  "version": "1.7.0",
+  "version": "1.7.1",
   "description": "A blazing-fast, runtime-agnostic process manager for Bun, Node.js, and Deno — native APIs per runtime, no compatibility layers — built for JavaScript and TypeScript backends.",
   "type": "module",
   "main": "dist/api.mjs",

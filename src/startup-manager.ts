@@ -30,7 +30,7 @@ import { readFile, rm, stat } from "fs/promises";
 import { mkdir } from "fs/promises";
 import { ignore } from "./error-handling";
 import { colorize } from "./utils";
-import { stopDaemonIfRunning } from "./api";
+import { stopDaemonIfRunning } from "./daemon-probe";
 import { probeDaemon } from "./daemon-probe";
 import {
   PBOSS_HOME,
@@ -316,10 +316,12 @@ export class StartupManager {
     // --wait: poll for the ExecStart daemon instead of spawning a competing
     // one (resurrect's auto-spawn raced ExecStart for the socket; the loser
     // exited 1 and the unit looped into "Start request repeated too
-    // quickly"). 10s is generous for a compiled binary to bind its socket;
-    // it also keeps each FAILED start cycle short, which matters for the
-    // start-rate limiter below.
-    const execStartPost = (await cliSpawnCommand("resurrect", "--wait", "10")).join(" ");
+    // quickly"). 15s, not 10: a deno install's FIRST run compiles the whole
+    // entry bundle before the daemon can bind (18.5s observed on the
+    // owner's machine, 2026-10-07 — ExecStartPost must still be polling when
+    // a cold ExecStart finally comes up, or the saved process list silently
+    // skips restoration).
+    const execStartPost = (await cliSpawnCommand("resurrect", "--wait", "15")).join(" ");
     const execReload = (await cliSpawnCommand("reload", "all")).join(" ");
     const execStop = (await cliSpawnCommand("kill")).join(" ");
     const target = await targetUserContext();
@@ -353,13 +355,28 @@ Environment=PBOSS_HOME=${join(target.home, ".pboss")}
 # (another daemon owns the socket) stays non-restartable below.
 Restart=always
 RestartSec=2
-# Bound the whole start (including ExecStartPost) so a hung start is a
-# failure systemd can act on, not a forever-activating unit.
-TimeoutStartSec=20
-# Exit 81 = another daemon already owns the socket (leftover detached
-# daemon). Retrying cannot fix that — without this, systemd restart-loops
-# into "Start request repeated too quickly".
+# Bound the whole start (ExecStartPre + ExecStart + ExecStartPost) so a
+# hung start is a failure systemd can act on, not a forever-activating unit.
+# 60s, not 20: a deno install's first run after install/upgrade compiles
+# the entry bundle before the daemon initializes (18.5s observed on the
+# owner's machine, 2026-10-07 — 20s killed healthy cold starts as "failed").
+TimeoutStartSec=60
+# Exit 81 = another daemon already owns the socket. ExecStartPre below
+# sweeps strays so this stays rare; when it still fires (a daemon the sweep
+# could not stop), retrying cannot fix it — without this directive systemd
+# restart-loops into "Start request repeated too quickly".
 RestartPreventExitStatus=81
+
+# ExecStartPre — the stray sweep (owner report 2026-10-07: a transient
+# daemon left behind by an interactive CLI command held the socket, the
+# unit's ExecStart daemon found it, exited 81, and 'systemctl restart
+# pboss' failed with "control process exited with error code"). 'pboss
+# kill' is idempotent and never spawns: at boot nothing answers and it
+# exits 0; on a restart it stops any daemon the unit does not own BEFORE
+# ExecStart binds. The leading '-' matches ExecStop — a stop that fails
+# (systemd unreachable, files unreadable) must not abort the start;
+# ExecStart's conflict exit still reports honestly.
+ExecStartPre=-${execStop}
 
 # The leading '-' on ExecStartPost/ExecStop is the systemd "ignore exit
 # status" modifier: a FAILED ExecStartPost aborts the whole start
@@ -510,6 +527,14 @@ ${plist}`;
       // error — create the directory explicitly for the user the agent
       // will run as.
       await mkdir(join(target.home, ".pboss", "logs"), { recursive: true });
+
+      // The stray sweep the Linux bring-up has always done (owner report
+      // 2026-10-07, the launchd twin of the exit-81 unit failure): a
+      // transient daemon left behind by an interactive CLI command holds
+      // the socket the agent's daemon needs — the loser exits 81 and
+      // KeepAlive respawns it into a loop. Ask any stray to stand down
+      // BEFORE the agent loads; never spawns.
+      await stopDaemonIfRunning(15_000);
 
       try {
         await R.process.capture(["launchctl", "unload", plistPath]); // reload if it was already loaded
@@ -1401,6 +1426,11 @@ export function controllableService(kind: BootServiceKind): boolean {
  * job completes (Type=simple: at ExecStart's fork), a beat before the
  * daemon answers its socket.
  *
+ * systemd gets --no-block (like bringUpSystemdUnit): a cold unit can hold
+ * a BLOCKING start for the whole TimeoutStartSec (a deno install's first
+ * run compiles for tens of seconds) — the caller's bounded liveness wait
+ * is strictly better than sitting inside systemctl.
+ *
  * runkey/none answer { ok: false } so the caller takes the direct-spawn
  * path — spawning behind the service manager's back would create a
  * daemon the manager cannot see, exactly what issue #41 forbids.
@@ -1408,7 +1438,7 @@ export function controllableService(kind: BootServiceKind): boolean {
 export async function startBootService(): Promise<ServiceControl> {
   const kind = await bootServiceKind();
   if (kind === "systemd") {
-    const r = await runSystemctl(["start", "pboss"], { user: true });
+    const r = await runSystemctl(["--no-block", "start", "pboss"], { user: true });
     return r.code === 0
       ? { ok: true, detail: "systemctl --user start pboss" }
       : { ok: false, detail: `systemctl --user start pboss failed: ${r.err || `exit ${r.code}`}` };
@@ -1499,15 +1529,18 @@ export async function stopBootService(): Promise<ServiceControl> {
 
 /**
  * Restart the daemon THROUGH the installed boot mechanism. systemd gets a
- * single restart job (its ExecStop is the graceful kill); launchd and the
- * Windows task have no graceful stop hook — callers pre-kill the daemon
- * (the RPC) before calling this, so the manager never has to SIGTERM a
- * daemon whose children would be orphaned.
+ * single --no-block restart job (its ExecStop is the graceful kill, and a
+ * blocking restart would sit inside systemctl for the whole
+ * TimeoutStartSec on a cold unit — the caller's bounded wait decides
+ * health instead); launchd and the Windows task have no graceful stop
+ * hook — callers pre-kill the daemon (the RPC) before calling this, so
+ * the manager never has to SIGTERM a daemon whose children would be
+ * orphaned.
  */
 export async function restartBootService(): Promise<ServiceControl> {
   const kind = await bootServiceKind();
   if (kind === "systemd") {
-    const r = await runSystemctl(["restart", "pboss"], { user: true });
+    const r = await runSystemctl(["--no-block", "restart", "pboss"], { user: true });
     return r.code === 0
       ? { ok: true, detail: "systemctl --user restart pboss" }
       : { ok: false, detail: `systemctl --user restart pboss failed: ${r.err || `exit ${r.code}`}` };

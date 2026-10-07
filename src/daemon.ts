@@ -42,6 +42,51 @@ import type { PBServerHandle } from "./runtime";
 const R = getRuntime();
 import { readFile, rm, unlink, stat } from "node:fs/promises";
 
+/**
+ * Make THIS process immune to SIGHUP — the nohup rule for a daemon.
+ *
+ * Why this exists (owner report 2026-10-07): Bun and Node detach their
+ * spawned children with setsid(), but Deno.Command has no such option —
+ * a deno-flavored daemon stays in the spawning CLI's session and process
+ * group. POSIX then kills it twice over: a session-leader CLI exit (`ssh
+ * host pboss list`, exec'd wrappers) SIGHUPs the foreground group the
+ * daemon still belongs to, and terminal teardown reaches it in several
+ * shells. The daemon died "when the command ended" — with it, every
+ * managed process. Registering an ignore listener BEFORE anything else
+ * arms the immunity for the daemon's whole life (verified empirically:
+ * the listener fires and the daemon keeps serving).
+ *
+ * The window this cannot cover — SIGHUP arriving while the runtime is
+ * still compiling the bundle, before any JS runs — is closed at the
+ * SOURCE: pboss never exits while a daemon it spawned is still booting
+ * (launchDaemon polls to responsiveness; a compile that outlives the
+ * wait throws instead of silently orphaning a doomed child).
+ *
+ * Registered at the two STANDALONE daemon entries (index.ts's __daemon
+ * case and this file's script-install entry) — NOT in initialize(), so
+ * library consumers embedding an in-process daemon keep their own signal
+ * policy. Idempotent and best-effort: a runtime without the listener API
+ * simply keeps its default disposition.
+ */
+export function ignoreHangup(): void {
+  try {
+    // Deno: the native listener API (the Node-compat process.on does not
+    // cover signals there). Bun/Node: the process event.
+    const deno = (globalThis as { Deno?: { addSignalListener?: (sig: string, fn: () => void) => void } }).Deno;
+    if (deno && typeof deno.addSignalListener === "function") {
+      deno.addSignalListener("SIGHUP", () => {
+        // Deliberately empty — ignore means ignore.
+      });
+    } else {
+      process.on("SIGHUP", () => {
+        // Deliberately empty — ignore means ignore.
+      });
+    }
+  } catch (err) {
+    ignore("register SIGHUP immunity (daemon survives terminal teardown)", err);
+  }
+}
+
 
 export default class Daemon {
 
@@ -681,6 +726,7 @@ export default class Daemon {
 // index.ts's "__daemon" case instead — the bundler's static
 // import.meta.main handling alone is not a reliable guard.
 if (import.meta.main === true && /(?:^|[/\\])daemon\.ts$/.test(process.argv[1] ?? "")) {
+  ignoreHangup();
   (async () => {
     const dm = new Daemon();
     await dm.initialize();

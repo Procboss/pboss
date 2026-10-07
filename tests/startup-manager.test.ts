@@ -220,8 +220,10 @@ describe("StartupManager — generated unit shape", () => {
 
       // ExecStartPost must WAIT for the unit's own daemon instead of
       // auto-spawning a competing one (the socket race that ended in
-      // "Start request repeated too quickly").
-      expect(out).toContain("resurrect --wait 10");
+      // "Start request repeated too quickly"). 15s, not 10 — a cold deno
+      // start compiles for tens of seconds and ExecStartPost must still be
+      // polling when the daemon finally binds (owner report 2026-10-07).
+      expect(out).toContain("resurrect --wait 15");
       // Exit 81 = another daemon owns the socket — restarting cannot fix
       // that; without this directive systemd restart-loops.
       expect(out).toContain("RestartPreventExitStatus=81");
@@ -242,8 +244,36 @@ describe("StartupManager — generated unit shape", () => {
       expect(out).toContain("StartLimitIntervalSec=120");
       expect(out).toContain("StartLimitBurst=5");
       // A hung start (including ExecStartPost) must become a failure
-      // systemd can act on, not a forever-activating unit.
-      expect(out).toContain("TimeoutStartSec=20");
+      // systemd can act on, not a forever-activating unit. 60s, not 20:
+      // a deno install's first run compiles the whole entry bundle before
+      // the daemon initializes (18.5s observed on the owner's machine —
+      // 20s killed healthy cold starts as "failed").
+      expect(out).toContain("TimeoutStartSec=60");
+    }
+  );
+
+  test.skipIf(process.platform === "win32")(
+    "linux unit sweeps stray daemons before ExecStart binds (exit-81 fix)",
+    async () => {
+      const startup = new StartupManager();
+      const out = await startup.generate("linux");
+
+      // Owner report 2026-10-07: `systemctl --user restart pboss` failed
+      // with "control process exited with error code" — ExecStart's daemon
+      // found a transient daemon left behind by an interactive CLI
+      // command and exited 81. ExecStartPre runs the idempotent `pboss
+      // kill` (never spawns; exit 0 when nothing answers) so the unit's
+      // daemon always binds a free socket. The leading '-' keeps a
+      // failed sweep (systemd unreachable) from aborting the start —
+      // ExecStart's own conflict exit still reports honestly.
+      expect(out).toMatch(/ExecStartPre=-\S/);
+      // The sweep is the SAME kill command ExecStop runs (kill is
+      // idempotent — at boot it finds nothing and exits 0).
+      const pre = out.match(/^ExecStartPre=-(.+)$/m)?.[1];
+      const stop = out.match(/^ExecStop=-(.+)$/m)?.[1];
+      expect(pre).toBeDefined();
+      expect(stop).toBeDefined();
+      expect(pre).toBe(stop);
     }
   );
 

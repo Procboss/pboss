@@ -221,7 +221,9 @@ export interface RealignDeps {
   waitForDaemon(ms: number): Promise<boolean>;
   /** Progress line ("Restarting the daemon onto the new code…"). */
   log(line: string): void;
-  /** How long to wait for the new daemon (default 20s). */
+  /** How long to wait for the new daemon (default 30s — a deno install's
+   * first run after the upgrade compiles the whole entry bundle before the
+   * daemon can answer; 18.5s observed on the owner's machine). */
   verifyMs?: number;
 }
 
@@ -255,7 +257,7 @@ export interface RealignOutcome {
  * before any manager command, so no SIGTERM ever orphans a worker.
  */
 export async function realignDaemonAfterUpgrade(deps: RealignDeps): Promise<RealignOutcome> {
-  const verifyMs = deps.verifyMs ?? 20_000;
+  const verifyMs = deps.verifyMs ?? 30_000;
 
   const before = await deps.probe();
   if (before) {

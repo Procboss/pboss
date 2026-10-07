@@ -606,7 +606,9 @@ describe("issue #41 e2e: daemon status vs stale daemons (fake pongs)", () => {
 
 /** A systemctl shim that stands in for the user manager: it logs every
  *  call, and start/restart actually launch the daemon (like the unit's
- *  ExecStart) with the hermetic env baked in. */
+ *  ExecStart) with the hermetic env baked in. start/restart arrive as
+ *  --no-block submissions (the CLI polls for the daemon itself — a cold
+ *  unit must never hold a blocking systemctl). */
 function makeSystemctlShim(home: string): { dir: string; log: string } {
   const dir = join(home, "shim");
   mkdirSync(dir, { recursive: true });
@@ -616,7 +618,7 @@ function makeSystemctlShim(home: string): { dir: string; log: string } {
     "#!/bin/sh",
     `echo "$@" >> ${JSON.stringify(log)}`,
     'case "$*" in',
-    '  "--user start pboss"|"--user restart pboss")',
+    '  "--user --no-block start pboss"|"--user --no-block restart pboss")',
     `    ( env PBOSS_HOME=${JSON.stringify(pb)} HOME=${JSON.stringify(home)} \\`,
     `        bun run ${JSON.stringify(DAEMON_SRC)} >> ${JSON.stringify(join(dir, "shim-daemon.log"))} 2>&1 & )`,
     "    ;;",
@@ -649,7 +651,7 @@ describe("issue #41 e2e: the boot service owns the lifecycle (systemd shim, Linu
       expect(await s.exited).toBe(0);
       expect(stripAnsi(sr.out)).toContain("through systemd (user unit)");
       // THE contract: the manager was told, not bypassed.
-      expect(readFileSync(log, "utf8")).toContain("--user start pboss");
+      expect(readFileSync(log, "utf8")).toContain("--user --no-block start pboss");
       expect(await waitResponsive(home)).toBeTrue();
     },
     60_000,
@@ -702,7 +704,7 @@ describe("issue #41 e2e: the boot service owns the lifecycle (systemd shim, Linu
       const rr = await drain(r);
       expect(await r.exited).toBe(0);
       expect(stripAnsi(rr.out)).toContain("restarted through systemd (user unit)");
-      expect(readFileSync(log, "utf8")).toContain("--user restart pboss");
+      expect(readFileSync(log, "utf8")).toContain("--user --no-block restart pboss");
 
       // the new daemon is up and is NOT the old process
       expect(await waitResponsive(home)).toBeTrue();

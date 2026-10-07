@@ -1893,6 +1893,8 @@ pboss daemon restart    # stop the old daemon, start the current one —
 
 `start` and `restart` also restore the saved process list (the systemd unit's `ExecStartPost` does this on Linux; the CLI does it everywhere else), so `daemon stop` → `daemon start` round-trips the fleet. Stopping stops managed processes with it — that is the contract, same as `pboss kill`.
 
+Service-awareness extends to the implicit path too: any command that needs the daemon (`pboss list`, `pboss start`, …) brings it up **through the installed boot service** when one exists — never a free-floating daemon `systemctl status` cannot see (and that would race the unit's own daemon for the socket). On machines with no boot service — or where the manager is unreachable from the current context, like an `ssh host pboss list` one-liner before any login session — the daemon is spawned directly instead. That spawned daemon ignores `SIGHUP`, so it survives the terminal closing, SSH dropping, or being the session leader itself; the systemd unit additionally sweeps any stray daemon before its own daemon binds (`ExecStartPre=pboss kill`), so a leftover can never fail the unit with exit 81.
+
 #### pboss ping
 
 Check if the daemon is running.

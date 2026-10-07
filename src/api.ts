@@ -30,7 +30,13 @@ import {
 import { ensureDirs, generateId } from "./utils";
 import { daemonSpawnCommand } from "./install-mode";
 import { ignore } from "./error-handling";
-import { probeDaemon } from "./daemon-probe";
+import { probeDaemon, waitForDaemon, stopDaemonIfRunning } from "./daemon-probe";
+import {
+  bootServiceKind,
+  controllableService,
+  startBootService,
+  bootServiceLabel,
+} from "./startup-manager";
 import Daemon from "./daemon";
 import {
   PROCESS_EVENT_KINDS,
@@ -285,57 +291,17 @@ export async function getProcesses(): Promise<ProcessState[]> {
  * EADDRINUSE exit code 1 was what sent the unit into systemd's restart
  * storm: "Start request repeated too quickly").
  *
- * Returns true once a live daemon answers pings, false on timeout.
+ * Lives in daemon-probe.ts now (this re-export keeps the historical import
+ * path — index.ts and the tests reach it through here).
  */
-export async function waitForDaemon(timeoutMs: number): Promise<boolean> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (await probeDaemon()) return true;
-    await R.misc.sleep(200);
-  }
-  return await probeDaemon() !== null;
-}
+export { waitForDaemon };
 
 /**
- * Ask a running daemon to shut down — used by `pboss startup install` before
- * the systemd unit takes over, so a leftover detached daemon (spawned by an
- * earlier CLI command) cannot hold the socket the unit needs. Never
- * spawns. Returns true if a daemon was found and asked to stop.
- *
- * The socket defaults to the CLI's own PBOSS_HOME, but the unit's daemon
- * runs with its own home (per-user installs can point the unit at any
- * user's ~/.pboss) — callers pass that path explicitly so a stray there
- * is stopped too (otherwise the unit's daemon would hit EADDRINUSE and
- * exit 81).
+ * Ask a running daemon to shut down — `pboss startup install`'s pre-unit
+ * stray sweep. Never spawns, idempotent. Lives in daemon-probe.ts now
+ * (re-exported here for the historical import path).
  */
-export async function stopDaemonIfRunning(
-  timeoutMs: number = 15_000,
-  socketPath: string = DAEMON_SOCKET,
-): Promise<boolean> {
-  const live = await probeDaemon(socketPath);
-  if (!live) return false;
-
-  try {
-    await R.network.socketFetch("http://localhost/", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ type: "kill", id: "startup-stop" }),
-    }, socketPath);
-    // The daemon may exit before responding — that IS the success path.
-  } catch (err) {
-    ignore("stopDaemonIfRunning: send kill", err);
-  }
-
-  // Wait until it is actually gone so the unit's daemon can bind cleanly.
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (!(await probeDaemon(socketPath))) return true;
-    await R.misc.sleep(200);
-  }
-  // Still alive after the grace period — leave it; the unit's daemon will
-  // surface a clear DaemonConflictError (exit 81) instead of a restart loop.
-  return true;
-}
+export { stopDaemonIfRunning };
 
 export class PBoss extends EventEmitter<PBossEvents> {
   public readonly noDaemon: boolean;
@@ -1297,6 +1263,18 @@ export class PBoss extends EventEmitter<PBossEvents> {
 
   /**
    * Launch the daemon as a detached background process and wait until responsive.
+   *
+   * Issue #41's contract, extended to the IMPLICIT path (owner report
+   * 2026-10-07: `pboss startup` failed because the unit's ExecStart daemon
+   * found a CLI-spawned transient daemon on the socket and exited 81, and
+   * without the boot service the daemon died with the CLI's terminal —
+   * Deno.Command has no setsid): when a controllable boot service is
+   * installed, the daemon belongs to the service manager. A free-floating
+   * spawn here would be invisible to `systemctl status` AND race the unit's
+   * own daemon for the socket — the unit loses that race and the service
+   * fails. So the daemon comes up THROUGH the service (a --no-block start
+   * plus a bounded liveness wait); the direct detached spawn remains only
+   * for machines with no (or an unreachable) boot service.
    */
   async launchDaemon(): Promise<void> {
     await ensureDirs();
@@ -1315,6 +1293,39 @@ export class PBoss extends EventEmitter<PBossEvents> {
       return;
     }
 
+    // ── The service path: the daemon belongs to the manager (issue #41) ──
+    const kind = await bootServiceKind();
+    if (controllableService(kind)) {
+      const r = await startBootService();
+      if (r.ok) {
+        // Cold starts are real: a deno install's first run after install /
+        // upgrade compiles the whole entry bundle (18.5s observed on the
+        // owner's machine) — 30s covers it while warm starts answer in
+        // well under a second and exit the wait immediately.
+        const up = await waitForDaemon(30_000);
+        const live = await probeDaemon();
+        if (up && live) {
+          this._daemonPid = live.pid;
+          this._connected = true;
+          this.emit("daemon:launched", live.pid);
+          return;
+        }
+        // The job was submitted but nothing answers. NEVER free-spawn here —
+        // that is exactly the invisible daemon that races the unit. Report
+        // through the manager, where the answer actually is.
+        throw new Error(
+          `The daemon did not come up through ${bootServiceLabel(kind)} within 30s. ` +
+          `Check: systemctl ${kind === "systemd" ? "--user " : ""}status pboss` +
+          (kind === "systemd" ? " · journalctl --user -u pboss -n 50 --no-pager" : "")
+        );
+      }
+      // The service could not be driven from here (systemd session bus
+      // unreachable — an ssh one-liner on a not-yet-logged-in machine, a
+      // container with a leftover unit file). Serving THIS command still
+      // matters more than manager purity: fall through to the direct spawn.
+    }
+
+    // ── The direct path: no (or unreachable) boot service ────────────────
     // Resolved from the install mode (see install-mode.ts):
     //   compiled → [<pboss binary>, "__daemon"]   (no system Bun needed)
     //   script   → [<bun>, "run", <daemon.ts>]    (system Bun required)
@@ -1340,6 +1351,8 @@ export class PBoss extends EventEmitter<PBossEvents> {
         // start` returned); on POSIX the missing setsid() leaves it reachable
         // by terminal teardown. unref() below only stops Bun's event loop
         // from WAITING on the child — it does not detach the OS process.
+        // (Deno has no setsid at all — the DAEMON itself ignores SIGHUP
+        // instead; see ignoreHangup() in daemon.ts.)
         detached: true,
         // windowsHide: a detached console child on Windows would otherwise get
         // its own VISIBLE cmd.exe window (owner report 2026-09-15: after
@@ -1373,8 +1386,13 @@ export class PBoss extends EventEmitter<PBossEvents> {
     // `detached: true` above.
     proc.unref();
 
-    // Poll until daemon is responsive (up to 5 s)
-    const deadline = Date.now() + 5000;
+    // Poll until daemon is responsive. 30s, not 5: a deno install's FIRST
+    // run after install/upgrade compiles the entry bundle before the daemon
+    // can answer (18.5s observed on the owner's machine — the old 5s poll
+    // failed `pboss list` outright and killed the daemon mid-compile when
+    // this CLI was the session leader). Warm starts answer in well under a
+    // second and break the loop immediately.
+    const deadline = Date.now() + 30_000;
     let alive = false;
 
     while (Date.now() < deadline) {

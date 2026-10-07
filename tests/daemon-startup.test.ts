@@ -19,7 +19,7 @@
  * Windows (unix sockets are the transport under test).
  */
 import { describe, test, expect, afterAll } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync, existsSync, readFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, existsSync, readFileSync, mkdirSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { probeDaemon } from "../src/daemon-probe";
@@ -245,6 +245,181 @@ describe("kill (ExecStop idempotency)", () => {
       expect(existsSync(join(home, "daemon.pid"))).toBeFalse();
       expect(await probeDaemon(join(home, "daemon.sock"))).toBeNull();
       await drain(daemon);
+    }
+  );
+});
+
+describe("daemon survives terminal teardown (owner report 2026-10-07)", () => {
+  // Bun/Node detach their spawned children with setsid(); Deno.Command has
+  // no such option, so a deno-flavored daemon stays in the spawning CLI's
+  // session — a session-leader exit (`ssh host pboss list`, exec'd
+  // wrappers) SIGHUPs the foreground process group the daemon belongs to,
+  // and terminal teardown reaches it in several shells. The daemon's side
+  // of the fix: ignoreHangup() at both standalone entries. Pinned here by
+  // delivering the signal directly — the disposition is what matters.
+  test.skipIf(process.platform === "win32")(
+    "SIGHUP does not kill the daemon — it ignores the hangup",
+    async () => {
+      const home = mkdtempSync(join(tmpdir(), "pboss-hup-"));
+      homes.push(home);
+
+      const daemon = spawnCli(["__daemon"], home);
+      expect(await waitResponsive(home)).toBeTrue();
+      const pid = parseInt(readFileSync(join(home, "daemon.pid"), "utf-8").trim());
+
+      // The hangup — the exact signal a session-leader exit delivers.
+      process.kill(pid, "SIGHUP");
+      await Bun.sleep(500);
+
+      // Still the SAME daemon, still answering.
+      expect(await probeDaemon(join(home, "daemon.sock"))).not.toBeNull();
+      const pidAfter = parseInt(readFileSync(join(home, "daemon.pid"), "utf-8").trim());
+      expect(pidAfter).toBe(pid);
+      expect(await waitResponsive(home, 2_000)).toBeTrue();
+
+      await hardKillDaemon(home);
+      await daemon.exited;
+      await drain(daemon);
+    }
+  );
+});
+
+describe("launchDaemon goes THROUGH an installed boot service (owner report 2026-10-07)", () => {
+  // The exit-81 unit failure: a CLI-spawned transient daemon held the
+  // socket, the unit's ExecStart daemon found it, exited 81, and
+  // `systemctl --user restart pboss` failed with "control process exited
+  // with error code". Fix: on a machine with a controllable boot service,
+  // the IMPLICIT daemon launch (send()'s auto-start) drives the service —
+  // never a free-floating spawn the manager cannot see.
+  test.skipIf(process.platform !== "linux")(
+    "a systemd unit: the daemon comes up via systemctl, never free-spawned",
+    async () => {
+      const home = mkdtempSync(join(tmpdir(), "pboss-svc-"));
+      homes.push(home);
+      const pb = home; // PBOSS_HOME is the home itself in this harness
+
+      // 1. The unit file that makes bootServiceKind() answer "systemd".
+      mkdirSync(join(home, ".config", "systemd", "user"), { recursive: true });
+      writeFileSync(join(home, ".config", "systemd", "user", "pboss.service"), "[Unit]\n");
+
+      // 2. A systemctl shim on PATH that plays systemd's ExecStart role:
+      //    --no-block start backgrounds the REAL daemon and exits 0 (the
+      //    real --no-block returns before the daemon even forks). Every
+      //    invocation is logged with the full argv.
+      const shimDir = mkdtempSync(join(tmpdir(), "pboss-svcshim-"));
+      homes.push(shimDir);
+      const log = join(shimDir, "systemctl.log");
+      const shim = [
+        "#!/bin/sh",
+        `echo "$@" >> ${JSON.stringify(log)}`,
+        'case "$1" in --user) shift ;; esac',
+        'case "$*" in',
+        // systemd's role: launch the unit's ExecStart daemon in the
+        // background (stdio away from OUR pipes so capture sees EOF).
+        `  "--no-block start pboss") bun run ${JSON.stringify(CLI)} __daemon >/dev/null 2>&1 </dev/null & exit 0 ;;`,
+        `  *) exit 0 ;;`,
+        "esac",
+      ].join("\n");
+      writeFileSync(join(shimDir, "systemctl"), shim);
+      chmodSync(join(shimDir, "systemctl"), 0o755);
+
+      // 3. A fresh process runs the IMPLICIT path (send()'s auto-launch)
+      //    against the hermetic home.
+      const script = join(import.meta.dir, "helpers", "tmp-svc-launch.ts");
+      writeFileSync(
+        script,
+        `const { PBoss } = await import("../../src/api");\n` +
+          `const c = new PBoss();\n` +
+          `await c.startDaemon();\n` +
+          `if (!(await c.isDaemonAlive())) { console.error("daemon not alive"); process.exit(1); }\n` +
+          `console.log("svc-launch-ok");\n`
+      );
+      const proc = Bun.spawn(["bun", "run", script], {
+        env: {
+          ...process.env,
+          HOME: home,
+          PBOSS_HOME: pb,
+          SUDO_USER: "",
+          PATH: `${shimDir}:${process.env.PATH}`,
+        },
+        stdout: "pipe",
+        stderr: "pipe",
+        stdin: "ignore",
+      });
+      const code = await proc.exited;
+      const { out, err } = await drain(proc);
+      rmSync(script, { force: true });
+
+      expect(code).toBe(0);
+      expect(out).toContain("svc-launch-ok");
+      expect(err).toBe("");
+
+      // 4. THE regression guards: the service was driven (systemctl saw the
+      //    --no-block start), a daemon answers, and NO free spawn happened —
+      //    the direct path is the only thing that ever creates the
+      //    daemon.out.log / daemon.err.log sinks.
+      expect(readFileSync(log, "utf-8")).toContain("--user --no-block start pboss");
+      expect(await probeDaemon(join(pb, "daemon.sock"))).not.toBeNull();
+      expect(existsSync(join(pb, "daemon.out.log"))).toBeFalse();
+      expect(existsSync(join(pb, "daemon.err.log"))).toBeFalse();
+
+      await hardKillDaemon(pb);
+    }
+  );
+
+  test.skipIf(process.platform !== "linux")(
+    "an unreachable manager falls back to the direct spawn — the command still runs",
+    async () => {
+      const home = mkdtempSync(join(tmpdir(), "pboss-svcfb-"));
+      homes.push(home);
+      const pb = home;
+
+      mkdirSync(join(home, ".config", "systemd", "user"), { recursive: true });
+      writeFileSync(join(home, ".config", "systemd", "user", "pboss.service"), "[Unit]\n");
+
+      // The manager cannot be driven (the ssh one-liner / container case):
+      // every systemctl invocation fails.
+      const shimDir = mkdtempSync(join(tmpdir(), "pboss-svcfbshim-"));
+      homes.push(shimDir);
+      const shim = ["#!/bin/sh", "exit 1"].join("\n");
+      writeFileSync(join(shimDir, "systemctl"), shim);
+      chmodSync(join(shimDir, "systemctl"), 0o755);
+
+      const script = join(import.meta.dir, "helpers", "tmp-svc-fallback.ts");
+      writeFileSync(
+        script,
+        `const { PBoss } = await import("../../src/api");\n` +
+          `const c = new PBoss();\n` +
+          `await c.startDaemon();\n` +
+          `if (!(await c.isDaemonAlive())) { console.error("daemon not alive"); process.exit(1); }\n` +
+          `console.log("fallback-ok");\n`
+      );
+      const proc = Bun.spawn(["bun", "run", script], {
+        env: {
+          ...process.env,
+          HOME: home,
+          PBOSS_HOME: pb,
+          SUDO_USER: "",
+          PATH: `${shimDir}:${process.env.PATH}`,
+        },
+        stdout: "pipe",
+        stderr: "pipe",
+        stdin: "ignore",
+      });
+      const code = await proc.exited;
+      const { out, err } = await drain(proc);
+      rmSync(script, { force: true });
+
+      // Serving the user's command outranks manager purity: the daemon came
+      // up through the direct spawn (the log sinks exist — only that path
+      // creates them) and answers.
+      expect(code).toBe(0);
+      expect(out).toContain("fallback-ok");
+      expect(err).toBe("");
+      expect(await probeDaemon(join(pb, "daemon.sock"))).not.toBeNull();
+      expect(existsSync(join(pb, "daemon.out.log"))).toBeTrue();
+
+      await hardKillDaemon(pb);
     }
   );
 });

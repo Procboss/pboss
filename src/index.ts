@@ -72,7 +72,7 @@ import type {
 } from "./types";
 import { statusColor } from "./colors";
 import { liveWatchProcess, printProcessTable, printCronTable } from "./process-table";
-import Daemon from "./daemon";
+import Daemon, { ignoreHangup } from "./daemon";
 import chalk from "chalk";
 import {
   requestDeviceCode,
@@ -3233,7 +3233,7 @@ ${colorize("Notes:", "dim")}
         console.error(colorize(`  ${r.detail}`, "red"));
         return 1;
       }
-      if (await waitForDaemon(15_000)) {
+      if (await waitForDaemon(30_000)) {
         // The systemd unit's ExecStartPost restores the process list
         // itself; the other mechanisms have no such hook.
         if (kind !== "systemd") await this.restoreProcessList();
@@ -3317,7 +3317,7 @@ ${colorize("Notes:", "dim")}
         console.error(colorize(`  ${r.detail}`, "red"));
         return 1;
       }
-      if (await waitForDaemon(20_000)) {
+      if (await waitForDaemon(30_000)) {
         if (kind !== "systemd") await this.restoreProcessList();
         const live = await probeDaemon();
         console.log(colorize(`✓ Daemon restarted through ${bootServiceLabel(kind)}${live ? ` — ${this.daemonReportLine(live)}` : ""}`, "green"));
@@ -3711,6 +3711,11 @@ ${colorize("Notes:", "dim")}
       case "__daemon":
       case "daemon-server": {
         // The systemd unit's ExecStart (and the CLI daemonizer) run this.
+        // FIRST: SIGHUP immunity (see ignoreHangup in daemon.ts) — a
+        // deno-flavored daemon shares the spawning session's process group
+        // and POSIX kills that group when a session leader exits / the
+        // terminal tears down; the daemon must outlive all of it.
+        ignoreHangup();
         // Reboot-survival self-heal: when we come up OUTSIDE systemd (CLI
         // on-demand), linger is usually off — flip it on so the NEXT reboot
         // starts the daemon (and the cloud link) before any login. Never
