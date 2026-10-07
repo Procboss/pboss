@@ -1689,7 +1689,7 @@ Install the boot startup service:
 - **macOS:** writes and loads a `launchd` LaunchAgent (`~/Library/LaunchAgents/com.pboss.daemon.plist`). No root needed or wanted. The plist pins `PATH`, `HOME`, and `PBOSS_HOME` so the daemon resolves the same `~/.pboss` as your interactive commands.
 - **Windows:** registers a Scheduled Task (`PBOSS_Daemon`) starting the daemon at **this user's logon** via `Register-ScheduledTask` (RunLevel **Limited** — Highest would require an elevated shell to register; the daemon only needs the user's normal token). No elevation required. Hosts that deny even per-user task registration ("Access is denied") fall back to the **per-user Registry Run key** (`HKCU\Software\Microsoft\Windows\CurrentVersion\Run\PBOSS_Daemon`) — same logon trigger, zero Task Scheduler permissions; the install says which mechanism was used. Only when both fail does the command exit nonzero. The daemon is also started immediately (`pboss upgrade` stops it before replacing the binary).
 
-The generated service runs as the invoking user and uses the same `~/.pboss` data as your daily `pboss` commands — never root's `/root/.pboss`.
+The generated service runs as the invoking user and uses the same `~/.pboss` data as your daily `pboss` commands — never root's `/root/.pboss`. The service is **scoped to the home it pins**: a CLI running against another `PBOSS_HOME` (an override, a test fixture) neither uses it nor disturbs it — and the first-start persistence hint tells those homes the truth instead of promising a reboot restore it cannot deliver (`pboss startup install` under that home installs its own).
 
 ```bash
 # Linux, macOS, Windows alike — your own shell, no sudo:
@@ -1906,6 +1906,8 @@ pboss daemon restart    # stop the old daemon, start the current one —
 `start` and `restart` also restore the saved process list (the systemd unit's `ExecStartPost` does this on Linux; the CLI does it everywhere else), so `daemon stop` → `daemon start` round-trips the fleet. Stopping stops managed processes with it — that is the contract, same as `pboss kill`.
 
 Service-awareness extends to the implicit path too: any command that needs the daemon (`pboss list`, `pboss start`, …) brings it up **through the installed boot service** when one exists — never a free-floating daemon `systemctl status` cannot see (and that would race the unit's own daemon for the socket). On machines with no boot service — or where the manager is unreachable from the current context, like an `ssh host pboss list` one-liner before any login session — the daemon is spawned directly instead. That spawned daemon ignores `SIGHUP`, so it survives the terminal closing, SSH dropping, or being the session leader itself; the systemd unit additionally sweeps any stray daemon before its own daemon binds (`ExecStartPre=pboss kill`), so a leftover can never fail the unit with exit 81.
+
+A boot service only ever manages **the home it was installed for** — the unit/plist pins its own `PBOSS_HOME`. A CLI running against a *different* home (a `PBOSS_HOME` override, a test fixture, a second pboss instance) treats that service as if it were not installed: the daemon is spawned directly, `daemon stop`/`restart` never touch the other home's manager, and `daemon status` reports `Service: none`. The two homes' daemons cannot race each other — the socket and the startup conflict check are per-home.
 
 #### pboss ping
 

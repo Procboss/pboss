@@ -299,8 +299,14 @@ describe("launchDaemon goes THROUGH an installed boot service (owner report 2026
       const pb = home; // PBOSS_HOME is the home itself in this harness
 
       // 1. The unit file that makes bootServiceKind() answer "systemd".
+      //    It pins the home it serves — like every real generated unit —
+      //    so the home-scoped service path engages (a unit WITHOUT the
+      //    pinned home is a foreign-home unit: direct spawn, below).
       mkdirSync(join(home, ".config", "systemd", "user"), { recursive: true });
-      writeFileSync(join(home, ".config", "systemd", "user", "pboss.service"), "[Unit]\n");
+      writeFileSync(
+        join(home, ".config", "systemd", "user", "pboss.service"),
+        `[Unit]\n[Service]\nEnvironment=PBOSS_HOME=${pb}\n`,
+      );
 
       // 2. A systemctl shim on PATH that plays systemd's ExecStart role:
       //    --no-block start backgrounds the REAL daemon and exits 0 (the
@@ -375,7 +381,10 @@ describe("launchDaemon goes THROUGH an installed boot service (owner report 2026
       const pb = home;
 
       mkdirSync(join(home, ".config", "systemd", "user"), { recursive: true });
-      writeFileSync(join(home, ".config", "systemd", "user", "pboss.service"), "[Unit]\n");
+      writeFileSync(
+        join(home, ".config", "systemd", "user", "pboss.service"),
+        `[Unit]\n[Service]\nEnvironment=PBOSS_HOME=${pb}\n`,
+      );
 
       // The manager cannot be driven (the ssh one-liner / container case):
       // every systemctl invocation fails.

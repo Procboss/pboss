@@ -633,7 +633,13 @@ function makeSystemctlShim(home: string): { dir: string; log: string } {
 
 function withUnitFile(home: string): void {
   mkdirSync(join(home, ".config", "systemd", "user"), { recursive: true });
-  writeFileSync(join(home, ".config", "systemd", "user", "pboss.service"), "[Unit]\n");
+  // Like every real generated unit: it PINS the home it serves, so the
+  // home-scoped service path engages for this CLI (a unit without the
+  // pinned home would be a foreign-home unit — direct spawn territory).
+  writeFileSync(
+    join(home, ".config", "systemd", "user", "pboss.service"),
+    `[Unit]\n[Service]\nEnvironment=PBOSS_HOME=${join(home, ".pboss")}\n`,
+  );
 }
 
 describe("issue #41 e2e: the boot service owns the lifecycle (systemd shim, Linux)", () => {

@@ -50,10 +50,10 @@ import { PBoss, loadEcosystemConfig, findDefaultConfigFile, waitForDaemon } from
 import { DeployManager } from "./deploy";
 import {
   StartupManager,
-  bootServiceInstalled,
+  bootServiceInstalledForCurrentHome,
   persistenceHintLine,
   selfHealLinger,
-  bootServiceKind,
+  bootServiceKindForCurrentHome,
   bootServiceLabel,
   controllableService,
   startBootService,
@@ -822,7 +822,10 @@ export class PBossCLI {
   private async maybePersistenceHint(raw: boolean, wasEmptyFleet: boolean) {
     if (raw || !wasEmptyFleet || !process.stdout.isTTY) return;
     try {
-      const presence = await bootServiceInstalled();
+      // Home-scoped: a unit pinned to ANOTHER home cannot bring THIS
+      // home's fleet back after reboot — the honest hint is the install
+      // command, never a false "persistence on" (the 54-failure contract).
+      const presence = await bootServiceInstalledForCurrentHome();
       const line = persistenceHintLine(presence);
       console.log("");
       console.log(colorize(line, presence.installed ? "green" : "yellow"));
@@ -2708,7 +2711,7 @@ ${colorize("Notes:", "dim")}
     const realign = await realignDaemonAfterUpgrade({
       probe: () => probeDaemon(),
       killDaemon: () => this.pboss.kill(),
-      serviceKind: () => bootServiceKind(),
+      serviceKind: () => bootServiceKindForCurrentHome(),
       runPboss: async (runArgs: string[]): Promise<number | null> => {
         const target = installed?.path ?? R.misc.which("pboss") ?? "pboss";
         try {
@@ -3192,7 +3195,7 @@ ${colorize("Notes:", "dim")}
       currentRuntime: R.name,
       currentRuntimeVersion: R.misc.runtimeVersion(),
       expectedEntry: daemonEntryArg(await daemonSpawnCommand()),
-      serviceKind: await bootServiceKind(),
+      serviceKind: await bootServiceKindForCurrentHome(),
     });
     for (const line of report.lines) {
       if (line.startsWith("Status:")) {
@@ -3216,9 +3219,11 @@ ${colorize("Notes:", "dim")}
     return report.exitCode;
   }
 
-  /** `pboss daemon start` — through the boot service when one is installed. */
+  /** `pboss daemon start` — through the boot service when one is installed
+   *  for THIS home (a unit serving another home — a PBOSS_HOME override, a
+   *  hermetic test home — can never start this socket's daemon). */
   private async daemonStartFlow(): Promise<number> {
-    const kind = await bootServiceKind();
+    const kind = await bootServiceKindForCurrentHome();
 
     const running = await probeDaemon();
     if (running) {
@@ -3262,7 +3267,10 @@ ${colorize("Notes:", "dim")}
    * KeepAlive cannot bring the old daemon straight back.
    */
   private async daemonStopFlow(): Promise<number> {
-    const kind = await bootServiceKind();
+    // Home-scoped: a foreign-home unit must never be told to stand down —
+    // that would stop the OTHER home's daemon (a side effect invisible to
+    // this CLI's socket, owner report 2026-10-08).
+    const kind = await bootServiceKindForCurrentHome();
     const live = await probeDaemon();
 
     if (!live && !controllableService(kind)) {
@@ -3303,7 +3311,7 @@ ${colorize("Notes:", "dim")}
    * when one is installed.
    */
   private async daemonRestartFlow(): Promise<number> {
-    const kind = await bootServiceKind();
+    const kind = await bootServiceKindForCurrentHome();
     const before = await probeDaemon();
     if (before) {
       console.log(colorize(`Stopping the old daemon (${this.daemonReportLine(before)})…`, "dim"));

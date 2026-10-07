@@ -9,10 +9,10 @@
  * License: GPL-3.0-only
  */
 
-import { createWriteStream } from "node:fs";
+import { createWriteStream, watch as fsWatch } from "node:fs";
 import fsp from "node:fs/promises";
 import { gzipSync, gunzipSync } from "node:zlib";
-import type { PBFileSink, PBFilesystemRuntime } from "../core/types";
+import type { PBFileSink, PBFilesystemRuntime, PBWatcher } from "../core/types";
 
 export function createNodeFilesystem(): PBFilesystemRuntime {
   return {
@@ -70,6 +70,18 @@ export function createNodeFilesystem(): PBFilesystemRuntime {
       // so daemon launch logs survive restarts.
       const stream = createWriteStream(path, { flags: "a" });
       return Object.assign(stream, { __pbFileSink: path }) as unknown as PBFileSink;
+    },
+
+    watch(dir: string, onChange: (filename: string) => void): PBWatcher {
+      const w = fsWatch(dir, { recursive: true }, (_event, filename) => {
+        const f = filename?.toString();
+        if (f) onChange(f);
+      });
+      return {
+        close: () => {
+          try { w.close(); } catch { /* already closed */ }
+        },
+      };
     },
   };
 }

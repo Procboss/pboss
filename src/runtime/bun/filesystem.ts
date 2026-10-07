@@ -9,8 +9,8 @@
  * License: GPL-3.0-only
  */
 
-import { openSync } from "node:fs";
-import type { PBFileSink, PBFilesystemRuntime } from "../core/types";
+import { openSync, watch as fsWatch } from "node:fs";
+import type { PBFileSink, PBFilesystemRuntime, PBWatcher } from "../core/types";
 
 export function createBunFilesystem(): PBFilesystemRuntime {
   return {
@@ -56,6 +56,20 @@ export function createBunFilesystem(): PBFilesystemRuntime {
       // fd IS the native append sink.
       const fd = openSync(path, "a");
       return { __pbFileSink: path, fd };
+    },
+
+    watch(dir: string, onChange: (filename: string) => void): PBWatcher {
+      // Bun implements node:fs.watch natively — it is Bun's own
+      // recommended directory watcher.
+      const w = fsWatch(dir, { recursive: true }, (_event, filename) => {
+        const f = filename?.toString();
+        if (f) onChange(f);
+      });
+      return {
+        close: () => {
+          try { w.close(); } catch { /* already closed */ }
+        },
+      };
     },
   };
 }

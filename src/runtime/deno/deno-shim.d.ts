@@ -41,6 +41,12 @@ declare const Deno: {
   writeFile(path: string, data: Uint8Array): Promise<void>;
   writeTextFile(path: string, data: string): Promise<void>;
   stat(path: string): Promise<{ size: number; isFile: boolean }>;
+  // The native recursive directory watcher — an async iterator of events
+  // (filesystem.watch pumps it; close() ends the iteration).
+  watchFs(paths: string | string[], opts?: { recursive?: boolean }): {
+    close(): void;
+    [Symbol.asyncIterator](): AsyncIterableIterator<{ kind: string; paths: string[] }>;
+  };
   open(path: string, options?: {
     read?: boolean;
     write?: boolean;

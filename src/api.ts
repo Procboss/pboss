@@ -32,7 +32,7 @@ import { daemonSpawnCommand } from "./install-mode";
 import { ignore } from "./error-handling";
 import { probeDaemon, waitForDaemon, stopDaemonIfRunning } from "./daemon-probe";
 import {
-  bootServiceKind,
+  bootServiceKindForCurrentHome,
   controllableService,
   startBootService,
   bootServiceLabel,
@@ -1275,6 +1275,15 @@ export class PBoss extends EventEmitter<PBossEvents> {
    * fails. So the daemon comes up THROUGH the service (a --no-block start
    * plus a bounded liveness wait); the direct detached spawn remains only
    * for machines with no (or an unreachable) boot service.
+   *
+   * HOME SCOPING (owner report 2026-10-08): "installed" means installed
+   * FOR THIS CLI'S PBOSS_HOME — the unit pins its own
+   * Environment=PBOSS_HOME, and a service serving another home (a
+   * PBOSS_HOME override, a hermetic test home) can never bring THIS
+   * socket's daemon up: waiting on it just burns the full liveness budget
+   * and fails. bootServiceKindForCurrentHome() answers "none" for foreign
+   * homes, so they take the direct spawn — safe, because the conflict
+   * exit and the socket are per-home.
    */
   async launchDaemon(): Promise<void> {
     await ensureDirs();
@@ -1294,7 +1303,9 @@ export class PBoss extends EventEmitter<PBossEvents> {
     }
 
     // ── The service path: the daemon belongs to the manager (issue #41) ──
-    const kind = await bootServiceKind();
+    // Home-scoped: a unit that serves ANOTHER home answers "none" here —
+    // it can never start THIS socket's daemon.
+    const kind = await bootServiceKindForCurrentHome();
     if (controllableService(kind)) {
       const r = await startBootService();
       if (r.ok) {

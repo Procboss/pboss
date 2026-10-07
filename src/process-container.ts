@@ -13,7 +13,7 @@
  * https://github.com/procboss/pboss
  * License: GPL-3.0-only
  */
-import type { PBChild } from "./runtime";
+import type { PBChild, PBWatcher } from "./runtime";
 import { getRuntime } from "./runtime";
 
 const R = getRuntime();
@@ -40,7 +40,6 @@ import {
 } from "./constants";
 import pidusage from "pidusage";
 import { readdir } from "node:fs/promises";
-import { watch } from "node:fs";
 
 export class ProcessContainer {
   public id: number;
@@ -108,7 +107,7 @@ export class ProcessContainer {
   private healthChecker: HealthChecker;
   private cronManager: CronManager;
   private restartTimer: ReturnType<typeof setTimeout> | null = null;
-  private watchers: ReturnType<typeof watch>[] = [];
+  private watchers: PBWatcher[] = [];
   private monitorInterval: ReturnType<typeof setInterval> | null = null;
   private logRotateInterval: ReturnType<typeof setInterval> | null = null;
   private isRestarting: boolean = false;
@@ -487,20 +486,19 @@ export class ProcessContainer {
 
     for (const watchPath of paths) {
       try {
-        const w = watch(
-          watchPath,
-          { recursive: true },
-          (_event: string, filename: string | null) => {
-            if (!filename) return;
-            if (ignorePatterns.some((p) => filename.includes(p))) return;
+        // The runtime adapter's NATIVE watcher (Bun/Node: node:fs.watch,
+        // both implement it natively; Deno: Deno.watchFs) — watch-mode
+        // restarts work on every runtime without node-compat semantics
+        // imposed on Deno.
+        const w = R.filesystem.watch(watchPath, (filename) => {
+          if (ignorePatterns.some((p) => filename.includes(p))) return;
 
-            if (debounceTimer) clearTimeout(debounceTimer);
-            debounceTimer = setTimeout(() => {
-              console.log(`[pboss] ${filename} changed, restarting ${this.name}...`);
-              this.restart("watch");
-            }, 1000);
-          }
-        );
+          if (debounceTimer) clearTimeout(debounceTimer);
+          debounceTimer = setTimeout(() => {
+            console.log(`[pboss] ${filename} changed, restarting ${this.name}...`);
+            this.restart("watch");
+          }, 1000);
+        });
         this.watchers.push(w);
       } catch (err) {
         // A failed watcher silently disabled watch-mode restarts — the user

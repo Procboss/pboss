@@ -87,6 +87,14 @@ export interface PBSpawnSync {
   exitCode: number | null;
 }
 
+/**
+ * A directory watcher's cancel handle — closes the OS watch and ends the
+ * event stream. Close is idempotent and never throws.
+ */
+export interface PBWatcher {
+  close(): void;
+}
+
 /** Process spawning/killing — each runtime's NATIVE mechanism. */
 export interface PBProcessRuntime {
   spawn(cmd: string[], opts?: PBSpawnOptions): PBChild;
@@ -116,6 +124,15 @@ export interface PBFilesystemRuntime {
   gunzip(data: Uint8Array): Uint8Array;
   /** A spawn-redirect sink appending to `path`. */
   sink(path: string): PBFileSink;
+  /**
+   * Recursive directory watcher on the runtime's NATIVE fs-watch API —
+   * node:fs.watch under Bun and Node (both implement it natively; it IS
+   * Bun's recommended watcher) and Deno.watchFs under Deno. onChange
+   * receives the changed entry's path (absolute under Deno, relative to
+   * the watched root under Bun/Node — ignore-list matching stays the
+   * caller's, by substring). Throws when the path cannot be watched.
+   */
+  watch(dir: string, onChange: (filename: string) => void): PBWatcher;
 }
 
 /** A live server started by `network.serve`. */

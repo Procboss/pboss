@@ -37,6 +37,7 @@ export type {
   PBChild,
   PBSpawnOptions,
   PBFileSink,
+  PBWatcher,
   PBServerHandle,
   PBWsSocket,
 } from "./core/types";

@@ -26,7 +26,7 @@
  */
 
 import { join, dirname } from "path";
-import { readFile, rm, stat } from "fs/promises";
+import { readFile, rm, stat, realpath } from "fs/promises";
 import { mkdir } from "fs/promises";
 import { ignore } from "./error-handling";
 import { colorize } from "./utils";
@@ -1336,6 +1336,27 @@ export function persistenceHintLine(presence: BootServicePresence): string {
         "  to bring your processes back after a reboot  (pboss startup status)";
 }
 
+/**
+ * The persistence-hint answer, scoped to the home the service serves:
+ * the raw presence, EXCEPT a controllable service pinned to another home
+ * answers installed:false — it resurrects the UNIT's home after reboot,
+ * never this one, so the honest hint is the install command (the exact
+ * contract the daemon lifecycle follows in api.ts / index.ts). Windows'
+ * Run-key fallback ("runkey") has no service definition to scope and
+ * deliberately suppresses the nag — it keeps the raw answer.
+ */
+export async function bootServiceInstalledForCurrentHome(
+  opts: { unitDir?: string; plistPath?: string } = {},
+): Promise<BootServicePresence> {
+  const presence = await bootServiceInstalled(opts);
+  if (!presence.installed) return presence;
+  const kind = await bootServiceKind(opts);
+  if (!controllableService(kind)) return presence; // runkey: nothing to scope
+  return (await bootServiceControlsCurrentHome(opts))
+    ? presence
+    : { ...presence, installed: false };
+}
+
 /* ── daemon lifecycle × boot service (issue #41) ──────────────────────────
  *
  * `pboss daemon start|stop|restart` must keep the daemon and any installed
@@ -1418,6 +1439,136 @@ export interface ServiceControl {
 /** Does this kind accept on-demand control commands? */
 export function controllableService(kind: BootServiceKind): boolean {
   return kind === "systemd" || kind === "launchd" || kind === "task";
+}
+
+/* ── does the installed service manage THIS CLI's home? ────────────────── */
+
+/**
+ * The PBOSS_HOME a systemd unit text serves, or null.
+ *
+ * Exported pure for the tests: the parser runs on text, so every fixture
+ * shape (missing Environment line, foreign home, trailing slashes) pins
+ * without touching a real unit directory.
+ */
+export function parseUnitPbossHome(text: string): string | null {
+  const m = text.match(/^Environment=PBOSS_HOME=(.*)$/m);
+  const home = m?.[1]?.trim() ?? "";
+  return home ? home : null;
+}
+
+/**
+ * The PBOSS_HOME a launchd plist text serves, or null. Property-list
+ * key/value adjacency is line-oriented: `<key>PBOSS_HOME</key>` on one
+ * line, `<string>…</string>` on the next (the generator's own shape).
+ */
+export function parsePlistPbossHome(text: string): string | null {
+  const m = text.match(/<key>PBOSS_HOME<\/key>\s*<string>([^<]*)<\/string>/);
+  const raw = m?.[1]?.trim() ?? "";
+  if (!raw) return null;
+  // escapeXml's reverse — the five entities it emits.
+  return raw
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&amp;/g, "&");
+}
+
+/**
+ * Same-home comparison for service scoping: trailing separators are
+ * cosmetic, and symlinked roots (macOS /tmp → /private/tmp, Nix stores)
+ * must still match — compare realpaths when both sides exist.
+ */
+async function sameServiceHome(a: string, b: string): Promise<boolean> {
+  const norm = (p: string) => p.replace(/[\\/]+$/, "");
+  if (norm(a) === norm(b)) return true;
+  try {
+    return (await realpath(a)) === (await realpath(b));
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Does the installed boot service control THIS CLI's PBOSS_HOME?
+ *
+ * The unit/plist pins the home it serves (Environment=PBOSS_HOME=…, written
+ * at install time for the installing user's ~/.pboss). A CLI running against
+ * a DIFFERENT home — a PBOSS_HOME override, a hermetic test home — must not
+ * route its daemon through that service: the manager would start a daemon
+ * for the UNIT's home, the CLI would poll its own socket for the whole
+ * liveness wait and then fail (owner report 2026-10-08: on a machine with
+ * the user unit installed, every daemon-needing e2e burned its full 30s
+ * wait and failed — the service happily served the other home the whole
+ * time). The direct spawn is SAFE there: EXIT_DAEMON_CONFLICT(81) and the
+ * socket are per-home, so the two homes' daemons never race each other.
+ *
+ * Returns false whenever the answer cannot be established (no unit, no
+ * pinned home, unreadable definitions, task XML unqueryable): the caller
+ * then treats the machine as service-less and spawns directly.
+ */
+export async function bootServiceControlsCurrentHome(
+  opts: { unitDir?: string; plistPath?: string } = {},
+): Promise<boolean> {
+  // This CLI's socket home — constants.PBOSS_HOME's own rule, resolved at
+  // CALL time (the env is set per-invocation, after module load).
+  const current = process.env.PBOSS_HOME || PBOSS_HOME;
+
+  const os = process.platform;
+  if (os === "linux") {
+    const unitDir = opts.unitDir ?? userUnitDir((await targetUserContext()).home);
+    const unitPath = join(unitDir, "pboss.service");
+    if (!(await pathExists(unitPath))) return false;
+    try {
+      const pinned = parseUnitPbossHome(await readFile(unitPath, "utf8"));
+      return pinned ? await sameServiceHome(pinned, current) : false;
+    } catch {
+      return false;
+    }
+  }
+  if (os === "darwin") {
+    const plist = opts.plistPath ?? (await launchdPlistPath());
+    if (!(await pathExists(plist))) return false;
+    try {
+      const pinned = parsePlistPbossHome(await readFile(plist, "utf8"));
+      return pinned ? await sameServiceHome(pinned, current) : false;
+    } catch {
+      return false;
+    }
+  }
+  if (os === "win32") {
+    // The task's action runs the hidden launcher <PBOSS_HOME>\\daemon-launch.vbs
+    // — the home the task serves is spelled inside its command line. Query
+    // the task XML and look for THIS home; unqueryable means unverifiable,
+    // which is a "no" (the caller spawns directly, never behind an
+    // unverifiable manager's back).
+    try {
+      const { exitCode, stdout } = await R.process.capture([
+        "schtasks", "/query", "/tn", "PBOSS_Daemon", "/xml",
+      ]);
+      if (exitCode !== 0 || !stdout) return false;
+      const norm = (p: string) => p.replace(/[\\/]+$/, "");
+      return stdout.includes(norm(current));
+    } catch {
+      return false;
+    }
+  }
+  return false;
+}
+
+/**
+ * The installed boot mechanism, scoped to homes it manages: the detected
+ * kind when a controllable service controls THIS CLI's PBOSS_HOME, else
+ * "none". The one-liner every daemon-lifecycle decision goes through — a
+ * service that serves another home must be treated as if it were not
+ * installed at all (never started, never stopped, never restarted "for"
+ * this CLI's daemon, and never waited on).
+ */
+export async function bootServiceKindForCurrentHome(): Promise<BootServiceKind> {
+  const kind = await bootServiceKind();
+  return controllableService(kind) && (await bootServiceControlsCurrentHome())
+    ? kind
+    : "none";
 }
 
 /**
