@@ -2782,6 +2782,22 @@ ${colorize("Notes:", "dim")}
           colorize("  Realign it (running apps stop and come back):", "yellow")
         );
         console.log(colorize("    pboss kill && pboss resurrect", "yellow"));
+      } else if (!live.runtime) {
+        // The follow-up owner report (2026-10-07, "still deno runtime is
+        // not used"): the machine's daemon was pre-1.7.0, so the identity
+        // fields did not exist, the mismatch warning above could not fire
+        // (nothing to compare), and the bare "unknown" line named no next
+        // step while a pre-chain supervisor kept imposing its own runtime
+        // on unstated apps. An identity-less daemon gets the same named
+        // command, dimmed from warning to advisory: it may be a healthy
+        // 1.6.8 daemon already honoring .runtime — realign makes the
+        // engine VISIBLE, it is not a repair claim.
+        console.log("");
+        console.log(
+          "An older daemon — it cannot report its engine, so drift stays invisible."
+        );
+        console.log("  Bring it current (running apps stop and come back):");
+        console.log(colorize("    pboss kill && pboss resurrect", "cyan"));
       }
     }
   }

@@ -273,6 +273,41 @@ describe("runtime-config: e2e — pboss runtime (status)", () => {
     expect(r.err).toContain("Invalid ProcBoss runtime configuration: kubernetes");
     rmSync(broken, { recursive: true, force: true });
   });
+
+  test("an older (pre-1.7.0) daemon is named with the realign hint, not a bare unknown", async () => {
+    // The follow-up owner report (2026-10-07, "still deno runtime is not
+    // used"): the machine's daemon answered no identity — v1.6.8's display
+    // said only "unknown (pre-1.7.0 daemon)" — so neither the engine nor
+    // the next step was visible while the leftover supervisor kept
+    // imposing node on unstated apps. A pre-1.7.0 ping (no runtime fields
+    // — they are additive, exactly the old daemon's shape) must surface
+    // the realign command next to the unknown.
+    const oldHome = mkdtempSync(join(tmpdir(), "pboss-rtold-"));
+    writeFileSync(join(oldHome, ".runtime"), "deno\n", "utf8");
+    const fakeOldDaemon = Bun.serve({
+      unix: join(oldHome, "daemon.sock"),
+      fetch: () =>
+        new Response(
+          JSON.stringify({
+            type: "pong",
+            success: true,
+            data: { pid: 3058, uptime: 120 },
+          }),
+          { headers: { "Content-Type": "application/json" } },
+        ),
+    });
+    try {
+      const r = await runCli(["runtime"], oldHome);
+      expect(r.code).toBe(0);
+      expect(r.out).toContain("unknown (pre-1.7.0 daemon)");
+      expect(r.out).toContain("pid 3058");
+      expect(r.out).toContain("An older daemon");
+      expect(r.out).toContain("pboss kill && pboss resurrect");
+    } finally {
+      await fakeOldDaemon.stop(true);
+      rmSync(oldHome, { recursive: true, force: true });
+    }
+  });
 });
 
 /* ── unit: resolvePbossInstallArgv (Deno's supply-chain window) ─────────── */
