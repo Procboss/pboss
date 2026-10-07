@@ -1281,30 +1281,53 @@ const R = getRuntime();
      }
    
      if (count > currentCount) {
-       // Scale up
+       // Scale up. The whole group shares ONE instance count — the worker
+       // env (PBOSS_INSTANCES) AND the runtime-native cluster decoration
+       // (deno/bun SO_REUSEPORT shim: buildWorkerSpawn gates on
+       // config.instances > 1) both derive from it. A worker spawned
+       // without it would fight the group for the SHARED port — exactly
+       // the AddrInUse crash-loop cluster mode exists to prevent — so the
+       // containers are built directly with the group's count (mirroring
+       // startInternal's cluster branch) instead of start(), whose
+       // single-instance default cannot carry it.
+       for (const c of containers) c.config.instances = count;
        const toAdd = count - currentCount;
-       const baseConfig = first.config;
        const states: ProcessState[] = [];
    
        for (let i = 0; i < toAdd; i++) {
-         const result = await this.start({
-           name: `${baseName}-${currentCount + i}`,
-           script: baseConfig.script,
-           args: baseConfig.args,
-           cwd: baseConfig.cwd,
-           env: baseConfig.env,
-           execMode: baseConfig.execMode,
-           autorestart: baseConfig.autorestart,
-           maxRestarts: baseConfig.maxRestarts,
-           watch: baseConfig.watch,
-           port: baseConfig.port,
-         });
-         states.push(...result);
+         const workerIndex = currentCount + i;
+         const id = this.nextId++;
+         const config: ProcessDescription = {
+           ...first.config,
+           id,
+           name: `${baseName}-${workerIndex}`,
+           instances: count,
+           env: {
+             ...(first.config.env ?? {}),
+             NODE_APP_INSTANCE: String(workerIndex),
+             PBOSS_INSTANCE_ID: String(workerIndex),
+             BM2_INSTANCE_ID: String(workerIndex),
+           },
+         };
+         const container = this.attach(new ProcessContainer(
+           id,
+           config,
+           this.logManager,
+           this.clusterManager,
+           this.healthChecker,
+           this.cronManager
+         ));
+         this.processes.set(id, container);
+         await container.start();
+         states.push(container.getState());
        }
    
+       await this.persist();
        return [...containers.map((c) => c.getState()), ...states];
      } else if (count < currentCount) {
-       // Scale down
+       // Scale down — keep the survivors' instance count coherent with the
+       // new group size (respawns re-derive worker env and decoration from it).
+       for (const c of containers) c.config.instances = Math.max(1, count);
        const toRemove = containers.slice(count);
        for (const c of toRemove) {
          await c.stop(true);

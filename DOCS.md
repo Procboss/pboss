@@ -110,7 +110,7 @@ ProcBoss (pboss) is a production-grade, runtime-agnostic process manager for Bun
 
 **Core Process Management** — Start, stop, restart, reload, delete, and scale with automatic restart on crash, configurable restart strategies, memory-limit restarts, and tree killing.
 
-**Cluster Mode** — Multiple instances with per-worker environment injection and `PBOSS_WORKER_ID` / `NODE_APP_INSTANCE` conventions; Node apps cluster through `node:cluster` with one shared port.
+**Cluster Mode** — Multiple instances with per-worker environment injection and `PBOSS_WORKER_ID` / `NODE_APP_INSTANCE` conventions; Node apps cluster through `node:cluster`, and Deno/Bun apps (Linux) share the port through a pboss-injected `reusePort` shim.
 
 **Zero-Downtime Reload** — The new process starts before the old one stops — no dropped requests.
 
@@ -581,7 +581,7 @@ pboss start server.ts --name api --wait-ready --listen-timeout 10000
 | `--cron <expression>` | Cron expression for scheduled restarts | — |
 | `--watch` | Enable file watching | `false` |
 | `--ignore-watch <dirs>` | Directories to ignore | `node_modules,.git` |
-| `--port <n>` | Base port — shared by every node:cluster worker; auto-incremented per instance in the process-based model | — |
+| `--port <n>` | Base port — shared by every node:cluster worker and by Deno/Bun cluster workers (Linux shim); auto-incremented per instance in the process-based model | — |
 | `--namespace <ns>` | Process namespace for grouping | — |
 | `--on-ns-member-exit <policy>` | Reaction to a namespace sibling's terminal exit: `ignore` (default) or `exit` | `ignore` |
 | `--wait-ready` | Wait for process ready signal | `false` |
@@ -962,7 +962,9 @@ Cluster mode runs multiple instances of your application. Which clustering model
 | App runtime | Model | Ports |
 |---|---|---|
 | **Node.js** | **`node:cluster`** — one supervised primary process forks the N workers | **shared** — the primary distributes connections (every platform) |
-| Bun / Deno / anything else | process-based — N independent supervised processes | `basePort + workerId` (via `--port`), or `reusePort: true` in Bun apps to share |
+| **Deno / Bun** (Linux) | **SO_REUSEPORT** — N independent supervised processes, a pboss-injected shim makes their native server binds share the port | **shared** — the kernel spreads connections |
+| Deno / Bun (macOS/Windows) | process-based — N independent supervised processes | `basePort + workerId` (via `--port`) |
+| Binaries (Go/Rust/…) | process-based — N independent supervised processes | `basePort + workerId` (via `--port`) |
 
 #### Node apps cluster through `node:cluster`
 
@@ -996,12 +998,21 @@ pboss start server.ts --name api --instances 4 --port 3000
 
 Each instance is its own supervised process carrying `PBOSS_WORKER_ID` / `NODE_APP_INSTANCE` (and `PORT = basePort + workerId` when `--port` is set). `pboss list` shows one row per instance (`api-0`, `api-1`, …), and stopping one instance leaves the others untouched.
 
-#### ⚠️ Port sharing on Bun (process-based model)
+#### Deno & Bun apps share the port automatically (Linux)
 
-While `pboss` provides the orchestration for clustering, **Bun's native port sharing is OS-limited**:
+On Linux, a Deno or Bun app with `--instances` > 1 needs **no changes at all**: pboss preloads a tiny shim into every worker (`deno run --unstable-net --preload=…` / `bun run --preload …`) that patches the runtime's native server APIs — `Deno.serve`, `Deno.listen`, `Bun.serve` — to set `reusePort: true` on each TCP bind. The N workers then bind the **same port** and the kernel spreads connections across them, exactly like a `node:cluster` app:
 
-* **Linux only:** the `reusePort` Bun.serve option is fully supported on **Linux**.
-* **macOS & Windows:** OS-level `SO_REUSEPORT` limitations make these platforms ignore `reusePort` — binding multiple workers to one port can raise "Address already in use". Give each instance its own port (`--port`), or run the app as a Node cluster (shared port, every platform).
+```bash
+pboss start ./server.ts --instances 3   # Deno.serve({ port: 8000 }, …) — all 3 share 8000
+```
+
+Details worth knowing:
+
+* The app stays the **main module** — `import.meta.main`, `argv`, and cwd semantics are untouched; an app that already sets its own `reusePort` keeps it; port `0` (kernel-assigned) is never shared.
+* With `--port`, every worker gets the **same** `PORT` (the shared-base contract) — not the per-worker offset.
+* Apps that use `node:http` **under Deno/Bun** do not share through this shim — pin them with `--interpreter node` (they become node:cluster apps, any platform) or manage their own sharing.
+* A capability probe (run once per runtime, cached) verifies the flags and the kernel sharing on the actual binary — an old runtime that cannot run the shape falls back to the per-instance model below, never crash-loops on an unknown flag.
+* macOS/Windows: `SO_REUSEPORT` semantics are not verified there, so the shim stays off — instances keep the per-worker `PORT` offsets. Give each instance its own port (`--port`), or run the app as a Node cluster (shared port, every platform).
 
 #### Environment Variables
 
@@ -1013,11 +1024,11 @@ Each worker receives the following environment variables:
 | `PBOSS_WORKER_ID` | Zero-indexed worker ID |
 | `PBOSS_INSTANCES` | Total number of instances |
 | `NODE_APP_INSTANCE` | Standard cluster worker index (`PBOSS_WORKER_ID`) |
-| `PORT` | node:cluster workers: the **shared** base port. Process-based instances: `basePort + workerIndex` (when `--port` is set) |
+| `PORT` | node:cluster workers: the **shared** base port. Deno/Bun cluster workers (Linux shim): the **shared** base port. Process-based instances: `basePort + workerIndex` (when `--port` is set) |
 
-#### Example: Cluster-Aware Port Binding (Bun, process-based model)
+#### Example: Cluster-Aware Port Binding (when the shim is off)
 
-To share a port across Bun processes on Linux, set `reusePort: true`:
+On platforms without the shim (macOS/Windows), or in a custom app that binds its own sockets, set `reusePort: true` yourself — this is also what the pboss shim injects:
 
 ```typescript
 // server.ts
@@ -1032,6 +1043,7 @@ Bun.serve({
     return new Response(`Hello from worker ${workerId} on port ${port}`);
   },
 });
+```
 
 console.log(`Worker ${workerId} listening on :${port}`);
 ```

@@ -23,6 +23,11 @@ import {
 } from "./install-mode";
 import { effectiveProcessRuntime } from "./runtime-overrides";
 import { mergeDenoPermissions } from "./deno-permissions";
+import {
+  ensureReusePortFiles,
+  reusePortClusterPlatform,
+  runtimeSupportsReusePort,
+} from "./reuseport-cluster";
 import { getRuntime } from "./runtime";
 import type { PBChild } from "./runtime";
 import path from "path"
@@ -46,7 +51,8 @@ export class ClusterManager {
      baseEnv: Record<string, string>,
      workerId: number,
      totalWorkers: number,
-     basePort?: number
+     basePort?: number,
+     sharedPort = false
    ): Record<string, string> {
      return {
        ...baseEnv,
@@ -57,7 +63,12 @@ export class ClusterManager {
        BM2_WORKER_ID: String(workerId),
        BM2_INSTANCES: String(totalWorkers),
        NODE_APP_INSTANCE: String(workerId),
-       ...(basePort ? { PORT: String(basePort + workerId) } : {}),
+       // The process-based per-instance model gives every worker its OWN
+       // port (base + workerId — apps that read PORT stay independent). The
+       // runtime-native cluster model (deno/bun workers preloaded with the
+       // SO_REUSEPORT shim) SHARES the base port across all workers, like
+       // node:cluster does — that is the entire point of clustering.
+       ...(basePort ? { PORT: String(sharedPort ? basePort : basePort + workerId) } : {}),
      };
    }
 
@@ -67,6 +78,32 @@ export class ClusterManager {
     * candidate paths) — never blocking the daemon's event loop.
     */
    async buildWorkerCommand(config: ProcessDescription): Promise<string[]> {
+    return (await this.buildWorkerSpawn(config)).cmd;
+  }
+
+  /**
+   * Build the full worker spawn: the command line PLUS the cluster-model
+   * verdict the env needs (shared base port vs per-worker offset).
+   *
+   * The runtime-native cluster model (owner report 2026-10-08): when a
+   * Deno or Bun app runs with instances > 1 on a reusePort platform, the
+   * worker command is decorated with the runtime's preload flags so the
+   * SO_REUSEPORT shim patches the app's server binds — every worker then
+   * binds the SAME port and the kernel spreads connections, exactly like
+   * node:cluster does for Node apps (the node wrapper is chosen in
+   * ProcessManager, not here). The decoration is gated on a one-shot
+   * capability probe (flags + reusePort verified on the actual binary); a
+   * runtime that cannot run the shape keeps the plain per-instance model
+   * — today's behavior, never a crash-loop on an unknown flag.
+   *
+   * Node apps never take this path here (their cluster mode is the
+   * node:cluster wrapper, buildNodeClusterCommand below); non-JS scripts
+   * (python/ruby/binaries) have no runtime to preload into and no
+   * server API to patch.
+   */
+  async buildWorkerSpawn(
+    config: ProcessDescription
+  ): Promise<{ cmd: string[]; sharedPort: boolean }> {
      const cmd: string[] = [];
      // Runtime-unique features bookkeeping (deno permissions): routeEnd marks
      // where the interpreter/interpreter-args (or pboss's RESOLVED route)
@@ -152,10 +189,39 @@ export class ClusterManager {
        }
      }
 
+     // ── The runtime-native cluster model (owner report 2026-10-08) ─────
+     // AFTER the permission merge (the flags survive it untouched), BEFORE
+     // the app script: a deno/bun app spawning as one of N > 1 workers gets
+     // the SO_REUSEPORT shim preloaded, so its native server binds share
+     // the port and the kernel spreads connections. Stays OFF for single
+     // instances (nothing to share), non-Linux (unverified kernel
+     // semantics), and runtimes whose probe failed (an old deno without
+     // --unstable-net / a bun without --preload — the plain per-instance
+     // model, never a crash-loop on an unknown flag).
+     let sharedPort = false;
+     const workerRuntime = commandRuntime(cmd);
+     if (
+       (config.instances ?? 1) > 1 &&
+       (workerRuntime === "deno" || workerRuntime === "bun") &&
+       reusePortClusterPlatform(process.platform) &&
+       cmd[0]
+     ) {
+       const supported = await runtimeSupportsReusePort(cmd[0]!, workerRuntime);
+       if (supported) {
+         const { shim } = await ensureReusePortFiles();
+         if (workerRuntime === "deno") {
+           cmd.push("--unstable-net", `--preload=${shim}`);
+         } else {
+           cmd.push("--preload", shim);
+         }
+         sharedPort = true;
+       }
+     }
+
      cmd.push(path.resolve(config.script));
      if (config.args?.length) cmd.push(...config.args);
 
-     return cmd;
+     return { cmd, sharedPort };
    }
 
    /**
@@ -245,7 +311,7 @@ export class ClusterManager {
      totalWorkers: number,
      logStreams: { stdout: "pipe" | "inherit"; stderr: "pipe" | "inherit" }
    ): Promise<PBChild> {
-     const cmd = await this.buildWorkerCommand(config);
+     const { cmd, sharedPort } = await this.buildWorkerSpawn(config);
      const env = this.createWorkerEnv(
        {
          ...(process.env as Record<string, string>),
@@ -256,7 +322,8 @@ export class ClusterManager {
        },
        workerId,
        totalWorkers,
-       config.port
+       config.port,
+       sharedPort
      );
 
      // The runtime adapter's NATIVE spawn — Bun.spawn / node:child_process
