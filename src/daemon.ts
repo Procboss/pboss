@@ -25,6 +25,7 @@ import {
   DAEMON_PID_FILE,
   DASHBOARD_PORT,
   METRICS_PORT,
+  VERSION,
 } from "./constants";
 import {
   DaemonConflictError,
@@ -601,7 +602,18 @@ export default class Daemon {
         case "ping": {
           return {
             type: "pong",
-            data: { pid: process.pid, uptime: process.uptime() },
+            // The daemon's own identity — the fields a CLI needs to detect
+            // supervisor drift (owner report, 2026-10-07: a leftover Node
+            // daemon silently imposed its runtime on unstated apps while
+            // the user's CLI was Deno; nothing anywhere said so). Extra
+            // fields are additive — older CLIs ignore them.
+            data: {
+              pid: process.pid,
+              uptime: process.uptime(),
+              runtime: R.name,
+              runtimeVersion: R.misc.runtimeVersion(),
+              version: VERSION,
+            },
             success: true,
             id: msg.id,
           };

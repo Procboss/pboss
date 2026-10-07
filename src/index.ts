@@ -28,11 +28,13 @@ import {
   runtimeInstallCommand,
   runtimeLabel,
   installNodeRootless,
+  stampRuntimeSelectionOnFirstRun,
   writeRuntimeSelection,
   RUNTIME_FILE,
   type RuntimeChoice,
 } from "./runtime-config";
 import { launcherRuntimeFromEnv } from "./runtime-overrides";
+import { probeDaemon } from "./daemon-probe";
 
 const R = getRuntime();
 import readline from "node:readline";
@@ -2746,6 +2748,42 @@ ${colorize("Notes:", "dim")}
     console.log(`Executing engine:   ${runtimeDisplayName(R.name)} ${R.misc.runtimeVersion()}`);
     console.log(`Runtime CLI:        ${runtimeDescription()}`);
     console.log(`Install:            ${await installModeDescription()}`);
+
+    // The daemon's identity, straight from its ping (never spawned — a
+    // status command must not start a daemon; probeDaemon also never
+    // throws — a dead socket answers null). This is the line that was
+    // missing when the user's CLI said Deno while a leftover Node daemon
+    // silently decided every unstated app's runtime (owner report,
+    // 2026-10-07): the supervisor's engine belongs NEXT TO the CLI's, or
+    // drift stays invisible.
+    const live = await probeDaemon();
+    if (live) {
+      const daemonEngine = live.runtime
+        ? `${runtimeDisplayName(live.runtime)} ${live.runtimeVersion ?? ""}`.trim()
+        : "unknown (pre-1.7.0 daemon)";
+      console.log(
+        `Daemon:             ${daemonEngine}${live.version ? ` · pboss v${live.version}` : ""} · pid ${live.pid}`
+      );
+      if (live.runtime && live.runtime !== R.name) {
+        console.log("");
+        console.log(
+          colorize(
+            `⚠ The running daemon executes under ${runtimeDisplayName(live.runtime)}, but this pboss is ${runtimeDisplayName(R.name)} —`,
+            "yellow"
+          )
+        );
+        console.log(
+          colorize(
+            "  the daemon predates this runtime's install and still supervises the machine's apps.",
+            "yellow"
+          )
+        );
+        console.log(
+          colorize("  Realign it (running apps stop and come back):", "yellow")
+        );
+        console.log(colorize("    pboss kill && pboss resurrect", "yellow"));
+      }
+    }
   }
 
   /**
@@ -2852,6 +2890,13 @@ ${colorize("Notes:", "dim")}
     // refreshing it is one command, done deliberately (never silently).
     console.log(
       `Boot service:       re-run ${colorize("pboss startup install", "cyan")} so the boot unit follows the new runtime.`
+    );
+    // The LIVE daemon has the same staleness (owner report, 2026-10-07: a
+    // daemon left on the previous runtime kept imposing it on unstated
+    // apps after the selection moved). Same philosophy — name the command,
+    // never silently restart a supervisor with running apps.
+    console.log(
+      `Daemon:             ${colorize("pboss kill && pboss resurrect", "cyan")} restarts it under the new runtime (running apps stop and come back).`
     );
   }
 
@@ -3471,6 +3516,12 @@ ${colorize("Notes:", "dim")}
 
 async function main() {
   await ensureDirs();
+  // The dev entry mirrors src/main.ts: a deno source run persists deno as
+  // the machine's selection when nothing is selected (no wrapper does it on
+  // deno installs).
+  if (R.name === "deno") {
+    await stampRuntimeSelectionOnFirstRun("deno");
+  }
   const cli = new PBossCLI();
   await cli.run(process.argv.slice(2));
   // Same rationale as src/main.ts: Deno pins its event loop on every

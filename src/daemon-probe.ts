@@ -22,7 +22,17 @@ import { ignore } from "./error-handling";
 import { getRuntime } from "./runtime";
 const R = getRuntime();
 
-export type DaemonProbe = { pid: number; uptime: number };
+export type DaemonProbe = {
+  pid: number;
+  uptime: number;
+  /** The runtime executing the DAEMON (additive; absent from pre-1.7.0
+   *  daemons — treat as unknown). */
+  runtime?: "node" | "bun" | "deno";
+  /** That runtime's own version string ("2.9.7", "v24.19.0"). */
+  runtimeVersion?: string;
+  /** The daemon's pboss version (additive). */
+  version?: string;
+};
 
 /**
  * Ping whatever is listening on the daemon socket (default DAEMON_SOCKET).

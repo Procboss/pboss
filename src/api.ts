@@ -1439,9 +1439,18 @@ export class PBoss extends EventEmitter<PBossEvents> {
   }
 
   /**
-   * Ping the daemon. Returns daemon PID and uptime.
+   * Ping the daemon — its identity as it answers: pid, uptime, and (from
+   * 1.7.0 daemons) the runtime executing it, that runtime's version, and
+   * the daemon's own pboss version. Additive fields — pre-1.7.0 daemons
+   * answer without them.
    */
-  async ping(): Promise<{ pid: number; uptime: number }> {
+  async ping(): Promise<{
+    pid: number;
+    uptime: number;
+    runtime?: "node" | "bun" | "deno";
+    runtimeVersion?: string;
+    version?: string;
+  }> {
     const res = await this.sendOrThrow({ type: "ping" });
     return res.data;
   }
@@ -1766,7 +1775,13 @@ export class PBoss extends EventEmitter<PBossEvents> {
   /**
    * Ping the daemon.
    */
-  static async ping(): Promise<{ pid: number; uptime: number }> {
+  static async ping(): Promise<{
+    pid: number;
+    uptime: number;
+    runtime?: "node" | "bun" | "deno";
+    runtimeVersion?: string;
+    version?: string;
+  }> {
     return PBoss.getDefaultInstance().ping();
   }
 

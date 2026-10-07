@@ -41,6 +41,7 @@ import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import { randomUUID } from "node:crypto";
 import { PBOSS_HOME } from "./constants";
+import { ignore } from "./error-handling";
 import { getRuntime } from "./runtime";
 import { DENO_MIN_DEP_AGE_FLAG, fetchDenoEligibility } from "./deno-eligibility";
 
@@ -159,6 +160,31 @@ export async function writeRuntimeSelection(
       }
       throw err;
     }
+  }
+}
+
+/**
+ * The deno-install equivalent of the wrapper's persist-on-first-run
+ * (owner report, 2026-10-07: "pboss is imposing node even though the runtime
+ * isnt node"). A deno global install has NO wrapper — deno's own launcher
+ * runs the entry directly — so .runtime stayed empty forever and the
+ * daemon's unstated-app fallback inherited ITS OWN, possibly stale, runtime:
+ * a leftover Node daemon silently ran every `pboss start ./x.ts` through
+ * node+tsx. Stamping the executing runtime as the machine's selection gives
+ * every daemon (any runtime, any age) the machine's truth to consult.
+ *
+ * Rules: only when the file does NOT exist (a set selection always wins —
+ * `pboss runtime change` owns changes; an unparseable file is left for
+ * `pboss runtime` to report, never silently replaced — spec §20). Best
+ * effort: a failed stamp never blocks the CLI.
+ */
+export async function stampRuntimeSelectionOnFirstRun(runtime: RuntimeChoice): Promise<void> {
+  try {
+    if ((await readRuntimeFileRaw()) === null) {
+      await writeRuntimeSelection(runtime);
+    }
+  } catch (err) {
+    ignore("stamp first-run runtime selection", err);
   }
 }
 

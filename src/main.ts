@@ -20,8 +20,22 @@
 import { PBossCLI } from "./index";
 import { ensureDirs } from "./utils";
 import { getRuntime } from "./runtime";
+import { stampRuntimeSelectionOnFirstRun } from "./runtime-config";
 
 await ensureDirs();
+
+// Deno installs have no wrapper to persist the first-run selection
+// (owner report, 2026-10-07: a deno global install left .runtime empty
+// forever, so a leftover Node daemon's runtime silently became the
+// unstated-app default). Stamp deno when nothing is selected — BEFORE
+// cli.run so every command, including `pboss runtime` itself, sees it.
+// Bun/Node package installs reach this file only through the wrapper,
+// which has already persisted by dispatch time; a compiled binary cannot
+// change runtime — deno is the only wrapper-less flavor that can drift.
+if (getRuntime().name === "deno") {
+  await stampRuntimeSelectionOnFirstRun("deno");
+}
+
 const cli = new PBossCLI();
 await cli.run(process.argv.slice(2));
 

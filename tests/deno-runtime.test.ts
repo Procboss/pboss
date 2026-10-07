@@ -23,6 +23,14 @@
  *                  ever ran (owner report, 2026-10-07), `runtime change`/
  *                  startup/cloud spawns the same way. Piped-only access +
  *                  null streams (the Bun/Node contract) now.
+ *   BUG 7 (impose): a deno global install has NO wrapper, so .runtime was
+ *                  never persisted — the daemon's unstated-app fallback
+ *                  inherited the DAEMON's own, possibly stale, runtime:
+ *                  the owner's Deno CLI watched a leftover Node daemon run
+ *                  `pboss start ./server.ts` through node+tsx. The deno
+ *                  CLI now stamps .runtime=deno on first run (the
+ *                  wrapper-equivalent), the daemon reports its engine in
+ *                  ping, and `pboss runtime` warns on CLI/daemon drift.
  *
  * These tests run the REAL source adapters under the REAL deno on PATH —
  * they skip visibly on deno-less machines (the false-green lesson from
@@ -39,10 +47,13 @@ const REPO = join(dirname(fileURLToPath(import.meta.url)), "..");
 const ADAPTER_URL = pathToFileURL(join(REPO, "src/runtime/deno/network.ts")).href;
 const PROCESS_URL = pathToFileURL(join(REPO, "src/runtime/deno/process.ts")).href;
 const DIST_ENTRY = join(REPO, "dist", "cli.deno.js");
+const DIST_CLI = join(REPO, "dist", "cli.js");
 const DIST_BUILT = existsSync(DIST_ENTRY);
 
 const denoBin = Bun.which("deno");
 const canDeno = !!denoBin;
+const nodeBin = Bun.which("node");
+const canNode = !!nodeBin;
 
 /** Run a deno script file; capture stdout+exit. */
 function denoRun(
@@ -388,5 +399,141 @@ console.log("ADAPTER_OK");
       }
     },
     150_000,
+  );
+
+  test.skipIf(!canDeno || !DIST_BUILT)(
+    "a deno install stamps .runtime on first run — no wrapper exists to do it (bug 7)",
+    async () => {
+      const home = mkdtempSync(join(tmpdir(), "pboss-deno-stamp-"));
+      mkdirSync(join(home, ".pboss"), { recursive: true });
+      try {
+        const proc = Bun.spawnSync([denoBin!, "run", "-A", DIST_ENTRY, "--version"], {
+          env: { ...process.env, HOME: home, PBOSS_HOME: join(home, ".pboss"), TERM: "dumb" },
+          stdout: "pipe",
+          stderr: "pipe",
+          stdin: "ignore",
+          timeout: 60_000,
+        });
+        expect(proc.exitCode).toBe(0);
+        // Pre-fix the file stayed absent forever: a deno global install has
+        // no wrapper (deno's launcher runs the entry directly), so nothing
+        // ever persisted the machine's runtime — and the daemon's
+        // unstated-app fallback inherited whatever runtime the DAEMON
+        // happened to be running.
+        expect(readFileSync(join(home, ".pboss", ".runtime"), "utf8")).toBe("deno\n");
+      } finally {
+        rmSync(home, { recursive: true, force: true });
+      }
+    },
+    90_000,
+  );
+
+  test.skipIf(!canDeno || !DIST_BUILT)(
+    "a set selection is never overwritten by the deno boot stamp",
+    async () => {
+      const home = mkdtempSync(join(tmpdir(), "pboss-deno-stamp-set-"));
+      mkdirSync(join(home, ".pboss"), { recursive: true });
+      // A machine that HAS chosen (the wrapper's first-run stamp, or
+      // `pboss runtime change`): the deno boot stamp must respect it.
+      writeFileSync(join(home, ".pboss", ".runtime"), "node\n");
+      try {
+        const proc = Bun.spawnSync([denoBin!, "run", "-A", DIST_ENTRY, "--version"], {
+          env: { ...process.env, HOME: home, PBOSS_HOME: join(home, ".pboss"), TERM: "dumb" },
+          stdout: "pipe",
+          stderr: "pipe",
+          stdin: "ignore",
+          timeout: 60_000,
+        });
+        expect(proc.exitCode).toBe(0);
+        expect(readFileSync(join(home, ".pboss", ".runtime"), "utf8")).toBe("node\n");
+      } finally {
+        rmSync(home, { recursive: true, force: true });
+      }
+    },
+    90_000,
+  );
+
+  test.skipIf(!canDeno || !canNode || !DIST_BUILT)(
+    "THE OWNER'S SCENARIO: a leftover Node daemon no longer imposes node on unstated apps (bug 7, e2e)",
+    async () => {
+      // "pboss is imposing node even though the runtime isnt node" (owner
+      // report, 2026-10-07): the CLI executed under Deno (`pboss runtime`
+      // said so), but a daemon left running from an earlier install was
+      // Node — and the daemon's unstated-app fallback ("inherit the main
+      // runtime") inherited ITS OWN stale runtime, running every
+      // `pboss start ./x.ts` through node+tsx ("Deno is not defined").
+      // The fix: the deno CLI stamps .runtime=deno before the start RPC,
+      // and the 1.7.0 daemon consults it for unstated apps — the stale
+      // supervisor keeps running and spawns deno apps.
+      const home = mkdtempSync(join(tmpdir(), "pboss-deno-impose-"));
+      const pb = join(home, ".pboss");
+      const appDir = join(home, "app");
+      const marker = join(home, "marker.txt");
+      mkdirSync(pb, { recursive: true });
+      mkdirSync(appDir, { recursive: true });
+      // The owner's app: a Deno-only API — under node+tsx it dies with
+      // "Deno is not defined"; the marker proves the runtime that ran it.
+      writeFileSync(
+        join(appDir, "server.ts"),
+        `await Deno.writeTextFile(${JSON.stringify(marker)}, "runtime=deno version=" + Deno.version.deno + "\\n");\n` +
+          `Deno.serve({ port: 8123 }, () => new Response("ok"));\n`,
+      );
+      // The daemon must be able to find deno for runtimeCommandPrefix —
+      // its HOME is the hermetic one, so the ~/.deno/bin fallback cannot
+      // hit; the PATH route must.
+      const env = {
+        ...process.env,
+        HOME: home,
+        PBOSS_HOME: pb,
+        TERM: "dumb",
+        PATH: `${dirname(denoBin!)}:${process.env.PATH ?? ""}`,
+      };
+      try {
+        // 1. The stale supervisor: a NODE daemon, exactly the leftover the
+        //    owner's machine had.
+        const dstart = Bun.spawnSync([nodeBin!, DIST_CLI, "daemon", "start"], {
+          env, stdout: "pipe", stderr: "pipe", stdin: "ignore", timeout: 60_000,
+        });
+        expect(dstart.exitCode).toBe(0);
+        const daemonPid = readFileSync(join(pb, "daemon.pid"), "utf8");
+
+        // 2. The owner's command: the deno CLI starts an unstated .ts app.
+        const start = Bun.spawnSync([denoBin!, "run", "-A", DIST_ENTRY, "start", "./server.ts"], {
+          cwd: appDir, env, stdout: "pipe", stderr: "pipe", stdin: "ignore", timeout: 60_000,
+        });
+        const startOut = new TextDecoder().decode(start.stdout) + new TextDecoder().decode(start.stderr);
+        expect(start.exitCode).toBe(0);
+        expect(startOut).toContain("online");
+
+        // 3. The app ran under DENO (pre-fix: node+tsx, "Deno is not
+        //    defined", restart loop, never a marker).
+        await new Promise((r) => setTimeout(r, 1500));
+        const ranWith = existsSync(marker) ? readFileSync(marker, "utf8") : "(none)";
+        expect(ranWith).toContain("runtime=deno");
+
+        // 4. The mechanism is the STAMP, not a daemon restart: the same
+        //    Node daemon (same pid) answered the start.
+        expect(readFileSync(join(pb, "daemon.pid"), "utf8")).toBe(daemonPid);
+        expect(readFileSync(join(pb, ".runtime"), "utf8")).toBe("deno\n");
+
+        // 5. `pboss runtime` now surfaces the drift it could not see
+        //    before: the daemon's engine, next to the CLI's, with the
+        //    realign command.
+        const rt = Bun.spawnSync([denoBin!, "run", "-A", DIST_ENTRY, "runtime"], {
+          env, stdout: "pipe", stderr: "pipe", stdin: "ignore", timeout: 60_000,
+        });
+        const rtOut = new TextDecoder().decode(rt.stdout) + new TextDecoder().decode(rt.stderr);
+        expect(rt.exitCode).toBe(0);
+        expect(rtOut).toContain("Daemon:");
+        expect(rtOut).toContain("Node");
+        expect(rtOut).toContain("pboss kill && pboss resurrect");
+      } finally {
+        Bun.spawnSync([nodeBin!, DIST_CLI, "kill"], {
+          env, stdout: "ignore", stderr: "ignore", stdin: "ignore", timeout: 60_000,
+        });
+        rmSync(home, { recursive: true, force: true });
+      }
+    },
+    180_000,
   );
 });

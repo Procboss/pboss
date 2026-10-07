@@ -631,6 +631,16 @@ describe("wrapper: e2e — interactive first-run (pty)", () => {
  * with it would be the CLI's honest usage error; the wrapper+flag+save
  * flow is pinned by the probe farms and tests/issue-38.test.ts.
  *
+ * The SELECTION contract differs per flavor (bug 7, owner report
+ * 2026-10-07: "pboss is imposing node even though the runtime isnt node"):
+ * node/bun entries never touch .runtime — the WRAPPER owns persistence on
+ * those installs. The deno entry is the exception BY DESIGN: a deno global
+ * install has no wrapper at all (deno's own launcher runs the entry
+ * directly), so the deno entry IS the launcher-equivalent and stamps
+ * deno on first run — without it nothing ever persisted the machine's
+ * runtime, and a leftover daemon's own (stale) runtime silently became
+ * the unstated-app default.
+ *
  * dist/ is a build artifact: on a fresh clone run
  * `bun run ./scripts/build-dist.ts` (the issue-38 suite builds it too when
  * it packs). Without dist the block REPORTS as skipped, never passes. */
@@ -670,9 +680,17 @@ describe("wrapper: e2e — the REAL built entries (needs dist/)", () => {
           const r = runEntry(bin!, entryArgs(entry), scrub, home);
           expect(r.code, `entry stderr:\n${r.err}`).toBe(0);
           expect(r.out).toMatch(/pboss v\d+\.\d+\.\d+/);
-          // Direct entry runs never touch the selection — the launcher
-          // owns it (a direct --runtime would be the usage error instead).
-          expect(() => readFileSync(join(home, ".runtime"), "utf8")).toThrow();
+          if (runtime === "deno") {
+            // Bug 7: the deno entry is the deno install's launcher-equivalent
+            // (no wrapper exists) — it stamps the machine's runtime on
+            // first run, exactly like the wrapper's first-run persist.
+            expect(readFileSync(join(home, ".runtime"), "utf8")).toBe("deno\n");
+          } else {
+            // Direct node/bun entry runs never touch the selection — the
+            // launcher owns it (a direct --runtime would be the usage
+            // error instead).
+            expect(() => readFileSync(join(home, ".runtime"), "utf8")).toThrow();
+          }
         } finally {
           rmSync(farm, { recursive: true, force: true });
           rmSync(scrub, { recursive: true, force: true });
