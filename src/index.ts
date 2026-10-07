@@ -3473,6 +3473,11 @@ async function main() {
   await ensureDirs();
   const cli = new PBossCLI();
   await cli.run(process.argv.slice(2));
+  // Same rationale as src/main.ts: Deno pins its event loop on every
+  // spawned child (no unref exists) — a finished command would hang the
+  // process open. Bun/Node drain naturally; exit only where the runtime
+  // cannot.
+  if (R.name === "deno") process.exit(0);
 }
 
 // Runs when this file is the EXECUTED SCRIPT (bun run src/index.ts). The

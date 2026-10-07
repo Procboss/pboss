@@ -71,11 +71,24 @@ export function createDenoProcess(): PBProcessRuntime {
 
       const exited = child.status.then((s) => s.code ?? null);
 
+      // Deno's ChildProcess getters THROW for any stdio that is not
+      // "piped" — "inherit" streams live to the user, "null" (our "ignore")
+      // discards, an fd sink redirects; none leaves a stream to read. The
+      // PBChild contract is Bun/Node's (null when there is nothing to
+      // read), so the getters are touched ONLY for piped children. The old
+      // eager access crashed every inherit/ignore spawn under Deno: the
+      // getter fired while building this very object, so `pboss upgrade`
+      // died inside defaultSpawn before the channel command ever ran, and
+      // `runtime change`/startup/cloud spawns the same way (owner report,
+      // 2026-10-07).
+      const outPiped = outSink === null && (opts.stdout ?? "pipe") === "pipe";
+      const errPiped = errSink === null && (opts.stderr ?? "pipe") === "pipe";
+
       return {
         pid: child.pid,
         exited,
-        stdout: outSink ? null : child.stdout,
-        stderr: errSink ? null : child.stderr,
+        stdout: outPiped ? child.stdout : null,
+        stderr: errPiped ? child.stderr : null,
         kill(signal = "SIGTERM") {
           try {
             child.kill(signal);
@@ -84,8 +97,14 @@ export function createDenoProcess(): PBProcessRuntime {
           }
         },
         unref() {
-          // Deno children are not auto-reaped and do not hold the event
-          // loop — nothing to unref; detached semantics are the default.
+          // Deno has NO unref for children — and contrary to what this
+          // comment once claimed, a spawned child DOES hold the event loop
+          // until it exits (verified empirically, 2026-10-07: a bare
+          // Deno.Command().spawn() with stdio "null" and no .status access
+          // still pins the loop). Detached children therefore outlive this
+          // process the only way Deno allows: the parent EXITS (the CLI
+          // entries do that explicitly under deno — see src/main.ts), the
+          // child is orphaned to init and keeps running.
         },
       };
     },

@@ -19,7 +19,16 @@
 
 import { PBossCLI } from "./index";
 import { ensureDirs } from "./utils";
+import { getRuntime } from "./runtime";
 
 await ensureDirs();
 const cli = new PBossCLI();
 await cli.run(process.argv.slice(2));
+
+// Deno pins its event loop on every spawned child — there is no unref
+// (owner report 2026-10-07: `pboss upgrade` completed, then hung forever on
+// the daemon its post-upgrade check had spawned; the finished CLI never
+// returned to the shell). The command's work is done here, so exit
+// explicitly. Bun/Node release their unref'd/detached children and drain
+// naturally — exit ONLY where the runtime cannot.
+if (getRuntime().name === "deno") process.exit(0);

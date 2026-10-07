@@ -15,6 +15,14 @@
  *                  detached child (the daemon) lost its stdout the moment
  *                  the CLI exited (SIGPIPE) and died silently. Real fds
  *                  (node:fs openSync) redirect at the kernel level now.
+ *   BUG 6 (spawn): Deno's ChildProcess getters THROW for any stdio that is
+ *                  not "piped" — and the adapter eagerly read child.stdout
+ *                  while building the returned PBChild, so EVERY
+ *                  inherit/ignore spawn crashed under Deno: `pboss upgrade`
+ *                  died inside defaultSpawn before the channel command
+ *                  ever ran (owner report, 2026-10-07), `runtime change`/
+ *                  startup/cloud spawns the same way. Piped-only access +
+ *                  null streams (the Bun/Node contract) now.
  *
  * These tests run the REAL source adapters under the REAL deno on PATH —
  * they skip visibly on deno-less machines (the false-green lesson from
@@ -22,7 +30,7 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { mkdtempSync, rmSync, mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
+import { mkdtempSync, rmSync, mkdirSync, readFileSync, writeFileSync, existsSync, copyFileSync, chmodSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -248,5 +256,137 @@ console.log("child-wrote-after-parent-exit");
       }
     },
     120_000,
+  );
+
+  test.skipIf(!canDeno)("inherit/ignore spawns answer null streams — the upgrade crash (bug 6)", async () => {
+    // The upgrade path's defaultSpawn (src/upgrade.ts) runs the channel
+    // command with stdout/stderr INHERITED — live installer output (and
+    // snap's password prompt) must reach the user untouched. Deno's
+    // ChildProcess getters throw for non-piped stdio, so the adapter's old
+    // eager `stdout: outSink ? null : child.stdout` crashed while merely
+    // BUILDING the PBChild: "Uncaught TypeError: Cannot get 'stdout':
+    // 'stdout' is not piped" — `pboss upgrade` under deno died before the
+    // install command ever ran. The PBChild contract (Bun/Node semantics)
+    // is null streams for anything that is not piped.
+    const script = `
+import { createDenoProcess } from ${JSON.stringify(PROCESS_URL)};
+const P = createDenoProcess();
+
+// 1. THE UPGRADE SHAPE (defaultSpawn): inherit stdio.
+const inherit = P.spawn([Deno.execPath(), "--version"], { stdout: "inherit", stderr: "inherit" });
+if (inherit.stdout !== null) throw new Error("inherit stdout must be null, got a stream");
+if (inherit.stderr !== null) throw new Error("inherit stderr must be null, got a stream");
+if ((await inherit.exited) !== 0) throw new Error("inherit exit != 0");
+
+// 2. "ignore" stdio (utils/startup-manager/cloud-auth spawn shapes) — Deno
+//    maps it to stdio "null", whose getters throw the same way.
+const ignored = P.spawn([Deno.execPath(), "--version"], { stdout: "ignore", stderr: "ignore" });
+if (ignored.stdout !== null || ignored.stderr !== null) throw new Error("ignore streams must be null");
+if ((await ignored.exited) !== 0) throw new Error("ignore exit != 0");
+
+// 3. Piped children must STILL expose readable streams (capture callers:
+//    probeDenoMinDepAge, verifyInstalledVersion) — the fix cannot
+//    dead-pipe the piped case to save the inherit one.
+const piped = P.spawn([Deno.execPath(), "--version"], { stdout: "pipe", stderr: "pipe" });
+const text = await new Response(piped.stdout).text();
+if (!text.includes("deno")) throw new Error("piped stdout empty: " + text);
+if ((await piped.exited) !== 0) throw new Error("piped exit != 0");
+
+console.log("ADAPTER_OK");
+`;
+    const r = denoRun(script);
+    expect(r.code).toBe(0);
+    expect(r.out).toContain("ADAPTER_OK");
+    // The owner's exact crash line, verbatim — it must never come back.
+    expect(r.out).not.toContain("not piped");
+  }, 90_000);
+
+  test.skipIf(!canDeno || !DIST_BUILT || process.platform === "win32")(
+    "THE OWNER'S UPGRADE under deno: the inherit spawn actually executes the channel command (bug 6, e2e)",
+    async () => {
+      const home = mkdtempSync(join(tmpdir(), "pboss-deno-upg-run-"));
+      const pkg = join(home, "pkg");
+      mkdirSync(join(pkg, "dist"), { recursive: true });
+      mkdirSync(join(home, ".pboss"), { recursive: true });
+      mkdirSync(join(home, "shim"), { recursive: true });
+      const log = join(home, "shim", "install.log");
+      try {
+        // A deno-global-shaped install: the dist under a .git-less parent,
+        // so the EXECUTING runtime (deno) resolves the channel — exactly
+        // the owner's machine (`deno install -g npm:pboss/deno-entry`).
+        copyFileSync(join(REPO, "dist", "cli.deno.js"), join(pkg, "dist", "cli.deno.js"));
+        // Report a version BELOW the registry's latest so the upgrade
+        // actually spawns the command (the owner's terminal: v1.6.6 →
+        // v1.6.7) — the repo's real version would answer "already up to
+        // date" and never execute the plan.
+        const REPO_VERSION = JSON.parse(readFileSync(join(REPO, "package.json"), "utf8")).version;
+        const cliBody = readFileSync(join(REPO, "dist", "cli.js"), "utf8");
+        writeFileSync(
+          join(pkg, "dist", "cli.js"),
+          cliBody.split(`"${REPO_VERSION}"`).join('"1.6.6"'),
+        );
+        // A fake `deno` first on PATH: `install --help` (the
+        // --min-dep-age probe) forwards to the real deno so the plan
+        // matches the machine's own deno; a real install lands in the log
+        // and succeeds — a test must never reinstall the global package.
+        writeFileSync(
+          join(home, "shim", "deno"),
+          [
+            "#!/bin/sh",
+            `REAL=${JSON.stringify(denoBin!)}`,
+            'for a in "$@"; do if [ "$a" = "--help" ]; then exec "$REAL" "$@"; fi; done',
+            'if [ "$1" = "install" ]; then printf \'%s\\n\' "$@" > ' + JSON.stringify(log) + "; exit 0; fi",
+            'exec "$REAL" "$@"',
+            "",
+          ].join("\n"),
+        );
+        chmodSync(join(home, "shim", "deno"), 0o755);
+
+        const proc = Bun.spawnSync(
+          [denoBin!, "run", "-A", join(pkg, "dist", "cli.deno.js"), "upgrade", "-y"],
+          {
+            env: {
+              ...process.env,
+              HOME: home,
+              PBOSS_HOME: join(home, ".pboss"),
+              PATH: [join(home, "shim"), process.env.PATH ?? ""].join(":"),
+              TERM: "dumb",
+            },
+            stdout: "pipe",
+            stderr: "pipe",
+            stdin: "ignore",
+            timeout: 90_000,
+          },
+        );
+        const out = new TextDecoder().decode(proc.stdout) + new TextDecoder().decode(proc.stderr);
+
+        // Pre-fix this run died the owner's way — the TypeError came from
+        // the ADAPTER's eager child.stdout read inside defaultSpawn, before
+        // the install command ever ran.
+        expect(out).not.toContain("not piped");
+        expect(out).not.toContain("TypeError");
+        expect(proc.exitCode).toBe(0);
+        // The channel resolved to deno and the command executed.
+        expect(out).toContain("Installed via:  deno (global)");
+        expect(out).toContain("requested through deno");
+        // The executed argv is the canonical command: install + the
+        // unpinned spec (+ the --min-dep-age bypass when this machine's
+        // own deno knows the flag — probed here exactly like the CLI
+        // probes it, through the same forwarding shim).
+        const logged = readFileSync(log, "utf8").trim().split("\n");
+        expect(logged[0]).toBe("install");
+        for (const token of ["-g", "-A", "--name", "pboss", "--reload", "--force", "npm:pboss/deno-entry"]) {
+          expect(logged).toContain(token);
+        }
+        const probe = Bun.spawnSync([denoBin!, "install", "--help"], { stdout: "pipe", stderr: "pipe" });
+        const helpText = new TextDecoder().decode(probe.stdout) + new TextDecoder().decode(probe.stderr);
+        if (helpText.includes("--min-dep-age")) {
+          expect(logged).toContain("--min-dep-age=0");
+        }
+      } finally {
+        rmSync(home, { recursive: true, force: true });
+      }
+    },
+    150_000,
   );
 });
