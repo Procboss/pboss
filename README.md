@@ -302,7 +302,11 @@ pboss list
 deno, brew, snap) — one machine, one CLI — and verifies `pboss --version` on
 your PATH actually reports the new version. Upgrades follow the runtime you
 selected: `~/.pboss/.runtime` says node → npm, bun → bun, deno → deno — your
-choice survives every upgrade:
+choice survives every upgrade. The upgrade finishes the daemon too
+([#41](https://github.com/Procboss/pboss/issues/41)): it stops the old-code
+daemon, reinstalls the boot service from the new install and restarts the
+daemon through it — check both versions any time with `pboss daemon status`,
+apply one yourself with `pboss daemon restart`:
 
 ```bash
 pboss upgrade --check    # see current → latest, the detected channel, and the exact command

@@ -1311,6 +1311,245 @@ export function persistenceHintLine(presence: BootServicePresence): string {
         "  to bring your processes back after a reboot  (pboss startup status)";
 }
 
+/* ── daemon lifecycle × boot service (issue #41) ──────────────────────────
+ *
+ * `pboss daemon start|stop|restart` must keep the daemon and any installed
+ * boot service in sync: a stop that only kills the daemon is undone by
+ * systemd's Restart=always or launchd's KeepAlive seconds later, and a
+ * start that spawns a daemon directly creates a second, unmanaged daemon
+ * the service manager knows nothing about. These helpers are the ONE
+ * place that talks to whichever boot mechanism this machine installed —
+ * the daemon commands compose them with the direct paths.
+ */
+
+/**
+ * Which boot mechanism this machine's pboss install uses. "none" = no
+ * boot service (the daemon is spawned on demand by CLI commands);
+ * "runkey" = the denied-task fallback on Windows, which fires at logon
+ * only and offers no on-demand control.
+ */
+export type BootServiceKind = "systemd" | "launchd" | "task" | "runkey" | "none";
+
+/** Human label for status displays. */
+export function bootServiceLabel(kind: BootServiceKind): string {
+  switch (kind) {
+    case "systemd":
+      return "systemd (user unit)";
+    case "launchd":
+      return "launchd (LaunchAgent)";
+    case "task":
+      return "Windows Task Scheduler";
+    case "runkey":
+      return "Windows Registry Run key";
+    case "none":
+      return "none";
+  }
+}
+
+/**
+ * Detect the installed boot mechanism (read-only; same presence rules as
+ * bootServiceInstalled, but distinguishing WHICH mechanism answers).
+ * `opts.unitDir` redirects the systemd lookup for tests.
+ */
+export async function bootServiceKind(opts: { unitDir?: string } = {}): Promise<BootServiceKind> {
+  const os = process.platform;
+  if (os === "linux") {
+    const unitDir = opts.unitDir ?? userUnitDir((await targetUserContext()).home);
+    return (await pathExists(join(unitDir, "pboss.service"))) ? "systemd" : "none";
+  }
+  if (os === "darwin") {
+    const home = (await targetUserContext()).home;
+    return (await pathExists(join(home, "Library", "LaunchAgents", "com.pboss.daemon.plist")))
+      ? "launchd"
+      : "none";
+  }
+  if (os === "win32") {
+    try {
+      const { exitCode } = await R.process.capture(["schtasks", "/query", "/tn", "PBOSS_Daemon"]);
+      if (exitCode === 0) return "task";
+    } catch (err) {
+      ignore("schtasks /query (boot service kind)", err);
+    }
+    const [regCode] = await runReg(buildWindowsRunKeyQueryCommand());
+    return regCode === 0 ? "runkey" : "none";
+  }
+  return "none";
+}
+
+/** The launchd agent plist for the invoking user. */
+async function launchdPlistPath(): Promise<string> {
+  const home = (await targetUserContext()).home;
+  return join(home, "Library", "LaunchAgents", "com.pboss.daemon.plist");
+}
+
+/** Result of a boot-service control action. */
+export interface ServiceControl {
+  /** The manager accepted and executed the action. */
+  ok: boolean;
+  /** What ran (or why it could not) — surfaced to the user verbatim. */
+  detail: string;
+}
+
+/** Does this kind accept on-demand control commands? */
+export function controllableService(kind: BootServiceKind): boolean {
+  return kind === "systemd" || kind === "launchd" || kind === "task";
+}
+
+/**
+ * Start the daemon THROUGH the installed boot mechanism. Callers verify
+ * responsiveness afterwards — `systemctl start` returns when the start
+ * job completes (Type=simple: at ExecStart's fork), a beat before the
+ * daemon answers its socket.
+ *
+ * runkey/none answer { ok: false } so the caller takes the direct-spawn
+ * path — spawning behind the service manager's back would create a
+ * daemon the manager cannot see, exactly what issue #41 forbids.
+ */
+export async function startBootService(): Promise<ServiceControl> {
+  const kind = await bootServiceKind();
+  if (kind === "systemd") {
+    const r = await runSystemctl(["start", "pboss"], { user: true });
+    return r.code === 0
+      ? { ok: true, detail: "systemctl --user start pboss" }
+      : { ok: false, detail: `systemctl --user start pboss failed: ${r.err || `exit ${r.code}`}` };
+  }
+  if (kind === "launchd") {
+    const plist = await launchdPlistPath();
+    // unload first: `load` on an already-loaded agent errors, and the
+    // install path uses the same unload+load pair — idempotent here too.
+    try {
+      await R.process.capture(["launchctl", "unload", plist]);
+    } catch (err) {
+      ignore(`launchctl unload ${plist} (daemon start)`, err);
+    }
+    try {
+      await R.process.capture(["launchctl", "load", "-w", plist]);
+      return { ok: true, detail: `launchctl load -w ${plist}` };
+    } catch (err) {
+      return {
+        ok: false,
+        detail: `launchctl load -w failed: ${err instanceof Error ? err.message : String(err)}`,
+      };
+    }
+  }
+  if (kind === "task") {
+    try {
+      const { exitCode, stderr } = await R.process.capture(["schtasks", "/run", "/tn", "PBOSS_Daemon"]);
+      return exitCode === 0
+        ? { ok: true, detail: "schtasks /run /tn PBOSS_Daemon" }
+        : { ok: false, detail: `schtasks /run failed: ${stderr.trim() || `exit ${exitCode}`}` };
+    } catch (err) {
+      return {
+        ok: false,
+        detail: `schtasks /run failed: ${err instanceof Error ? err.message : String(err)}`,
+      };
+    }
+  }
+  return {
+    ok: false,
+    detail:
+      kind === "runkey"
+        ? "the Registry Run key starts pboss at logon — no on-demand start"
+        : "no boot service installed",
+  };
+}
+
+/**
+ * Stop the boot service (and with it the daemon it manages). The caller
+ * stops the daemon itself FIRST (the graceful kill RPC) — this only tells
+ * the manager to stand down so Restart=always / KeepAlive do not bring
+ * the old daemon straight back (issue #41 §2's restart invariant).
+ */
+export async function stopBootService(): Promise<ServiceControl> {
+  const kind = await bootServiceKind();
+  if (kind === "systemd") {
+    const r = await runSystemctl(["stop", "pboss"], { user: true });
+    return r.code === 0
+      ? { ok: true, detail: "systemctl --user stop pboss" }
+      : { ok: false, detail: `systemctl --user stop pboss failed: ${r.err || `exit ${r.code}`}` };
+  }
+  if (kind === "launchd") {
+    const plist = await launchdPlistPath();
+    try {
+      await R.process.capture(["launchctl", "unload", "-w", plist]);
+      return { ok: true, detail: `launchctl unload -w ${plist}` };
+    } catch (err) {
+      return {
+        ok: false,
+        detail: `launchctl unload -w failed: ${err instanceof Error ? err.message : String(err)}`,
+      };
+    }
+  }
+  if (kind === "task") {
+    try {
+      const { exitCode, stderr } = await R.process.capture(["schtasks", "/end", "/tn", "PBOSS_Daemon"]);
+      // /end on a not-running task is success for our purposes.
+      return exitCode === 0
+        ? { ok: true, detail: "schtasks /end /tn PBOSS_Daemon" }
+        : { ok: false, detail: `schtasks /end failed: ${stderr.trim() || `exit ${exitCode}`}` };
+    } catch (err) {
+      return {
+        ok: false,
+        detail: `schtasks /end failed: ${err instanceof Error ? err.message : String(err)}`,
+      };
+    }
+  }
+  return { ok: false, detail: "no boot service installed" };
+}
+
+/**
+ * Restart the daemon THROUGH the installed boot mechanism. systemd gets a
+ * single restart job (its ExecStop is the graceful kill); launchd and the
+ * Windows task have no graceful stop hook — callers pre-kill the daemon
+ * (the RPC) before calling this, so the manager never has to SIGTERM a
+ * daemon whose children would be orphaned.
+ */
+export async function restartBootService(): Promise<ServiceControl> {
+  const kind = await bootServiceKind();
+  if (kind === "systemd") {
+    const r = await runSystemctl(["restart", "pboss"], { user: true });
+    return r.code === 0
+      ? { ok: true, detail: "systemctl --user restart pboss" }
+      : { ok: false, detail: `systemctl --user restart pboss failed: ${r.err || `exit ${r.code}`}` };
+  }
+  if (kind === "launchd") {
+    const plist = await launchdPlistPath();
+    try {
+      await R.process.capture(["launchctl", "unload", "-w", plist]);
+    } catch (err) {
+      ignore(`launchctl unload ${plist} (daemon restart)`, err);
+    }
+    try {
+      await R.process.capture(["launchctl", "load", "-w", plist]);
+      return { ok: true, detail: `launchctl load -w ${plist}` };
+    } catch (err) {
+      return {
+        ok: false,
+        detail: `launchctl load -w failed: ${err instanceof Error ? err.message : String(err)}`,
+      };
+    }
+  }
+  if (kind === "task") {
+    try {
+      await R.process.capture(["schtasks", "/end", "/tn", "PBOSS_Daemon"]);
+    } catch (err) {
+      ignore("schtasks /end (daemon restart)", err);
+    }
+    try {
+      const { exitCode, stderr } = await R.process.capture(["schtasks", "/run", "/tn", "PBOSS_Daemon"]);
+      return exitCode === 0
+        ? { ok: true, detail: "schtasks /run /tn PBOSS_Daemon" }
+        : { ok: false, detail: `schtasks /run failed: ${stderr.trim() || `exit ${exitCode}`}` };
+    } catch (err) {
+      return {
+        ok: false,
+        detail: `schtasks /run failed: ${err instanceof Error ? err.message : String(err)}`,
+      };
+    }
+  }
+  return { ok: false, detail: "no boot service installed" };
+}
+
 /** Quote a value for a PowerShell single-quoted string ('' escapes '). */
 function psQuote(value: string): string {
   return `'${value.replace(/'/g, "''")}'`;

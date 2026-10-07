@@ -32,6 +32,13 @@ export type DaemonProbe = {
   runtimeVersion?: string;
   /** The daemon's pboss version (additive). */
   version?: string;
+  /** The entry module the daemon process runs (additive; issue #41) —
+   *  daemon.ts / dist/cli.js / dist/cli.deno.js. Deno installs live in
+   *  versioned directories, so an install that moved is visible here. */
+  entry?: string;
+  /** The runtime executable running the daemon (additive; issue #41) —
+   *  nvm/Cellar-style versioned runtime installs show their move here. */
+  exec?: string;
 };
 
 /**

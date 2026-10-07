@@ -17,7 +17,7 @@
 
 import path, { resolve, extname, join } from "path";
 import { getRuntime, runtimeDescription, runtimeDisplayName } from "./runtime";
-import { installModeDescription } from "./install-mode";
+import { installModeDescription, daemonSpawnCommand } from "./install-mode";
 import {
   isValidRuntime,
   normalizeRuntime,
@@ -53,6 +53,12 @@ import {
   bootServiceInstalled,
   persistenceHintLine,
   selfHealLinger,
+  bootServiceKind,
+  bootServiceLabel,
+  controllableService,
+  startBootService,
+  stopBootService,
+  restartBootService,
 } from "./startup-manager";
 import { EnvManager } from "./env-manager";
 import { DaemonConflictError, EXIT_DAEMON_CONFLICT, ignore } from "./error-handling";
@@ -98,6 +104,11 @@ import {
 } from "./upgrade";
 import { fetchDenoEligibility } from "./deno-eligibility";
 import { resolveCloudUrl, describeCloudLink } from "./cloud";
+import {
+  composeDaemonStatus,
+  daemonEntryArg,
+  realignDaemonAfterUpgrade,
+} from "./daemon-lifecycle";
 import { normalizeDenoPermissions } from "./deno-permissions";
 import { commandRuntime } from "./install-mode";
 
@@ -2685,37 +2696,68 @@ ${colorize("Notes:", "dim")}
       );
     }
 
-    // A running daemon keeps the OLD code until restarted. Restart it NOW
-    // (the upgrade is half-done otherwise) and check the cloud link came
-    // back — the machine credential in ~/.pboss is the permanent cache, so
-    // the resumed link is the expected outcome, not a nice surprise.
-    const daemonAlive = await this.pboss
-      .ping()
-      .then(() => true)
-      .catch(() => false);
-    if (daemonAlive) {
-      console.log(colorize("  Restarting the daemon onto the new binary…", "cyan"));
-      // kill is the same stop the service managers use (ExecStop):
-      // systemd Restart=always / launchd KeepAlive bring it straight back;
-      // on hosts without a service, the cloud-status call below spawns it
-      // on demand exactly like any other CLI command.
-      await this.pboss.kill();
-      const back = await waitForDaemon(15_000);
-      if (!back) {
+    // The upgrade is not whole until the daemon runs the NEW code (issue
+    // #41: "a pboss upgrade should never leave users unknowingly running
+    // an old daemon"). Stop the old daemon, then bring a new one up
+    // THROUGH the installed boot service — `pboss startup install` from
+    // the NEW pboss regenerates the unit (ExecStart paths follow the
+    // replaced install: deno's versioned dirs, brew's Cellar) and restarts
+    // it — or, with no boot service, `pboss resurrect` from the NEW pboss
+    // (spawns the daemon + restores the saved process list). Always the
+    // new pboss: THIS process still resolves the replaced install.
+    const realign = await realignDaemonAfterUpgrade({
+      probe: () => probeDaemon(),
+      killDaemon: () => this.pboss.kill(),
+      serviceKind: () => bootServiceKind(),
+      runPboss: async (runArgs: string[]): Promise<number | null> => {
+        const target = installed?.path ?? R.misc.which("pboss") ?? "pboss";
+        try {
+          const proc = R.process.spawn([target, ...runArgs], {
+            stdout: "inherit",
+            stderr: "inherit",
+            stdin: "ignore",
+          });
+          // Bounded: a hung sub-CLI must not hang the upgrade.
+          const timer = setTimeout(() => proc.kill(), 120_000);
+          try {
+            return await proc.exited;
+          } finally {
+            clearTimeout(timer);
+          }
+        } catch (err) {
+          ignore(`run ${target} ${runArgs.join(" ")} (daemon realign)`, err);
+          return null;
+        }
+      },
+      waitForDaemon,
+      log: (line: string) => console.log(colorize(`  ${line}`, "cyan")),
+      verifyMs: 20_000,
+    });
+
+    if (realign.live) {
+      const daemonLine = this.daemonReportLine(realign.live);
+      if (realign.live.version && compareVersions(realign.live.version, latest) >= 0) {
+        console.log(colorize(`  ✓ Daemon restarted onto the new code — ${daemonLine}`, "green"));
+      } else {
         console.log(
-          colorize(
-            "  The daemon has not come back yet — start it with: pboss resurrect",
-            "yellow"
-          )
+          colorize(`  ⚠ Daemon is running, but reports ${daemonLine} (expected v${latest}).`, "yellow")
         );
+        console.log(colorize("    Apply it with:  pboss daemon restart", "yellow"));
       }
+    } else if (realign.note) {
+      console.log(colorize(`  ⚠ ${realign.note}`, "yellow"));
     }
 
-    // The post-upgrade cloud-connection check (the status RPC itself
-    // restarts the daemon via the on-demand spawn when nobody else did).
-    const link = await this.pboss.cloudStatus().catch((err: unknown) => {
-      ignore("post-upgrade cloud link check", err);
-      return null;
+    // The post-upgrade cloud-connection check. Probe FIRST: with no daemon
+    // answering, the RPC's on-demand spawn would bring the daemon back on
+    // THIS (old) process's spawn command — the replaced install, on deno.
+    // The realign above (or the user's next command) owns that decision.
+    const link = await probeDaemon().then(async (alive) => {
+      if (!alive) return null;
+      return this.pboss.cloudStatus().catch((err: unknown) => {
+        ignore("post-upgrade cloud link check", err);
+        return null;
+      });
     });
     if (link) {
       console.log(
@@ -3080,38 +3122,218 @@ ${colorize("Notes:", "dim")}
     }
   }
 
-  async cmdDaemon(args: string[]) {
+  /**
+   * `pboss daemon <start|stop|restart|status|reload>` (issue #41).
+   *
+   * The lifecycle is explicit and service-aware: when a boot service is
+   * installed, every action goes THROUGH it (systemctl / launchctl /
+   * schtasks) so the manager and the daemon can never disagree — a bare
+   * kill would be undone by Restart=always seconds later, a bare spawn
+   * would create a daemon the manager cannot see. Without a boot service
+   * the direct paths apply (spawn on demand, graceful kill).
+   *
+   * start/restart also restore the saved process list (the boot service's
+   * ExecStartPost does this on systemd; the CLI does it everywhere else),
+   * so `pboss daemon stop` → `pboss daemon start` round-trips the fleet.
+   */
+  async cmdDaemon(args: string[]): Promise<void> {
     const subCmd = args[0];
-
-    const daemonStatus = async () => {
-      if (await this.pboss.isDaemonRunning()) {
-        console.log(colorize("running", "green"));
-      } else {
-        console.error(colorize("stopped", "red"));
-      }
-      process.exit(1);
-    };
 
     switch (subCmd) {
       case "status":
-        await daemonStatus();
-        break;
+        process.exit(await this.daemonStatusFlow());
       case "start":
-        await this.pboss.startDaemon();
-        process.exit(0);
-        break;
+        process.exit(await this.daemonStartFlow());
       case "stop":
-        await this.pboss.stopDaemon();
-        process.exit(0);
-        break;
+        process.exit(await this.daemonStopFlow());
+      case "restart":
+        process.exit(await this.daemonRestartFlow());
       case "reload":
         await this.pboss.daemonReload();
         process.exit(0);
-        break;
       default:
-        console.error(colorize("Usage: pboss daemon <status|start|stop|reload>", "red"));
+        console.error(
+          colorize("Usage: pboss daemon <start|stop|restart|status|reload>", "red")
+        );
         process.exit(1);
     }
+  }
+
+  /** One daemon-identity line for the success reports ("" when silent). */
+  private daemonReportLine(live: NonNullable<Awaited<ReturnType<typeof probeDaemon>>>): string {
+    const parts = [`pid ${live.pid}`];
+    if (live.version) parts.push(`pboss v${live.version}`);
+    if (live.runtime) {
+      parts.push(`${runtimeDisplayName(live.runtime)} ${live.runtimeVersion ?? ""}`.trim());
+    }
+    return parts.join(" · ");
+  }
+
+  /**
+   * Restore the saved process list after bringing a daemon up (the
+   * systemd unit's ExecStartPost does this itself; everywhere else this
+   * is the CLI's job). Best-effort by contract: a daemon with no dump
+   * resurrects nothing, and that is fine — it is UP, which is the goal.
+   */
+  private async restoreProcessList(): Promise<void> {
+    try {
+      const states = await this.pboss.resurrect();
+      if (states.length > 0) printProcessTable(states);
+    } catch (err) {
+      ignore("restore the process list after daemon start", err);
+    }
+  }
+
+  /** `pboss daemon status` — the issue #41 report. */
+  private async daemonStatusFlow(): Promise<number> {
+    const report = composeDaemonStatus({
+      live: await probeDaemon(),
+      installedVersion: VERSION,
+      currentRuntime: R.name,
+      currentRuntimeVersion: R.misc.runtimeVersion(),
+      expectedEntry: daemonEntryArg(await daemonSpawnCommand()),
+      serviceKind: await bootServiceKind(),
+    });
+    for (const line of report.lines) {
+      if (line.startsWith("Status:")) {
+        console.log(
+          `Status:    ${
+            report.status === "stopped"
+              ? colorize("stopped", "red")
+              : report.status === "outdated"
+                ? colorize("outdated", "yellow")
+                : colorize("running", "green")
+          }`
+        );
+      } else if (line.startsWith("Daemon:")) {
+        console.log(`Daemon:    ${report.status === "stopped" ? colorize("stopped", "red") : colorize("running", "green")}`);
+      } else if (line.startsWith("PID:") || line.startsWith("pboss:") || line.startsWith("Runtime:") || line.startsWith("Up:")) {
+        console.log(colorize(line, "dim"));
+      } else {
+        console.log(line);
+      }
+    }
+    return report.exitCode;
+  }
+
+  /** `pboss daemon start` — through the boot service when one is installed. */
+  private async daemonStartFlow(): Promise<number> {
+    const kind = await bootServiceKind();
+
+    const running = await probeDaemon();
+    if (running) {
+      console.log(colorize(`✓ Daemon is already running — ${this.daemonReportLine(running)}`, "green"));
+      return 0;
+    }
+
+    if (controllableService(kind)) {
+      const r = await startBootService();
+      if (!r.ok) {
+        console.error(colorize(`✗ Could not start the daemon through ${bootServiceLabel(kind)}.`, "red"));
+        console.error(colorize(`  ${r.detail}`, "red"));
+        return 1;
+      }
+      if (await waitForDaemon(15_000)) {
+        // The systemd unit's ExecStartPost restores the process list
+        // itself; the other mechanisms have no such hook.
+        if (kind !== "systemd") await this.restoreProcessList();
+        const live = await probeDaemon();
+        console.log(colorize(`✓ Daemon started through ${bootServiceLabel(kind)}${live ? ` — ${this.daemonReportLine(live)}` : ""}`, "green"));
+        return 0;
+      }
+      // The start job was accepted — the manager owns the daemon now.
+      console.log(colorize(`Service start submitted (${r.detail}).`, "dim"));
+      console.log(colorize("The daemon is not answering yet — check: pboss daemon status", "yellow"));
+      return 0;
+    }
+
+    // No boot service: spawn directly (the on-demand path every CLI
+    // command uses) and restore the saved process list.
+    await this.pboss.startDaemon();
+    await this.restoreProcessList();
+    const live = await probeDaemon();
+    console.log(colorize(`✓ Daemon started${live ? ` — ${this.daemonReportLine(live)}` : ""}`, "green"));
+    return 0;
+  }
+
+  /**
+   * `pboss daemon stop` — graceful kill FIRST (apps stop cleanly, files
+   * cleaned), then the boot service stands down so Restart=always /
+   * KeepAlive cannot bring the old daemon straight back.
+   */
+  private async daemonStopFlow(): Promise<number> {
+    const kind = await bootServiceKind();
+    const live = await probeDaemon();
+
+    if (!live && !controllableService(kind)) {
+      // Idempotent no-op — kill() also sweeps any stale socket/PID files.
+      await this.pboss.kill();
+      console.log(colorize("✓ Daemon is not running", "green"));
+      return 0;
+    }
+
+    if (live) {
+      await this.pboss.kill();
+    }
+    if (controllableService(kind)) {
+      const r = await stopBootService();
+      if (!r.ok) {
+        console.error(colorize(`⚠ ${r.detail}`, "yellow"));
+      }
+    }
+
+    // Bounded wait until actually gone — "stopped" must mean stopped.
+    const deadline = Date.now() + 10_000;
+    while (Date.now() < deadline) {
+      if (!(await probeDaemon())) {
+        console.log(colorize("✓ Daemon stopped (managed processes were stopped with it)", "green"));
+        return 0;
+      }
+      await R.misc.sleep(200);
+    }
+    console.error(colorize("✗ The daemon is still answering — check the boot service:", "red"));
+    console.error(colorize(`  ${kind === "systemd" ? "systemctl --user status pboss" : "pboss startup status"}`, "red"));
+    return 1;
+  }
+
+  /**
+   * `pboss daemon restart` — never leaves the old daemon running while a
+   * new one starts (issue #41 §2): the old one is stopped dead before any
+   * start is submitted, and the new one comes up through the boot service
+   * when one is installed.
+   */
+  private async daemonRestartFlow(): Promise<number> {
+    const kind = await bootServiceKind();
+    const before = await probeDaemon();
+    if (before) {
+      console.log(colorize(`Stopping the old daemon (${this.daemonReportLine(before)})…`, "dim"));
+      await this.pboss.kill();
+    }
+
+    if (controllableService(kind)) {
+      const r = await restartBootService();
+      if (!r.ok) {
+        console.error(colorize(`✗ Could not restart the daemon through ${bootServiceLabel(kind)}.`, "red"));
+        console.error(colorize(`  ${r.detail}`, "red"));
+        return 1;
+      }
+      if (await waitForDaemon(20_000)) {
+        if (kind !== "systemd") await this.restoreProcessList();
+        const live = await probeDaemon();
+        console.log(colorize(`✓ Daemon restarted through ${bootServiceLabel(kind)}${live ? ` — ${this.daemonReportLine(live)}` : ""}`, "green"));
+        return 0;
+      }
+      console.error(colorize("✗ The daemon did not come back — check:", "red"));
+      console.error(colorize(`  ${kind === "systemd" ? "systemctl --user status pboss · journalctl --user -u pboss -n 50 --no-pager" : "pboss startup status"}`, "red"));
+      return 1;
+    }
+
+    // No boot service: stop-then-start on the direct path.
+    await this.pboss.startDaemon();
+    await this.restoreProcessList();
+    const live = await probeDaemon();
+    console.log(colorize(`✓ Daemon restarted${live ? ` — ${this.daemonReportLine(live)}` : ""}`, "green"));
+    return 0;
   }
 
   async cmdPrometheus() {
@@ -3230,10 +3452,16 @@ ${colorize("Notes:", "dim")}
     module list                   List installed modules
     
     ${colorize("Daemon:", "cyan")}
-    daemon status                 Returns the status of the daemon
-    daemon start                  Starts the daemon
-    daemon stop                   Stops the daemon
-    daemon reload                 Reloads the daemon
+    daemon status                 The daemon's state: PID, pboss version,
+                                  runtime, uptime vs the installed version
+                                  (outdated daemons say so + the fix)
+    daemon start                  Start the daemon (through the installed
+                                  boot service) and restore saved processes
+    daemon stop                   Stop the daemon and its processes (the
+                                  boot service stands down with it)
+    daemon restart                Stop the old daemon, start the current
+                                  one — restarts through the boot service
+    daemon reload                 Reload the daemon's request handler
     
     ${colorize("Other:", "cyan")}
     runtime                       Show the configured + executing runtimes

@@ -1859,6 +1859,40 @@ The available keys are `process:start`, `process:stop`, `process:restart`, `proc
 
 ### Daemon Control
 
+The daemon lifecycle is explicit and service-aware ([#41](https://github.com/Procboss/pboss/issues/41)): when a boot service is installed, `start`/`stop`/`restart` go through it (`systemctl` / `launchctl` / `schtasks`), so the manager and the daemon never disagree — a stop that only killed the daemon would be undone by `Restart=always` seconds later.
+
+```
+pboss daemon status
+```
+
+Report the daemon's PID, pboss version, runtime, uptime and installed boot service, next to the installed version. A daemon that no longer matches the installation says so and names the fix:
+
+```
+Daemon:    running
+PID:       12345
+pboss:     1.2.0
+Runtime:   Bun 1.3.14
+Service:   systemd (user unit)
+Installed: 1.3.0 (Bun 1.3.14)
+Status:    outdated
+
+A newer pboss version is installed (the daemon runs v1.2.0).
+Run `pboss daemon restart` to apply the update.
+```
+
+The same check catches a runtime upgraded underneath a running daemon (`bun upgrade`) and an install that moved (deno's versioned install dirs) — the daemon reports its entry module and runtime executable. `status` exits 0 when a daemon answers, 1 when not.
+
+```
+pboss daemon start     # start through the boot service (or spawn on
+                       # demand), then restore saved processes
+pboss daemon stop      # stop the daemon and its processes; the boot
+                       # service stands down with it
+pboss daemon restart    # stop the old daemon, start the current one —
+                       # never both at once
+```
+
+`start` and `restart` also restore the saved process list (the systemd unit's `ExecStartPost` does this on Linux; the CLI does it everywhere else), so `daemon stop` → `daemon start` round-trips the fleet. Stopping stops managed processes with it — that is the contract, same as `pboss kill`.
+
 #### pboss ping
 
 Check if the daemon is running.
@@ -1954,7 +1988,7 @@ pboss upgrade --yes          # scripted — skip the [y/N] prompt
 pboss upgrade --channel npm  # fix a misdetected channel (persists)
 ```
 
-Version numbers come from the npm registry (the canonical source every channel builds from). After an upgrade the daemon keeps running the previous code until you restart it — `pboss upgrade` detects a live daemon and prints the exact `pboss kill && pboss resurrect` line to run.
+Version numbers come from the npm registry (the canonical source every channel builds from). The upgrade finishes the daemon too ([#41](https://github.com/Procboss/pboss/issues/41)): it stops the old-code daemon, re-runs `pboss startup install` from the NEW install when a boot service exists (the unit's ExecStart follows the replaced package — deno's versioned dirs, brew's Cellar), or `pboss resurrect` from the new install when it does not, then verifies the daemon that answers runs the new code. `pboss daemon status` shows both versions side by side; `pboss daemon restart` applies any update that lands outside that flow.
 
 ### What the cloud link does
 
@@ -2947,9 +2981,9 @@ for (const mod of modules) {
 
 ### Daemon Lifecycle
 
-#### `pboss.ping(): Promise<{ pid: number; uptime: number }>`
+#### `pboss.ping(): Promise<{ pid: number; uptime: number; ... }>`
 
-Ping the daemon and return its PID and uptime in milliseconds.
+Ping the daemon and return its identity: PID and uptime, plus (from 1.7.0 daemons) the runtime executing it, that runtime's version, the daemon's pboss version, its entry module and runtime executable — the fields `pboss daemon status` uses to detect supervisor drift.
 
 ```ts
 const info = await pboss.ping();

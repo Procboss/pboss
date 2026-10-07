@@ -613,6 +613,13 @@ export default class Daemon {
               runtime: R.name,
               runtimeVersion: R.misc.runtimeVersion(),
               version: VERSION,
+              // Issue #41 (stale-daemon detection): WHAT this daemon
+              // actually runs — the entry module and the runtime
+              // executable. A daemon from a replaced install (deno's
+              // versioned dirs) or an upgraded runtime (nvm) is visible
+              // here without guessing from paths.
+              entry: R.misc.mainPath() ?? undefined,
+              exec: process.execPath,
             },
             success: true,
             id: msg.id,
