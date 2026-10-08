@@ -175,7 +175,7 @@ export class LogManager {
   async tailLog(
     name: string,
     id: number,
-    streamController: ReadableStreamDefaultController,
+    write: (frame: string) => boolean,
     signal: AbortSignal
   ) {
     const paths = this.getLogPaths(name, id);
@@ -205,10 +205,10 @@ export class LogManager {
         state[type] = size;
 
         for (const line of chunk.split(/\r?\n/).filter(Boolean)) {
-          try {
-            const log = { name, id, ...this.parseLine(line, type) };
-            streamController.enqueue(`data: ${JSON.stringify(log)}\n\n`);
-          } catch {
+          // write() is the byte-safe, guarded stream writer — false means
+          // the client is gone; the poller stops itself, never throws.
+          const log = { name, id, ...this.parseLine(line, type) };
+          if (!write(`data: ${JSON.stringify(log)}\n\n`)) {
             clearInterval(poll);
             return;
           }

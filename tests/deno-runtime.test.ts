@@ -239,6 +239,84 @@ console.log("child-wrote-after-parent-exit");
   );
 
   test.skipIf(!canDeno || !DIST_BUILT)(
+    "logs -f under the deno daemon: the stream stays open and the daemon SURVIVES the follow (the owner's report 2026-10-08)",
+    async () => {
+      // "pboss logs -f ... is supposed to wait and stream error until
+      // manually terminated, but on deno, it gets killed after 5-10 seconds."
+      // Root cause: the daemon's SSE writers enqueued STRINGS into the
+      // Response body stream — chunks must be BufferSource, and deno
+      // ENFORCES it (bun/node tolerated the strings), so the first tail
+      // poll / keepalive tick threw "expected typed ArrayBufferView"
+      // uncaught and KILLED the daemon ~5s in; the abort listener's
+      // unguarded controller.close() killed it again on the way down.
+      const home = mkdtempSync(join(tmpdir(), "pboss-deno-follow-"));
+      const pb = join(home, ".pboss");
+      const appDir = join(home, "app");
+      mkdirSync(pb, { recursive: true });
+      mkdirSync(appDir, { recursive: true });
+      // A pure console.log ticker — needs NO permission under the unstated
+      // deny-by-default route, so the follow test pins the stream, not the
+      // permission model.
+      writeFileSync(
+        join(appDir, "ticker.ts"),
+        'let i = 0;\nsetInterval(() => console.log("tick " + (++i)), 700);\n',
+      );
+      const env = {
+        ...process.env,
+        HOME: home,
+        PBOSS_HOME: pb,
+        PATH: `${dirname(denoBin!)}:${process.env.PATH ?? ""}`,
+      };
+      try {
+        // The owner's installed shape: the deno daemon from dist.
+        const dstart = Bun.spawnSync([denoBin!, "run", "-A", DIST_ENTRY, "daemon", "start"], {
+          env, stdout: "pipe", stderr: "pipe", stdin: "ignore", timeout: 60_000,
+        });
+        expect(dstart.exitCode).toBe(0);
+        const daemonPid = readFileSync(join(pb, "daemon.pid"), "utf8");
+
+        const start = Bun.spawnSync(
+          [denoBin!, "run", "-A", DIST_ENTRY, "start", "./ticker.ts", "--name", "ticker"],
+          { cwd: appDir, env, stdout: "pipe", stderr: "pipe", stdin: "ignore", timeout: 60_000 },
+        );
+        expect(start.exitCode).toBe(0);
+
+        // THE OWNER'S COMMAND: logs -f — still alive at 15s (past the 5s
+        // keepalive ticks that used to kill the daemon), and actually
+        // streaming.
+        const follow = Bun.spawn([denoBin!, "run", "-A", DIST_ENTRY, "logs", "-f"], {
+          cwd: appDir, env, stdout: "pipe", stderr: "pipe", stdin: "ignore",
+        });
+        try {
+          await Bun.sleep(15_000);
+          expect(follow.exitCode).toBe(null); // never exited — the manual ^C is the only stop
+        } finally {
+          follow.kill("SIGKILL");
+          await follow.exited;
+        }
+        const streamed = await new Response(follow.stdout).text();
+        expect(streamed).toContain("tick");
+
+        // The daemon SURVIVED the follow's death (the abort-close crash
+        // killed it pre-fix) — same pid, still answering.
+        expect(readFileSync(join(pb, "daemon.pid"), "utf8")).toBe(daemonPid);
+        const list = Bun.spawnSync([denoBin!, "run", "-A", DIST_ENTRY, "list"], {
+          cwd: appDir, env, stdout: "pipe", stderr: "pipe", stdin: "ignore", timeout: 60_000,
+        });
+        expect(list.exitCode).toBe(0);
+        const listOut = new TextDecoder().decode(list.stdout) + new TextDecoder().decode(list.stderr);
+        expect(listOut).toContain("ticker");
+      } finally {
+        Bun.spawnSync([denoBin!, "run", "-A", DIST_ENTRY, "kill"], {
+          env, stdout: "ignore", stderr: "ignore", stdin: "ignore", timeout: 60_000,
+        });
+        rmSync(home, { recursive: true, force: true });
+      }
+    },
+    180_000,
+  );
+
+  test.skipIf(!canDeno || !DIST_BUILT)(
     "`pboss upgrade --check` completes under deno (the import.meta.dir crash — bug 5)",
     async () => {
       const home = mkdtempSync(join(tmpdir(), "pboss-deno-upg-"));
@@ -498,9 +576,15 @@ console.log("ADAPTER_OK");
         const daemonPid = readFileSync(join(pb, "daemon.pid"), "utf8");
 
         // 2. The owner's command: the deno CLI starts an unstated .ts app.
-        const start = Bun.spawnSync([denoBin!, "run", "-A", DIST_ENTRY, "start", "./server.ts"], {
-          cwd: appDir, env, stdout: "pipe", stderr: "pipe", stdin: "ignore", timeout: 60_000,
-        });
+        //    The app writes a marker + serves — permissions stated for it
+        //    (the unstated default is deny-by-default since 2026-10-08;
+        //    this test pins the stamp mechanism, not the permission model).
+        const start = Bun.spawnSync(
+          [denoBin!, "run", "-A", DIST_ENTRY, "start", "./server.ts", "--permissions", "allow-write,allow-net"],
+          {
+            cwd: appDir, env, stdout: "pipe", stderr: "pipe", stdin: "ignore", timeout: 60_000,
+          }
+        );
         const startOut = new TextDecoder().decode(start.stdout) + new TextDecoder().decode(start.stderr);
         expect(start.exitCode).toBe(0);
         expect(startOut).toContain("online");

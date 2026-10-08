@@ -100,9 +100,9 @@ describe("decideScriptInterpreter: the chain (pure)", () => {
     ]);
   });
 
-  test("deno is next — TS-native, no tsx consulted", () => {
+  test("deno is next — TS-native, no tsx consulted (deny-by-default, quiet)", () => {
     expect(decideScriptInterpreter("app.ts", { ...NONE, deno: "/home/u/.deno/bin/deno" })).toEqual([
-      "/home/u/.deno/bin/deno", "run", "-A",
+      "/home/u/.deno/bin/deno", "run", "--quiet",
     ]);
   });
 

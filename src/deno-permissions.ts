@@ -10,6 +10,11 @@
  * those runtimes have no permission model, and a config stays portable across
  * machines whose interpreter chains differ.
  *
+ * The UNSTATED default (owner rule, 2026-10-08): no permission flags at all —
+ * deno's own deny-by-default. Before that date pboss's resolved route granted
+ * the kitchen-sink `-A`, which silently allowed everything the user never
+ * stated (owner report: a serving app started with NO net permission).
+ *
  * The rules below were verified against deno 2.9.7 (see tests for the pins):
  *   - `deno file.ts` implies `run`, so `["deno", "--allow-write", file]` is a
  *     valid spawn — flags may sit directly after the binary.
@@ -137,10 +142,10 @@ export function normalizeDenoPermissions(entries: string[]): DenoPermissionFlag[
 export interface DenoPermissionMergeContext {
   /**
    * Exclusive end of the prefix region that may contain pboss's OWN default
-   * `-A` — the resolved interpreter route (`deno run -A`), never a flag the
-   * user typed. Pass 0 when every flag in the prefix is user-stated (an
-   * explicit `--interpreter`), so a user's `-A` is never stripped, only
-   * deduplicated against.
+   * flags — the resolved interpreter route (`deno run --quiet`, and on older
+   * pboss installs `deno run -A`), never a flag the user typed. Pass 0 when
+   * every flag in the prefix is user-stated (an explicit `--interpreter`),
+   * so a user's `-A` is never stripped, only deduplicated against.
    */
   defaultAllEnd: number;
 }
@@ -159,9 +164,11 @@ export interface DenoPermissionMergeContext {
  *      ignored, never an error, so one ecosystem file drives a mixed fleet.
  *
  *   2. pboss's own default `-A` (resolved-route region only, see
- *      defaultAllEnd) is STRIPPED when a permission list is present — asking
- *      for specific grants means not-all. `permissions: ["none"]` therefore
- *      yields a zero-permission deno app.
+ *      defaultAllEnd — present only on older pboss installs; the current
+ *      resolved route is `deno run --quiet`) is STRIPPED when a permission
+ *      list is present — asking for specific grants means not-all.
+ *      `permissions: ["none"]` therefore yields a zero-permission deno app
+ *      (identical to the unstated default, stated explicitly).
  *
  *   3. USER-STATED FLAGS ARE AUTHORITATIVE (issue: "not duplicate it"):
  *      an existing flag with the same stem (any scoping) suppresses that

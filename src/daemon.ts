@@ -252,23 +252,52 @@ export default class Daemon {
   
   handleStream(msg: DaemonMessage, req: Request) {
     
-    //let controller: ReadableStreamDefaultController;
     const self = this;
     const signal: AbortSignal = req.signal;
     
+    // A Response body stream is a BYTE stream: every chunk must be a
+    // BufferSource (spec; deno ENFORCES it — bun/node merely tolerated the
+    // strings this once enqueued, which is why `pboss logs -f` under a deno
+    // daemon threw "expected typed ArrayBufferView", an uncaught timer
+    // exception that killed the whole daemon ~5s into the follow — the
+    // owner's report). And a dead stream must never kill the daemon either:
+    // deno's legacy `request.signal` aborts on EVERY completed response, so
+    // close() fires on already-closed controllers routinely — every
+    // enqueue/close below is guarded and flips the stream dead on failure.
+    const encoder = new TextEncoder();
+    let alive = true;
+
     const stream = new ReadableStream({
       start(controller) {
-         
-        self.handleStreamMessage(msg, controller, signal);
+        const write = (frame: string): boolean => {
+          if (!alive) return false;
+          try {
+            controller.enqueue(encoder.encode(frame));
+            return true;
+          } catch {
+            alive = false; // closed or errored — the writer is done
+            return false;
+          }
+        };
+        const close = () => {
+          if (!alive) return;
+          alive = false;
+          try { controller.close(); } catch { /* already closed/errored */ }
+        };
         
+        self.handleStreamMessage(msg, write, signal);
+        
+        // SSE keepalive comment — ignored by clients, but the connection
+        // (and the daemon-side tail pollers) knows the stream is live.
         const keepAlive = setInterval(() => {
-          controller.enqueue(': ping\n\n');   // SSE comment – ignored by clients but counts as data
+          if (!write(': ping\n\n')) clearInterval(keepAlive);
         }, 5000);                  // every 5 seconds (less than 10s timeout)
         
-        // cleanup when client disconnects
+        // cleanup when client disconnects (or the response completes —
+        // deno's legacy abort) — never throws, whatever the controller state.
         signal.addEventListener("abort", () => {
           clearInterval(keepAlive)
-          controller.close();
+          close();
         });
       },
     });
@@ -296,7 +325,14 @@ export default class Daemon {
     return this.server;
   }
   
-  async handleStreamMessage(msg: DaemonMessage, streamController: ReadableStreamDefaultController, signal: AbortSignal) {
+  // The stream half's write function: byte-safe (Response body chunks must
+  // be BufferSource — deno enforces it) and guarded (a dead stream reports
+  // false instead of throwing). Shared by every stream emitter below.
+  async handleStreamMessage(
+    msg: DaemonMessage,
+    write: (frame: string) => boolean,
+    signal: AbortSignal
+  ) {
         
     if (!this.initialized) {
       await this.initialize();
@@ -309,7 +345,7 @@ export default class Daemon {
 
     switch (msg.type) {
       case "streamLogs": {
-        await pm.streamLogs(msg.data.target, streamController, signal);
+        await pm.streamLogs(msg.data.target, write, signal);
         break;
       }
       case "subscribeEvents": {
@@ -318,7 +354,7 @@ export default class Daemon {
         // the ProcessManager's canonical `process:*` events instead of log
         // lines. Client disconnect aborts `signal` and removes every
         // listener this subscription added (see subscribeEvents).
-        await pm.subscribeEvents(streamController, signal);
+        await pm.subscribeEvents(write, signal);
         break;
       }
       default:

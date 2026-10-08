@@ -108,10 +108,10 @@ export class ClusterManager {
      // Runtime-unique features bookkeeping (deno permissions): routeEnd marks
      // where the interpreter/interpreter-args (or pboss's RESOLVED route)
      // region ends — before node-args. routeIsResolved is true only when the
-     // region was built by pboss's own resolution, whose `deno run -A` default
-     // is strippable the moment the user states a permission list; a
-     // user-stated -A (via --interpreter-args) is never stripped, only
-     // deduplicated against.
+     // region was built by pboss's own resolution (`deno run --quiet` today;
+     // `-A` on pre-2026-10-08 installs — strippable the moment the user
+     // states a permission list); a user-stated -A (via --interpreter-args)
+     // is never stripped, only deduplicated against.
      let routeIsResolved = false;
 
      if (config.interpreter) {
@@ -174,8 +174,8 @@ export class ClusterManager {
      // node-only by contract). mergeDenoPermissions returns the prefix
      // unchanged for every non-deno runtime (bun/node have no permission
      // model), never duplicates a permission the user already stated in
-     // interpreter/node args, and replaces pboss's own `deno run -A` default
-     // with the specific list.
+     // interpreter/node args, and layers the specific list on the resolved
+     // route (an unstated list means NO flags — deno's deny-by-default).
      if (config.permissions?.length) {
        const merged = mergeDenoPermissions(cmd, config.permissions, {
          defaultAllEnd: routeIsResolved ? routeEnd : 0,

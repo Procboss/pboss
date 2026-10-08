@@ -29,7 +29,7 @@ The full documentation lives at [docs.procboss.com](https://docs.procboss.com)
 
 ## Highlights
 
-- **First-class Bun, Node.js, and Deno** — pboss runs natively on all three. An unstated app runtime resolves a saved `--runtime` pin first, then the `~/.pboss/.runtime` default, then inherits the main runtime running pboss (`bun run` under Bun, `node` under Node with TypeScript through [tsx](https://github.com/privatenumber/tsx), `deno run -A` under Deno); compiled installs fall back to discovering Bun → Deno → Node.
+- **First-class Bun, Node.js, and Deno** — pboss runs natively on all three. An unstated app runtime resolves a saved `--runtime` pin first, then the `~/.pboss/.runtime` default, then inherits the main runtime running pboss (`bun run` under Bun, `node` under Node with TypeScript through [tsx](https://github.com/privatenumber/tsx), `deno run --quiet` under Deno — no permission flags, deno's own deny-by-default); compiled installs fall back to discovering Bun → Deno → Node.
 - **Cluster mode** — N instances, per-worker env, zero-downtime rolling reloads; Node apps cluster through `node:cluster` with one shared port.
 - **Namespaces** — group processes (`--namespace my-app`) and operate on the group: `pboss restart my-app`, `pboss delete my-app` (confirmed; `--force` skips). Atomic startup with rollback ([#31](https://github.com/Procboss/pboss/issues/31)): a failed member rolls back only what that start brought up; members already running are never touched; namespace-less processes stay fully independent.
 - **Dependencies** ([#33](https://github.com/Procboss/pboss/issues/33)) — `dependsOn: ["postgres", "redis"]`: pboss resolves the graph (ProcBoss apps first, then systemd units like `postgresql.service`), starts stopped app dependencies recursively in topological order (independent branches concurrently), checks system services without ever managing them, refuses cycles upfront, rolls back only what an invocation started, and keeps boot recovery dependency-ordered. `pboss deps api` (and `--reverse`) inspects the graph; required/optional policies; failures are machine-readable on the API.
@@ -253,10 +253,16 @@ inactive one blocks it with a clear diagnostic — and pboss never starts
 or stops a system service it does not own.
 
 **Deno permissions** — the first runtime-unique feature: state WHAT a deno
-app may do instead of the kitchen-sink `deno run -A` default. Short form is
+app may do. An UNSTATED list carries no permission flags at all (deno's own
+deny-by-default — the first restricted operation fails fast with the pointed
+`--allow-*` hint); a stated list grants exactly what it says. Short form is
 `--perms` — deliberately no single-letter alias: `-p` is already `--port`
 (PM2 parity), and a `-P`/`-p` typo would silently set the port. The
-`--permissions=` / `--perms=` spellings work too.
+`--permissions=` / `--perms=` spellings work too. The resolved route also
+runs `--quiet`: deno prints its "Listening on http://…" banner to STDERR,
+which every process manager (pboss included) labels as an error — a healthy
+serving app no longer paints your logs red. Want the banner or full access?
+State it: your own `--interpreter-args`, or `--permissions all`.
 
 ```bash
 pboss start server.ts --interpreter deno --permissions allow-net,allow-read=./config

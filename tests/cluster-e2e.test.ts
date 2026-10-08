@@ -412,7 +412,10 @@ describe("cluster e2e — DENO (Deno.serve, SO_REUSEPORT shim — the owner's re
       const { home, env } = makeHome({ runtime: "deno" });
       const app = writeDenoApp(home, PORT_DENO);
       try {
-        const start = pboss(env, ["start", "--instances", "3", app], { timeoutMs: 180_000 });
+        // The app reads env + binds a port: permissions stated (the
+        // unstated default is deny-by-default — the owner's 2026-10-08
+        // rule; without the list every worker would die NotCapable).
+        const start = pboss(env, ["start", "--instances", "3", "--permissions", "allow-net,allow-env", app], { timeoutMs: 180_000 });
         expect(start.code).toBe(0);
         expect(await waitOnline(env, "server", 3, 90_000)).toBe(3);
 
@@ -447,7 +450,7 @@ describe("cluster e2e — DENO (Deno.serve, SO_REUSEPORT shim — the owner's re
       const { home, env } = makeHome({ runtime: "deno" });
       const app = writeDenoApp(home, PORT_DENO);
       try {
-        pboss(env, ["start", "--instances", "3", app], { timeoutMs: 180_000 });
+        pboss(env, ["start", "--instances", "3", "--permissions", "allow-net,allow-env", app], { timeoutMs: 180_000 });
         expect(await waitOnline(env, "server", 3, 90_000)).toBe(3);
 
         // 1. SIGKILL a worker: autorestart heals, the port never darkens.
@@ -490,7 +493,7 @@ describe("cluster e2e — DENO (Deno.serve, SO_REUSEPORT shim — the owner's re
       const { home, env } = makeHome({ runtime: "deno" });
       const app = writeDenoApp(home, PORT_DENO);
       try {
-        const start = pboss(env, ["start", app], { timeoutMs: 180_000 });
+        const start = pboss(env, ["start", "--permissions", "allow-net,allow-env", app], { timeoutMs: 180_000 });
         expect(start.code).toBe(0);
         expect(await waitOnline(env, "server", 1, 90_000)).toBe(1);
         expect(await servedWorkers(PORT_DENO, 3)).toEqual(new Set(["worker-0"]));
@@ -530,7 +533,7 @@ describe("cluster e2e — DENO (Deno.serve, SO_REUSEPORT shim — the owner's re
         const dec = (p: ReturnType<typeof run>): string =>
           new TextDecoder().decode(p.stdout as Uint8Array) + new TextDecoder().decode(p.stderr as Uint8Array);
 
-        const start = run(["start", "--instances", "3", app]);
+        const start = run(["start", "--instances", "3", "--permissions", "allow-net,allow-env", app]);
         expect(start.exitCode).toBe(0);
         expect(dec(start)).toContain("online");
 

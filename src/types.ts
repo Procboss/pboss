@@ -217,8 +217,10 @@ export interface ProcessDescription {
    * Deno-only (runtime-unique): the app's permission list —
    * `permissions: ["allow-read", "allow-net=api.example.com", "deny-write"]`.
    * Translated to real deno flags at spawn time; entries already stated in
-   * `interpreterArgs` (or `nodeArgs`) are never duplicated, and pboss's own
-   * default `deno run -A` is replaced by the list. Ignored under bun/node.
+   * `interpreterArgs` (or `nodeArgs`) are never duplicated. The UNSTATED
+   * default carries NO permission flags (deno's own deny-by-default — the
+   * first restricted operation fails fast with the pointed `--allow-*`
+   * hint); a stated list is exactly what it says. Ignored under bun/node.
    * See src/deno-permissions.ts for the full contract.
    */
   permissions?: string[];

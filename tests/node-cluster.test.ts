@@ -146,9 +146,9 @@ describe("inheritMainRuntime: an unstated runtime inherits the main one", () => 
       .toEqual(["/usr/local/bin/bun", "run"]);
   });
 
-  test("deno main → [deno, run, -A]", () => {
+  test("deno main → [deno, run, --quiet] (deny-by-default, banner suppressed)", () => {
     expect(inheritMainRuntime("app.ts", { name: "deno", exec: "/deno/bin/deno" }, null))
-      .toEqual(["/deno/bin/deno", "run", "-A"]);
+      .toEqual(["/deno/bin/deno", "run", "--quiet"]);
   });
 
   test("node main: plain for JS, tsx for TS when usable, strip-types otherwise", () => {

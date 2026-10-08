@@ -400,14 +400,15 @@ runtime running pboss (owner rule, 2026-09-29): Bun runs the app with
 `bun run`, Node with `node` (TypeScript through
 [tsx](https://github.com/privatenumber/tsx), shipped as an optional dependency;
 `--experimental-strip-types` on Node ≥ 22.6 is the fallback), Deno with
-`deno run -A`. A compiled standalone install has no JS runtime, so those
-discover one per machine: `bun run` → `deno run -A` → `node`. Stating a
+`deno run --quiet` — no permission flags, deno's own deny-by-default (owner
+rule, 2026-10-08). A compiled standalone install has no JS runtime, so those
+discover one per machine: `bun run` → `deno run --quiet` → `node`. Stating a
 runtime with `--interpreter` always wins.
 
 | Runtime / Language | File Extension | Runner when unstated | Example |
 |---|---|---|---|
-| **TypeScript / JSX** | `.ts`, `.tsx`, `.jsx`, `.mts` | main runtime — `bun run` / `deno run -A` / `node` via tsx / `--experimental-strip-types`; compiled installs: `bun run` → `deno run -A` → `node` | `pboss start server.ts` |
-| **JavaScript** | `.js`, `.mjs`, `.cjs` | main runtime — `bun run` / `deno run -A` / `node`; compiled installs: `bun run` → `deno run -A` → `node <file>` | `pboss start app.js` |
+| **TypeScript / JSX** | `.ts`, `.tsx`, `.jsx`, `.mts` | main runtime — `bun run` / `deno run --quiet` / `node` via tsx / `--experimental-strip-types`; compiled installs: `bun run` → `deno run --quiet` → `node` | `pboss start server.ts` |
+| **JavaScript** | `.js`, `.mjs`, `.cjs` | main runtime — `bun run` / `deno run --quiet` / `node`; compiled installs: `bun run` → `deno run --quiet` → `node <file>` | `pboss start app.js` |
 | **Node.js (pinned)** | `.js` | `node <file>` (via `--interpreter`) | `pboss start app.js --interpreter node` |
 | **Custom Interpreter** | *any* | Custom runtime via `--interpreter` | `pboss start app.ts --interpreter deno` |
 
@@ -448,8 +449,13 @@ pboss start worker.py --interpreter ./venv/bin/python
 ### Deno permissions — the runtime-unique feature
 
 Deno is the one pboss runtime with a **permission model**, so it gets a
-first-class option (owner request, 2026-10-06): state WHAT the app may do
-instead of handing it the kitchen-sink `deno run -A` default.
+first-class option (owner request, 2026-10-06): state WHAT the app may do.
+The unstated default is deno's own deny-by-default — no permission flags, so
+the first restricted operation fails fast with the pointed `--allow-*` hint
+(owner rule, 2026-10-08; before that pboss granted the kitchen-sink `-A`).
+The resolved route also runs `--quiet`: deno's "Listening on http://…"
+banner goes to STDERR, which process managers label as errors — a healthy
+serving app no longer paints `pboss logs` red.
 
 ```bash
 # CLI flag (short --perms — no letter form: -p is --port): comma-separated list
@@ -459,7 +465,7 @@ pboss start server.ts --interpreter deno --permissions allow-net,allow-read=./co
 pboss start server.ts --interpreter deno --permissions=allow-net,allow-read=./config
 pboss start server.ts --interpreter deno --perms=allow-net,allow-read=./config
 
-# a zero-permission deno app (the -A default is dropped, nothing replaces it)
+# a zero-permission deno app (explicit — the same as the unstated default)
 pboss start worker.ts --interpreter deno --permissions none
 ```
 

@@ -375,13 +375,11 @@ const R = getRuntime();
    * every event.
    */
   async subscribeEvents(
-    streamController: ReadableStreamDefaultController,
+    write: (frame: string) => boolean,
     signal: AbortSignal
   ): Promise<void> {
     const forward = (event: PbossProcessEvent) => {
-      try {
-        streamController.enqueue(`data: ${JSON.stringify(event)}\n\n`);
-      } catch {
+      if (!write(`data: ${JSON.stringify(event)}\n\n`)) {
         // Stream closed/broken — detach immediately (below).
         detach();
       }
@@ -1454,13 +1452,13 @@ const R = getRuntime();
      return sortedResults;
    }
    
-   async streamLogs(target: string | number, streamController: ReadableStreamDefaultController, signal: AbortSignal) {
+  async streamLogs(target: string | number, write: (frame: string) => boolean, signal: AbortSignal) {
      
      const containers = this.resolveTarget(target);
      const lm = this.logManager;
      
      await Promise.all(containers.map(async (c) => (
-      lm.tailLog(c.name, c.id, streamController, signal)
+      lm.tailLog(c.name, c.id, write, signal)
      )))
      
    }

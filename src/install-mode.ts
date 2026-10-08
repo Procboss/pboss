@@ -394,7 +394,7 @@ export function decideScriptInterpreter(
   found: { bun: string | null; deno: string | null; node: string | null; tsx: TsxResolution | null }
 ): string[] {
   if (found.bun) return [found.bun, "run"];
-  if (found.deno) return [found.deno, "run", "-A"];
+  if (found.deno) return [found.deno, "run", "--quiet"];
   if (found.node) {
     if (isTypeScriptFile(script)) {
       // tsx runs FULL TypeScript under Node — enums, namespaces, decorators,
@@ -430,7 +430,15 @@ export function inheritMainRuntime(
 ): string[] | null {
   if (!main) return null;
   if (main.name === "bun") return [main.exec, "run"];
-  if (main.name === "deno") return [main.exec, "run", "-A"];
+  // Owner rule (2026-10-08): an UNSTATED deno app runs with NO permission
+  // flags — deno's own default, where the first restricted operation fails
+  // fast with the pointed `--allow-*` hint — never pboss's old kitchen-sink
+  // `-A` (which silently granted everything the user never stated).
+  // `--quiet` suppresses the runtime's STDERR "Listening on http://…"
+  // banner (verified: real errors still print), so a healthy serving app
+  // no longer paints `pboss logs` red as [ERROR]. Users who want either
+  // back state it: `--permissions all`, or their own interpreter args.
+  if (main.name === "deno") return [main.exec, "run", "--quiet"];
   // node — TypeScript needs tsx (full TS) or type stripping
   if (isTypeScriptFile(script)) {
     return tsx ? tsx.cmd : [main.exec, "--experimental-strip-types"];
@@ -442,7 +450,7 @@ export function inheritMainRuntime(
  * The interpreter prefix for a runtime the USER pinned — the issue-#40
  * override chain (a saved override, or the ~/.pboss/.runtime default)
  * resolved to node | bun | deno. The route mirrors inheritMainRuntime's
- * per-runtime shapes (bun run / deno run -A / node, TypeScript through
+ * per-runtime shapes (bun run / deno run --quiet / node, TypeScript through
  * tsx or --experimental-strip-types) but discovers the executable
  * machine-wide, because the pinning runtime may differ from the one
  * supervising the process: a bun daemon may spawn a node-pinned worker.
@@ -481,7 +489,7 @@ export async function runtimeCommandPrefix(
           `process again with --runtime=<node|bun> to re-pin it.`
       );
     }
-    return [deno, "run", "-A"];
+    return [deno, "run", "--quiet"];
   }
 
   const node = await findNode();
@@ -504,14 +512,16 @@ export async function runtimeCommandPrefix(
  * not choose one explicitly (owner rule, 2026-09-29):
  *
  *   1. UNSTATED → inherit the MAIN runtime running pboss — `bun run` when
- *      pboss runs under Bun, `deno run -A` under Deno, and Node under Node
- *      (TypeScript through tsx when usable, else --experimental-strip-types).
- *      The app matches its supervisor by default.
+ *      pboss runs under Bun, `deno run --quiet` under Deno (no permission
+ *      flags: deno's own deny-by-default, see inheritMainRuntime), and Node
+ *      under Node (TypeScript through tsx when usable, else
+ *      --experimental-strip-types). The app matches its supervisor by default.
  *
  *   2. Compiled install — no JS main runtime of its own, so the machine-wide
  *      discovery chain picks one:
  *        Bun   — `bun run` (TS-native; pboss's original worker runtime)
- *        Deno  — `deno run -A` (TS-native)
+ *        Deno  — `deno run --quiet` (TS-native; no permission flags —
+ *                deny-by-default, the runtime's own semantics)
  *        Node  — plain for .js/.mjs/.cjs; for .ts/.tsx/.jsx/.mts, tsx when
  *                usable (app-local, on PATH, or shipped with pboss), else
  *                `--experimental-strip-types` on Node ≥ 22.6
@@ -539,7 +549,7 @@ export async function resolveScriptInterpreter(script: string): Promise<string[]
   if (bun) return [bun, "run"];
 
   const deno = await findDeno();
-  if (deno) return [deno, "run", "-A"];
+  if (deno) return [deno, "run", "--quiet"];
 
   const node = await findNode();
   if (!node) {

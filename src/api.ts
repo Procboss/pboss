@@ -775,23 +775,24 @@ export class PBoss extends EventEmitter<PBossEvents> {
         this._inProcessDaemon = new Daemon();
         await this._inProcessDaemon.initialize(false);
       }
-      const controller = {
-        enqueue: (chunk: string) => {
-          if (chunk.startsWith("data: ")) {
-            try {
-              const data = JSON.parse(chunk.replace(/^data:\s*/, "").trim()) as LogItem;
-              callback(data);
-            } catch (err) {
-              // Non-JSON frames (keepalives, partial writes) — skip the line.
-              ignore("parse in-process log line", err);
-            }
+      // The in-process half speaks the same frame contract as the socket
+      // half — write() returns false when the consumer is done (here: never;
+      // the in-process tail runs until its signal aborts).
+      const write = (frame: string): boolean => {
+        if (frame.startsWith("data: ")) {
+          try {
+            const data = JSON.parse(frame.replace(/^data:\s*/, "").trim()) as LogItem;
+            callback(data);
+          } catch (err) {
+            // Non-JSON frames (keepalives, partial writes) — skip the line.
+            ignore("parse in-process log line", err);
           }
-        },
-        close: () => {},
-      } as any;
+        }
+        return true;
+      };
       await this._inProcessDaemon.handleStreamMessage(
         { type: "streamLogs", data: { target: String(target) }, mode: "stream" },
-        controller,
+        write,
         signal || new AbortController().signal
       );
       return;

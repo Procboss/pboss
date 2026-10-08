@@ -419,6 +419,16 @@ async function waitFor(file: string, ms = 25_000): Promise<boolean> {
   return existsSync(file);
 }
 
+/** Poll until the condition holds (bounded). */
+async function pollFor(cond: () => boolean, ms = 25_000, stepMs = 100): Promise<boolean> {
+  const deadline = Date.now() + ms;
+  while (Date.now() < deadline) {
+    if (cond()) return true;
+    await Bun.sleep(stepMs);
+  }
+  return cond();
+}
+
 /** The saved dump entries (config per process). */
 function dumpConfigs(home: string): any[] {
   const dump = join(home, "dump.json");
@@ -467,6 +477,114 @@ describe("deno permissions — e2e (real CLI + real deno)", () => {
           // It registered (a real deno process, really permission-gated).
           expect(dumpConfigs(home).length).toBeGreaterThan(0);
           expect(res.code).toBe(0);
+        } finally {
+          await cleanup(home);
+        }
+      },
+      120000
+    );
+
+    test.skipIf(!canDeno)(
+      "THE OWNER'S REPORT (2026-10-08): an UNSTATED route grants NOTHING — a serving app fails with the pointed --allow-net hint",
+      async () => {
+        // The owner's machine shape: a deno install stamped .runtime=deno, so
+        // `pboss start ./server.ts` (unstated interpreter, unstated
+        // permissions) resolves the deno route. Pre-fix that route carried
+        // the kitchen-sink `-A` — the app STARTED and SERVED without any
+        // stated net permission ("I didnt set net permission which must
+        // fail but it started").
+        const home = await freshHome("unstated");
+        writeFileSync(join(home, ".runtime"), "deno\n");
+        const PORT = 18401;
+        writeFileSync(
+          join(home, "server.ts"),
+          [
+            `console.log("SERVE-BOOTED");`,
+            `Deno.serve({ port: ${PORT} }, () => new Response("serving"));`,
+            ``,
+          ].join("\n")
+        );
+        try {
+          const res = await runCli(["start", "./server.ts"], home);
+          expect(res.code).toBe(0); // the start command itself is fine
+          expect(dumpConfigs(home).length).toBeGreaterThan(0); // it registered
+
+          // The pointed denial lands in the app's error log — deno's own
+          // message, never a silent success.
+          const errLog = join(home, "logs", "server-0-error.log");
+          const denied = await pollFor(
+            () => existsSync(errLog) && readFileSync(errLog, "utf8").includes("Requires net access"),
+            20_000,
+          );
+          expect(denied).toBe(true);
+          const logged = readFileSync(errLog, "utf8");
+          expect(logged).toContain("--allow-net"); // the hint is pointed
+
+          // And it never serves: the whole point of the owner's report.
+          const probe = Bun.spawnSync(
+            ["curl", "-s", "--max-time", "2", `http://localhost:${PORT}/`],
+            { stdout: "ignore", stderr: "ignore", stdin: "ignore" },
+          );
+          expect(probe.exitCode).not.toBe(0);
+        } finally {
+          await cleanup(home);
+        }
+      },
+      120000
+    );
+
+    test.skipIf(!canDeno)(
+      "the --quiet route: a healthy serving app's logs carry NO [ERROR] listening banner",
+      async () => {
+        // Deno prints "Listening on http://…" to STDERR — every process
+        // manager labels that [ERROR], so a successful start painted the
+        // owner's logs red. The resolved route now runs --quiet: the banner
+        // is gone, real output stays, real errors still print.
+        const home = await freshHome("quiet");
+        writeFileSync(join(home, ".runtime"), "deno\n");
+        const PORT = 18402;
+        writeFileSync(
+          join(home, "server.ts"),
+          [
+            `console.log("QUIET-BOOTED");`,
+            `Deno.serve({ port: ${PORT} }, () => new Response("ok"));`,
+            ``,
+          ].join("\n")
+        );
+        try {
+          const res = await runCli(
+            ["start", "./server.ts", "--permissions", "allow-net"],
+            home,
+          );
+          expect(res.code).toBe(0);
+
+          // THIS app booted (its own log line — not any stray listener on
+          // the port), and it serves (granted exactly what was stated).
+          const outLog = join(home, "logs", "server-0-out.log");
+          const booted = await pollFor(
+            () => existsSync(outLog) && readFileSync(outLog, "utf8").includes("QUIET-BOOTED"),
+            20_000,
+          );
+          expect(booted).toBe(true);
+          const up = await pollFor(() => {
+            const probe = Bun.spawnSync(
+              ["curl", "-s", "--max-time", "2", `http://localhost:${PORT}/`],
+              { stdout: "pipe", stderr: "ignore", stdin: "ignore" },
+            );
+            return probe.exitCode === 0;
+          }, 20_000);
+          expect(up).toBe(true);
+
+          // The logs show the app's own output — and NOT the runtime's
+          // STDERR banner, which pboss would faithfully label [ERROR].
+          const logs = await runCli(["logs", "server", "--lines", "50"], home);
+          expect(logs.out).toContain("QUIET-BOOTED");
+          expect(logs.out).not.toContain("Listening on");
+          expect(logs.out).not.toContain("[ERROR]");
+          const errLog = join(home, "logs", "server-0-error.log");
+          if (existsSync(errLog)) {
+            expect(readFileSync(errLog, "utf8")).not.toContain("Listening on");
+          }
         } finally {
           await cleanup(home);
         }

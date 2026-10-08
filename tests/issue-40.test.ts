@@ -239,11 +239,14 @@ describe("issue #40 — runtimeCommandPrefix (the pinned spawn route)", () => {
     );
   });
 
-  test.skipIf(!DENO_BIN)("deno → [<deno>, run, -A]", async () => {
+  test.skipIf(!DENO_BIN)("deno → [<deno>, run, --quiet] (no permission flags — deny-by-default)", async () => {
     const { runtimeCommandPrefix } = await import("../src/install-mode");
     const prefix = await runtimeCommandPrefix("deno", "/app/x.ts");
     expect(basename(prefix[0]!)).toMatch(/^deno(\.exe)?$/);
-    expect(prefix.slice(1)).toEqual(["run", "-A"]);
+    // Owner rule 2026-10-08: an unstated deno app carries NO -A — deno's own
+    // deny-by-default. `--quiet` suppresses the runtime's STDERR "Listening
+    // on…" banner (a healthy start must not paint pboss logs as [ERROR]).
+    expect(prefix.slice(1)).toEqual(["run", "--quiet"]);
   });
 });
 

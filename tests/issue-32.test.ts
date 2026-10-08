@@ -265,7 +265,17 @@ describe("ProcessManager events (issue #32)", () => {
     const reader = stream.getReader();
     const ac = new AbortController();
 
-    await pm.subscribeEvents(controller, ac.signal);
+    // The write contract the daemon's stream half uses: byte frames
+    // (Response body chunks must be BufferSource), false = consumer gone.
+    const write = (frame: string): boolean => {
+      try {
+        controller.enqueue(new TextEncoder().encode(frame));
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    await pm.subscribeEvents(write, ac.signal);
 
     // One subscription = exactly one listener per event kind.
     for (const kind of PROCESS_EVENT_KINDS) {
@@ -277,7 +287,8 @@ describe("ProcessManager events (issue #32)", () => {
 
     const { value, done } = await reader.read();
     expect(done).toBe(false);
-    // subscribeEvents enqueues string frames ("data: {...}\n\n").
+    // subscribeEvents writes SSE frames ("data: {...}\n\n") through the
+    // byte-safe writer — decoded here for inspection.
     const frame = typeof value === "string" ? value : new TextDecoder().decode(value as Uint8Array);
     expect(frame.startsWith("data: ")).toBe(true);
     const parsed = JSON.parse(frame.replace(/^data:\s*/, "").trim()) as PbossProcessEvent;
