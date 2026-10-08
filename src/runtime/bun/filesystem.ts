@@ -9,7 +9,8 @@
  * License: GPL-3.0-only
  */
 
-import { openSync, watch as fsWatch } from "node:fs";
+import { openSync, readdirSync, statSync, watch as fsWatch } from "node:fs";
+import { join, relative } from "node:path";
 import type { PBFileSink, PBFilesystemRuntime, PBWatcher } from "../core/types";
 
 export function createBunFilesystem(): PBFilesystemRuntime {
@@ -59,15 +60,73 @@ export function createBunFilesystem(): PBFilesystemRuntime {
     },
 
     watch(dir: string, onChange: (filename: string) => void): PBWatcher {
-      // Bun implements node:fs.watch natively — it is Bun's own
-      // recommended directory watcher.
-      const w = fsWatch(dir, { recursive: true }, (_event, filename) => {
-        const f = filename?.toString();
-        if (f) onChange(f);
-      });
+      // Bun implements node:fs.watch natively — but its `recursive` flag is
+      // a SILENT no-op on Linux before bun 1.3.10: only top-level events
+      // fire, so a `--watch` app never restarts on changes inside its
+      // subdirectories (CI on the pinned bun 1.3.9 caught exactly that;
+      // macOS always worked). A silent capability gap cannot be probed
+      // synchronously (events are async), so the adapter OWNS its
+      // recursion: one non-recursive watch per directory of the tree,
+      // added as directories appear, dropped as they go — the same shape
+      // node:fs itself uses for recursive watching on Linux. Event paths
+      // stay root-relative ("src/deep.js"), the spelling the native
+      // recursive watcher reports and the ignore-list matcher expects.
+      const watchers = new Map<string, ReturnType<typeof fsWatch>>();
+      let closed = false;
+
+      const drop = (d: string): void => {
+        const w = watchers.get(d);
+        if (!w) return;
+        watchers.delete(d);
+        try { w.close(); } catch { /* already closed */ }
+      };
+
+      const addTree = (d: string): void => {
+        if (closed || watchers.has(d)) return;
+        let w: ReturnType<typeof fsWatch>;
+        try {
+          w = fsWatch(d, (_event, filename) => {
+            if (closed) return;
+            const f = filename?.toString();
+            if (!f) return; // no entry name — nothing to report or manage
+            onChange(join(relative(dir, d), f));
+            // The entry may be a directory the tree does not watch yet —
+            // `mkdir -p` creates whole chains silently, so addTree
+            // descends into whatever appeared.
+            const full = join(d, f);
+            try {
+              if (statSync(full).isDirectory()) addTree(full);
+            } catch {
+              // Vanished between event and stat: its watcher (if any) is
+              // dead weight — drop it so the map tracks the living tree.
+              drop(full);
+            }
+          });
+        } catch {
+          // Unreadable or already-vanished — nothing to watch here.
+          return;
+        }
+        watchers.set(d, w);
+        // Existing subdirectories need watches too: the caller asked for
+        // the TREE, not just the root. Symlinked directories are NOT
+        // followed — a symlink can point back at the tree's own ancestor
+        // and watching through it would cycle.
+        try {
+          for (const e of readdirSync(d, { withFileTypes: true })) {
+            if (e.isDirectory()) addTree(join(d, e.name));
+          }
+        } catch { /* unreadable tree — the parent stays watched */ }
+      };
+
+      addTree(dir);
+
       return {
         close: () => {
-          try { w.close(); } catch { /* already closed */ }
+          closed = true;
+          for (const w of watchers.values()) {
+            try { w.close(); } catch { /* already closed */ }
+          }
+          watchers.clear();
         },
       };
     },

@@ -126,11 +126,13 @@ export interface PBFilesystemRuntime {
   sink(path: string): PBFileSink;
   /**
    * Recursive directory watcher on the runtime's NATIVE fs-watch API —
-   * node:fs.watch under Bun and Node (both implement it natively; it IS
-   * Bun's recommended watcher) and Deno.watchFs under Deno. onChange
-   * receives the changed entry's path (absolute under Deno, relative to
-   * the watched root under Bun/Node — ignore-list matching stays the
-   * caller's, by substring). Throws when the path cannot be watched.
+   * Deno.watchFs under Deno, node:fs.watch under Bun and Node. Bun's own
+   * `recursive` flag is a silent no-op on Linux before 1.3.10, so the bun
+   * adapter owns its recursion (one non-recursive watch per directory of
+   * the tree). onChange receives the changed entry's path (absolute under
+   * Deno, relative to the watched root under Bun/Node — ignore-list
+   * matching stays the caller's, by substring). Throws when the path
+   * cannot be watched.
    */
   watch(dir: string, onChange: (filename: string) => void): PBWatcher;
 }

@@ -269,12 +269,24 @@ describe("issue #41 unit: composeDaemonStatus (the status report)", () => {
   });
 
   test("runtime UPGRADED underneath the daemon (bun upgrade): advice names both versions", () => {
+    // The daemon's fake Bun version must be OLDER than — and never equal
+    // to — the executing Bun. The once-hardcoded "1.3.9" collided with
+    // CI's pinned runner runtime: equal versions read as a fresh daemon
+    // and suppress the advice entirely (the equality check is the gate).
+    const fakeOldBun = (() => {
+      const [maj = "1", min = "0", pat = "0"] = Bun.version.split(".");
+      const p = parseInt(pat, 10);
+      if (Number.isFinite(p) && p > 0) return `${maj}.${min}.${p - 1}`;
+      const m = parseInt(min, 10);
+      if (Number.isFinite(m) && m > 0) return `${maj}.${m - 1}.99`;
+      return "0.99.99";
+    })();
     const r = composeDaemonStatus({
       ...base,
-      live: { ...base.live!, runtimeVersion: "1.3.9" },
+      live: { ...base.live!, runtimeVersion: fakeOldBun },
     });
     const text = r.lines.join("\n");
-    expect(text).toContain("The Bun runtime was upgraded (daemon runs 1.3.9");
+    expect(text).toContain(`The Bun runtime was upgraded (daemon runs ${fakeOldBun}`);
     expect(text).toContain(`this pboss runs ${Bun.version}`);
     expect(text).toContain("pboss daemon restart");
   });
