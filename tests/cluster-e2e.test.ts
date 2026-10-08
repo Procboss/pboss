@@ -46,6 +46,9 @@ const LINUX = process.platform === "linux";
 const PORT_BUN = 18200;
 const PORT_NODE = 18210;
 const PORT_DENO = 18220;
+// The permission-enforcement deno tests get their own port so a lingering
+// worker from another block can never satisfy (or collide with) them.
+const PORT_DENO_PERM = 18221;
 
 const scratch: string[] = [];
 afterAll(() => {
@@ -156,6 +159,21 @@ async function waitOnline(
     await Bun.sleep(400);
   }
   return rows.length;
+}
+
+/** Poll until the condition holds (bounded). */
+async function pollFor(cond: () => boolean, timeoutMs: number, stepMs = 300): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (cond()) return true;
+    await Bun.sleep(stepMs);
+  }
+  return cond();
+}
+
+/** The aggregated `pboss logs <name>` output contains needle. */
+function logsContain(env: Record<string, string>, name: string, needle: string): boolean {
+  return pboss(env, ["logs", name, "--lines", "200"], { timeoutMs: 30_000 }).out.includes(needle);
 }
 
 /* ── apps: each runtime's NATIVE server shape ───────────────────────────── */
@@ -551,6 +569,99 @@ describe("cluster e2e — DENO (Deno.serve, SO_REUSEPORT shim — the owner's re
         Bun.spawnSync([denoBin!, "run", "-A", DIST_DENO_ENTRY, "kill"], {
           env, stdout: "ignore", stderr: "ignore", stdin: "ignore", timeout: 60_000,
         });
+        Bun.spawnSync(["pkill", "-f", app], { stdout: "ignore", stderr: "ignore" });
+      }
+    },
+    300_000,
+  );
+
+  /* ── permission ENFORCEMENT in the cluster shape (owner request,
+     2026-10-09: "check if in fork mode and in cluster mode, permissions
+     are respected and enforced for deno runtime") — the GRANT direction is
+     covered by every test above (workers serve under their stated
+     allow-net,allow-env); these two pin the DENY direction through the
+     SAME decorated spawn (permission flags + --unstable-net + shim
+     preload), where a regression would hide: an -A leaking through the
+     decoration, or --unstable-net itself granting net. The fork-mode
+     equivalents live in tests/deno-permissions.test.ts. ─────────────── */
+
+  test.skipIf(!LINUX || !denoBin)(
+    "cluster + a MISSING grant actually denies — the decoration never leaks -A",
+    async () => {
+      const { home, env } = makeHome({ runtime: "deno" });
+      // An app needing net + env + write; the start states net ONLY. The
+      // env read fires first (before any bind) and deno itself must kill
+      // every worker with NotCapable — through the exact decorated spawn.
+      const file = join(home, "perm-deny.ts");
+      writeFileSync(
+        file,
+        `console.log(\`deno-worker-\${Deno.env.get("PBOSS_WORKER_ID") ?? "0"} up\`);\n` +
+          `Deno.writeTextFileSync(new URL("./leaked-sentinel", import.meta.url), "x");\n` +
+          `Deno.serve({ port: ${PORT_DENO_PERM} }, () => new Response("leak"));\n`,
+      );
+      try {
+        const start = pboss(env, ["start", "--instances", "3", "--permissions", "allow-net", file], { timeoutMs: 180_000 });
+        expect(start.code).toBe(0); // registration is fine — the denial is deno's
+
+        // The pointed denial lands in the workers' logs: deno's own
+        // NotCapable for the missing env grant (never a silent serve).
+        const denied = await pollFor(
+          () => logsContain(env, "perm-deny", "Requires env access"),
+          20_000,
+        );
+        expect(denied).toBe(true);
+
+        // No -A leaked through the decoration path: the write sentinel
+        // NEVER lands (allow-write was never stated)...
+        await Bun.sleep(3000); // let the restart loop churn a little
+        expect(existsSync(join(home, "leaked-sentinel"))).toBe(false);
+        // ...and nothing ever serves on the shared port.
+        expect((await servedWorkers(PORT_DENO_PERM, 6)).size).toBe(0);
+      } finally {
+        pboss(env, ["delete", "all", "--force"], { timeoutMs: 60_000 });
+        Bun.spawnSync(["pkill", "-f", file], { stdout: "ignore", stderr: "ignore" });
+      }
+    },
+    300_000,
+  );
+
+  test.skipIf(!LINUX || !denoBin)(
+    "cluster + UNSTATED permissions = deny-by-default even under --unstable-net",
+    async () => {
+      const { home, env } = makeHome({ runtime: "deno" });
+      // The owner's exact app shape MINUS the env read (writeDenoApp's
+      // first line reads Deno env, and with nothing stated the ENV denial
+      // would fire first — the net denial needs a pure serve). Three
+      // instances, NO --permissions at all: the resolved route is
+      // `deno run --quiet` (deny-by-default since 2026-10-08) and the only
+      // extra flags are the cluster decoration's --unstable-net + shim
+      // preload — which must grant nothing. Every worker dies at the bind
+      // with deno's pointed hint.
+      const app = join(home, "server.ts");
+      writeFileSync(
+        app,
+        `console.log("deny-default-worker");\n` +
+          `Deno.serve({ port: ${PORT_DENO_PERM} }, () => new Response("nope"));\n`,
+      );
+      try {
+        const start = pboss(env, ["start", "--instances", "3", app], { timeoutMs: 180_000 });
+        expect(start.code).toBe(0);
+
+        const denied = await pollFor(
+          () => logsContain(env, "server", "Requires net access"),
+          20_000,
+        );
+        expect(denied).toBe(true);
+        // The hint is the pointed one — the decoration's unstable gate
+        // never satisfies it.
+        expect(logsContain(env, "server", "--allow-net")).toBe(true);
+
+        // And the fleet never serves — the whole point.
+        await Bun.sleep(2000);
+        expect((await servedWorkers(PORT_DENO_PERM, 6)).size).toBe(0);
+        expect(await waitOnline(env, "server", 3, 5_000)).toBeLessThan(3);
+      } finally {
+        pboss(env, ["delete", "all", "--force"], { timeoutMs: 60_000 });
         Bun.spawnSync(["pkill", "-f", app], { stdout: "ignore", stderr: "ignore" });
       }
     },

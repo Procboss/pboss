@@ -502,6 +502,19 @@ Merge rules (verified against deno 2.9.7):
   mixed fleet; pboss prints a dim notice when a non-deno interpreter is
   stated explicitly.
 
+**Permissions apply in BOTH execution modes.** Fork (single instance) and
+cluster (`--instances N`) build the worker command through the same merge
+choke point, so a stated list grants exactly what it says in either mode —
+and the unstated deny-by-default holds in both too. In cluster mode the
+`SO_REUSEPORT` decoration adds only `--unstable-net` and the shim preload
+(gated API access, never a permission grant — verified against deno 2.9.7:
+an unstated cluster app still dies at the bind with the pointed
+`Requires net access, run again with --allow-net`), and the preload file
+itself is loaded by the runtime's module graph, which needs no `allow-read`
+grant. A crash-respawn, `pboss restart`, scale or daemon resurrect re-derives
+the command from the saved config, so the permission list is enforced for
+the process's whole supervised life.
+
 ### Runtime discovery — how pboss finds `bun` (and why it matters)
 
 JavaScript/TypeScript workers are spawned by the **daemon**, and the daemon often runs where no login shell ever set a `PATH` — as a systemd service on Linux, a launchd agent on macOS, or a scheduled task on Windows. A PATH-only lookup therefore misses the most common Bun install location, `~/.bun/bin`, even though `which bun` finds it perfectly in your shell. pboss resolves the interpreter through a full chain, in order:

@@ -249,9 +249,11 @@ export function runtimeSupportsReusePort(
     verdict = (async () => {
       try {
         const { shim, probe } = await ensureReusePortFiles();
-        // -A: the probe binds sockets, and the workers' own default route
-        // (`deno run -A`) grants it anyway — the probe verifies the FLAGS
-        // and the kernel sharing, not the permission model.
+        // -A: the probe is pboss's OWN throwaway verification process, never
+        // the user's app — it binds sockets to prove the FLAGS and the
+        // kernel sharing, and its permission grant is deliberately decoupled
+        // from the app's list (the workers' route is deny-by-default since
+        // 2026-10-08; a zero-permission app still needs this verdict).
         const cmd =
           kind === "deno"
             ? [bin, "run", "-A", "--unstable-net", `--preload=${shim}`, probe]
