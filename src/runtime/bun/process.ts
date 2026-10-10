@@ -1,11 +1,13 @@
 /**
  * ProcBoss (pboss) — Bun process adapter.
  *
- * Bun-native process spawning: Bun.spawn / Bun.spawnSync. This module (like
- * every adapter module) has ZERO top-level side effects and never touches
- * another runtime's globals — it is only ever loaded by the Bun adapter, and
- * every function here calls the real Bun APIs directly (pinned by
- * tests/runtime-adapter.test.ts to prevent a future node-compat regression).
+ * Bun-native process spawning: Bun.spawn, async only (the 2026-10-11
+ * async mandate removed the synchronous variant entirely — a blocking
+ * spawn stalls the daemon's whole event loop). This module (like every adapter module) has
+ * ZERO top-level side effects and never touches another runtime's globals
+ * — it is only ever loaded by the Bun adapter, and every function here
+ * calls the real Bun APIs directly (pinned by tests/runtime-adapter.test.ts
+ * to prevent a future node-compat regression).
  *
  * https://procboss.com
  * License: GPL-3.0-only
@@ -36,20 +38,6 @@ export function createBunProcess(): PBProcessRuntime {
         windowsHide: opts.windowsHide,
       });
       return proc as unknown as PBChild;
-    },
-
-    spawnSync(cmd: string[], opts: { cwd?: string } = {}) {
-      const r = Bun.spawnSync(cmd, {
-        cwd: opts.cwd,
-        stdout: "pipe",
-        stderr: "pipe",
-        stdin: "ignore",
-      });
-      return {
-        stdout: String(r.stdout ?? ""),
-        stderr: String(r.stderr ?? ""),
-        exitCode: r.exitCode ?? null,
-      };
     },
 
     async capture(cmd: string[], opts: { cwd?: string; env?: Record<string, string> } = {}): Promise<PBCaptured> {

@@ -137,7 +137,7 @@ async function isFile(path: string): Promise<boolean> {
  */
 export async function findBun(): Promise<string | null> {
   const candidates = bunSearchCandidates({
-    whichResult: getRuntime().misc.which("bun") ?? undefined,
+    whichResult: (await getRuntime().misc.which("bun")) ?? undefined,
     home: process.env.HOME || homedir(),
     bunInstall: process.env.BUN_INSTALL,
     platform: process.platform,
@@ -250,7 +250,7 @@ export async function enrichPathWithBun(): Promise<boolean> {
 export async function findDeno(): Promise<string | null> {
   const R = getRuntime();
   const candidates = [
-    R.misc.which("deno"),
+    (await R.misc.which("deno")),
     join(process.env.HOME || homedir(), ".deno", "bin", process.platform === "win32" ? "deno.exe" : "deno"),
   ].filter((c): c is string => !!c);
   return firstExistingFile(candidates);
@@ -264,7 +264,7 @@ export async function findDeno(): Promise<string | null> {
 export async function findNode(): Promise<string | null> {
   if (RUNTIME_NAME === "node") return PBOSS_EXECUTABLE;
   const R = getRuntime();
-  const candidate = R.misc.which("node");
+  const candidate = await R.misc.which("node");
   if (candidate) return candidate;
   // process.execPath under Bun IS bun, not node — only trust which().
   const fallback = join("/usr/local/bin", process.platform === "win32" ? "node.exe" : "node");
@@ -291,7 +291,7 @@ export function nodeSupportsTypeStripping(nodePath: string, capture: (cmd: strin
  * Locate the system npm. Used as a fallback for module installs on compiled
  * installs where Bun is absent.
  */
-export function findNpm(): string | null {
+export async function findNpm(): Promise<string | null> {
   return getRuntime().misc.which("npm");
 }
 
@@ -340,7 +340,7 @@ export async function findTsx(
 
   // 2. Real executable on PATH (POSIX; a shebang script re-execs node).
   if (process.platform !== "win32") {
-    const onPath = getRuntime().misc.which("tsx");
+    const onPath = await getRuntime().misc.which("tsx");
     if (onPath) return { cmd: [onPath], source: "path" };
   }
 

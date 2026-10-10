@@ -4,23 +4,24 @@
  * Deno-native process spawning: Deno.Command (types: ./deno-shim.d.ts —
  * under real Deno the native types apply). The child's web streams are
  * already the adapter's shape. `kill` after exit throws in Deno — wrapped
- * best-effort. `spawnSync` has no Deno native equivalent (Command.output()
- * is async) — callers use capture() instead.
+ * best-effort. There is NO synchronous spawn in this adapter (the
+ * 2026-10-11 async mandate removed the throwing stub; callers use
+ * capture()).
  *
- * File-sink redirection goes through a REAL OS fd, not a pipe: Deno.Command
- * has no file-path stdio, but it accepts a raw fd (node:fs openSync — the
- * Deno-native FsFile exposes no rid anymore). The child dups the fd at
- * spawn and the parent closes its copy immediately after — the redirect
- * is kernel-owned. The previous piped+pump design tied a DETACHED child's
- * stdout/stderr to the CLI parent's lifetime: when the parent exited, the
- * daemon's next stdout write hit a broken pipe and killed it silently
- * (empty log files, socket bound, process gone).
+ * File-sink redirection goes through a REAL OS fd opened ASYNC by the
+ * adapter's own sink() (node:fs/promises open — the Deno-native FsFile
+ * exposes no rid anymore, so the sanctioned node-compat file API is it).
+ * The child dups the fd at spawn and the parent closes its copy right
+ * after — the redirect is kernel-owned. The previous piped+pump design
+ * tied a DETACHED child's stdout/stderr to the CLI parent's lifetime:
+ * when the parent exited, the daemon's next stdout write hit a broken
+ * pipe and killed it silently (empty log files, socket bound, process
+ * gone).
  *
  * https://procboss.com
  * License: GPL-3.0-only
  */
 
-import { closeSync, openSync } from "node:fs";
 import type { PBChild, PBProcessRuntime, PBCaptured, PBSpawnOptions, PBFileSink } from "../core/types.ts";
 import { ignore } from "../../error-handling.ts";
 
@@ -36,37 +37,29 @@ export function createDenoProcess(): PBProcessRuntime {
     spawn(cmd: string[], opts: PBSpawnOptions = {}): PBChild {
       // File-sink redirection through a real append-mode fd (see the header
       // comment): kernel-owned, survives the parent, no background pump.
+      // The fd was opened ASYNC by the sink (2026-10-11 mandate) — spawn
+      // itself performs no filesystem I/O.
       const outSink = typeof opts.stdout === "object" ? (opts.stdout as PBFileSink) : null;
       const errSink = typeof opts.stderr === "object" ? (opts.stderr as PBFileSink) : null;
-
-      let outFd: number | undefined;
-      let errFd: number | undefined;
-      if (outSink) {
-        outFd = openSync(outSink.__pbFileSink, "a");
-      }
-      if (errSink) {
-        // Two sinks may point at the same path (stdout+stderr to one log):
-        // a separate append-mode fd keeps both writers independent.
-        errFd = openSync(errSink.__pbFileSink, "a");
-      }
 
       const command = new Deno.Command(cmd[0]!, {
         args: cmd.slice(1),
         cwd: opts.cwd,
         env: opts.env ?? Deno.env.toObject(),
         stdin: "null",
-        stdout: outSink ? outFd! : denoStdio(opts.stdout ?? "pipe"),
-        stderr: errSink ? errFd! : denoStdio(opts.stderr ?? "pipe"),
+        stdout: outSink ? outSink.fd! : denoStdio(opts.stdout ?? "pipe"),
+        stderr: errSink ? errSink.fd! : denoStdio(opts.stderr ?? "pipe"),
       });
       const child = command.spawn();
 
-      // The child holds its own dup from spawn; drop the parent copies so
-      // the fds do not leak into every later spawn this process performs.
-      if (outFd !== undefined) {
-        try { closeSync(outFd); } catch (err) { ignore("close stdout sink fd", err); }
-      }
-      if (errFd !== undefined) {
-        try { closeSync(errFd); } catch (err) { ignore("close stderr sink fd", err); }
+      // The child holds its own dup from spawn; the parent copies (the
+      // sinks' FileHandles) must not leak into every later spawn this
+      // process performs. close() is async — voided fire-and-forget; the
+      // fd is already dup'd into the child, and FileHandle.close() is
+      // idempotent when both sinks are the same object.
+      for (const sink of [outSink, errSink]) {
+        const fh = sink?.handle as { close(): Promise<void> } | undefined;
+        if (fh) void fh.close().catch((err: unknown) => ignore("close sink fd", err));
       }
 
       const exited = child.status.then((s) => s.code ?? null);
@@ -107,12 +100,6 @@ export function createDenoProcess(): PBProcessRuntime {
           // child is orphaned to init and keeps running.
         },
       };
-    },
-
-    spawnSync(): never {
-      throw new Error(
-        "spawnSync is not available under Deno (no synchronous spawn API) — use capture()"
-      );
     },
 
     async capture(cmd: string[], opts: { cwd?: string; env?: Record<string, string> } = {}): Promise<PBCaptured> {

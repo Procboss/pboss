@@ -9,7 +9,8 @@
  * License: GPL-3.0-only
  */
 
-import { openSync, readdirSync, statSync, watch as fsWatch } from "node:fs";
+import { watch as fsWatch } from "node:fs";
+import { open, readdir, stat } from "node:fs/promises";
 import { join, relative } from "node:path";
 import type { PBFileSink, PBFilesystemRuntime, PBWatcher } from "../core/types.ts";
 
@@ -51,12 +52,21 @@ export function createBunFilesystem(): PBFilesystemRuntime {
       return Bun.gunzipSync(new Uint8Array(data));
     },
 
-    sink(path: string): PBFileSink {
+    async sink(path: string): Promise<PBFileSink> {
       // Bun.spawn natively accepts raw file descriptors as stdio targets
       // (the cron runner has relied on it since day one) — an append-mode
       // fd IS the native append sink.
-      const fd = openSync(path, "a");
-      return { __pbFileSink: path, fd };
+      //
+      // 2026-10-11 async mandate: the fd is opened with node:fs/promises
+      // open (Bun's own native implementation of it — same Zig file I/O
+      // as Bun.write). There is NO Bun-native async route to a raw fd:
+      // BunFile-as-stdio TRUNCATES (verified live: append semantics lost)
+      // and FileSink is rejected by Bun.spawn. The FileHandle is anchored
+      // on the sink so it cannot be GC'd before the spawn has dup'd the fd
+      // (a GC'd handle closes its fd) — and once the child holds its dup,
+      // the parent's copy may close harmlessly.
+      const fh = await open(path, "a");
+      return { __pbFileSink: path, fd: fh.fd, handle: fh };
     },
 
     watch(dir: string, onChange: (filename: string) => void): PBWatcher {
@@ -81,7 +91,7 @@ export function createBunFilesystem(): PBFilesystemRuntime {
         try { w.close(); } catch { /* already closed */ }
       };
 
-      const addTree = (d: string): void => {
+      const addTree = async (d: string): Promise<void> => {
         if (closed || watchers.has(d)) return;
         let w: ReturnType<typeof fsWatch>;
         try {
@@ -94,13 +104,15 @@ export function createBunFilesystem(): PBFilesystemRuntime {
             // `mkdir -p` creates whole chains silently, so addTree
             // descends into whatever appeared.
             const full = join(d, f);
-            try {
-              if (statSync(full).isDirectory()) addTree(full);
-            } catch {
-              // Vanished between event and stat: its watcher (if any) is
-              // dead weight — drop it so the map tracks the living tree.
-              drop(full);
-            }
+            void stat(full)
+              .then((st) => {
+                if (st.isDirectory()) void addTree(full);
+              })
+              .catch(() => {
+                // Vanished between event and stat: its watcher (if any) is
+                // dead weight — drop it so the map tracks the living tree.
+                drop(full);
+              });
           });
         } catch {
           // Unreadable or already-vanished — nothing to watch here.
@@ -112,13 +124,13 @@ export function createBunFilesystem(): PBFilesystemRuntime {
         // followed — a symlink can point back at the tree's own ancestor
         // and watching through it would cycle.
         try {
-          for (const e of readdirSync(d, { withFileTypes: true })) {
-            if (e.isDirectory()) addTree(join(d, e.name));
+          for (const e of await readdir(d, { withFileTypes: true })) {
+            if (e.isDirectory()) void addTree(join(d, e.name));
           }
         } catch { /* unreadable tree — the parent stays watched */ }
       };
 
-      addTree(dir);
+      void addTree(dir);
 
       return {
         close: () => {

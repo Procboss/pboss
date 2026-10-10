@@ -395,7 +395,7 @@ export class CronJobManager {
       // The append sink is the adapter's native redirection (Bun: append
       // fd, Node: WriteStream, Deno: pump) — cron output lands in the log
       // file on every runtime.
-      const sink = R.filesystem.sink(logFile);
+      const sink = await R.filesystem.sink(logFile);
       const proc = R.process.spawn(argv, {
         cwd: job.cwd,
         stdout: sink,

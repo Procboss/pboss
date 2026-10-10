@@ -65,9 +65,10 @@ export function createNodeFilesystem(): PBFilesystemRuntime {
       return gunzipSync(data);
     },
 
-    sink(path: string): PBFileSink {
+    async sink(path: string): Promise<PBFileSink> {
       // node:child_process takes streams as stdio targets natively; appended
-      // so daemon launch logs survive restarts.
+      // so daemon launch logs survive restarts. Async per the 2026-10-11
+      // mandate (createWriteStream opens the file lazily on its own).
       const stream = createWriteStream(path, { flags: "a" });
       return Object.assign(stream, { __pbFileSink: path }) as unknown as PBFileSink;
     },

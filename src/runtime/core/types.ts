@@ -50,8 +50,8 @@ export type PBStdio = "pipe" | "ignore" | "inherit" | PBFileSink;
 
 /**
  * An opaque file sink a child's stdout/stderr can be redirected into.
- * Created by `filesystem.sink(path)`; only the creating runtime's
- * `process.spawn` consumes it.
+ * Created by `filesystem.sink(path)` (async — opening the target is I/O);
+ * only the creating runtime's `process.spawn` consumes it.
  */
 export interface PBFileSink {
   /** Marker + the path, for error messages and debugging. */
@@ -62,6 +62,12 @@ export interface PBFileSink {
    * runtime's spawn does its own file wiring (Deno pumps).
    */
   readonly fd?: number;
+  /**
+   * The runtime handle the fd came from (e.g. Bun's FileHandle), when
+   * there is one. Anchored here so it cannot be garbage-collected before
+   * the spawn has dup'd the fd — a GC'd handle closes its fd.
+   */
+  readonly handle?: unknown;
 }
 
 export interface PBSpawnOptions {
@@ -81,12 +87,6 @@ export interface PBCaptured {
   exitCode: number | null;
 }
 
-export interface PBSpawnSync {
-  stdout: string;
-  stderr: string;
-  exitCode: number | null;
-}
-
 /**
  * A directory watcher's cancel handle — closes the OS watch and ends the
  * event stream. Close is idempotent and never throws.
@@ -98,11 +98,16 @@ export interface PBWatcher {
 /** Process spawning/killing — each runtime's NATIVE mechanism. */
 export interface PBProcessRuntime {
   spawn(cmd: string[], opts?: PBSpawnOptions): PBChild;
-  /** Synchronous capture; throws under runtimes with no sync spawn (Deno). */
-  spawnSync(cmd: string[], opts?: { cwd?: string }): PBSpawnSync;
   /** Async capture: run to completion, collect output + exit code. */
   capture(cmd: string[], opts?: { cwd?: string; env?: Record<string, string> }): Promise<PBCaptured>;
 }
+
+/**
+ * 2026-10-11 async mandate: the contract's spawnSync is GONE. pboss never
+ * spawns synchronously — a blocking spawn stalls the daemon's whole event
+ * loop (every app it supervises with it). Adapters expose async spawn and
+ * capture only; Deno never had a sync spawn to begin with.
+ */
 
 /**
  * Filesystem — native async file APIs. (Sync fs already uses node:fs,
@@ -122,8 +127,12 @@ export interface PBFilesystemRuntime {
   /** Synchronous (de)compression of log rotations. */
   gzip(data: Uint8Array): Uint8Array;
   gunzip(data: Uint8Array): Uint8Array;
-  /** A spawn-redirect sink appending to `path`. */
-  sink(path: string): PBFileSink;
+  /**
+   * A spawn-redirect sink appending to `path`. Async — opening the target
+   * is filesystem I/O and must never block the event loop (2026-10-11
+   * async mandate).
+   */
+  sink(path: string): Promise<PBFileSink>;
   /**
    * Recursive directory watcher on the runtime's NATIVE fs-watch API —
    * Deno.watchFs under Deno, node:fs.watch under Bun and Node. Bun's own
@@ -180,15 +189,22 @@ export interface PBServeOptions {
 }
 
 export interface PBNetworkRuntime {
-  serve(opts: PBServeOptions): PBServerHandle;
+  /**
+   * Start a server. Async — the Node adapter awaits its stale-socket
+   * unlink before listen (2026-10-11 async mandate: no blocking I/O
+   * anywhere in the adapters).
+   */
+  serve(opts: PBServeOptions): Promise<PBServerHandle>;
   /** fetch() over a unix socket (the daemon client transport). */
   socketFetch(url: string, init: RequestInit, socketPath: string): Promise<Response>;
 }
 
 export interface PBMiscRuntime {
   sleep(ms: number): Promise<void>;
-  /** Absolute path of an executable on PATH, or null. */
-  which(cmd: string): string | null;
+  /** Absolute path of an executable on PATH, or null. Async (2026-10-11
+   * mandate) — the Node/Deno adapters probe PATH entries with async
+   * stat calls instead of blocking statSync. */
+  which(cmd: string): Promise<string | null>;
   /** The executing runtime's own version string. */
   runtimeVersion(): string;
   /** This process's entry module path (Bun.main / argv[1] / Deno.mainModule). */

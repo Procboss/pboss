@@ -36,7 +36,6 @@
 
 import { mkdir, readFile, writeFile, rename, unlink } from "node:fs/promises";
 import readline from "node:readline";
-import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import { randomUUID } from "node:crypto";
@@ -190,13 +189,13 @@ export async function stampRuntimeSelectionOnFirstRun(runtime: RuntimeChoice): P
 
 /* ── ensuring a runtime exists (installer + `pboss runtime change`) ─────── */
 
-/** Is the runtime on PATH, or at its well-known per-user location? */
-export function runtimeAvailable(runtime: RuntimeChoice): boolean {
-  if (R.misc.which(runtime)) return true;
-  if (runtime === "bun") return existsSync(join(homedir(), ".bun", "bin", "bun"));
-  if (runtime === "deno") return existsSync(join(homedir(), ".deno", "bin", "deno"));
-  return false;
-}
+/*
+ * runtimeAvailable() was removed in the 2026-10-11 async audit: it had NO
+ * callers (the interactive install flow in index.ts does its own probing)
+ * and its synchronous shape (existsSync + a sync which) is exactly what the
+ * async mandate abolished. `pboss runtime change` / ensureRuntimeInstalled
+ * own the availability checks now, fully async.
+ */
 
 /** The rootless, official installer command for a runtime (POSIX). */
 export function runtimeInstallCommand(runtime: RuntimeChoice): string[] {

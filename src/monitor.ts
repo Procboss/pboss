@@ -17,74 +17,21 @@
 import type { MetricSnapshot, ProcessState } from "./types.ts";
 import { getSystemInfo } from "./utils.ts";
 import { METRICS_DIR } from "./constants.ts";
-import { ignore } from "./error-handling.ts";
 import { join } from "path";
-import pidusage from "pidusage";
-import { readdir } from "node:fs/promises";
 import { getRuntime } from "./runtime/index.ts";
 const R = getRuntime();
+
+/*
+ * collectProcessMetrics() was removed in the 2026-10-11 audit: it had NO
+ * callers (the per-process loop lives in ProcessContainer.startMonitoring,
+ * which uses pidusage directly) and its CPU math was wrong anyway —
+ * (utime+stime)/100 is cumulative CPU SECONDS, not a percentage. Snapshots
+ * below read the values the containers already collected.
+ */
 
 export class Monitor {
   private history: MetricSnapshot[] = [];
   private maxHistory = 3600; // 1 hour at 1s intervals
-
-  async collectProcessMetrics(
-    pid: number
-  ): Promise<{ memory: number; cpu: number; handles?: number }> {
-    try {
-      if (process.platform === "linux") {
-
-        let memory = 0;
-        let cpu = 0;
-        let handles: number | undefined;
-
-        const statusText = await R.filesystem
-          .readText(`/proc/${pid}/status`)
-          .catch((err: unknown) => (ignore(`read /proc/${pid}/status`, err), null));
-        if (statusText) {
-          const vmRss = statusText.match(/VmRSS:\s+(\d+)\s+kB/);
-          
-          if (vmRss) memory = parseInt(vmRss[1]!) * 1024;
-         
-          // Count file descriptors
-          try {
-            handles = (await readdir(`/proc/${pid}/fd`)).length;
-          } catch (err) {
-            // Expected when the process exits between the /proc reads.
-            ignore(`read /proc/${pid}/fd (process may have exited)`, err);
-          }
-        }
-
-        const statText = await R.filesystem
-          .readText(`/proc/${pid}/stat`)
-          .catch((err: unknown) => (ignore(`read /proc/${pid}/stat`, err), null));
-        if (statText) {
-          const parts = statText.split(" ");
-          
-          const utime = parseInt(parts[13]!) || 0;
-          const stime = parseInt(parts[14]!) || 0;
-          
-          // Simplified CPU calculation
-          cpu = (utime + stime) / 100;
-        }
-
-        return { memory, cpu, handles };
-      } else {
-        // Windows, macOS, and cross-platform fallback
-        const stats = await pidusage(pid);
-        return {
-          memory: stats.memory,
-          cpu: stats.cpu,
-        };
-      }
-    } catch (err) {
-      // Metrics degrade to zeros — recorded so a probe of recentSuppressed()
-      // can tell a dead process from a broken pidusage install.
-      ignore(`get metrics for pid ${pid}`, err);
-    }
-
-    return { memory: 0, cpu: 0 };
-  }
 
   async takeSnapshot(processes: ProcessState[]): Promise<MetricSnapshot> {
     const system = getSystemInfo();

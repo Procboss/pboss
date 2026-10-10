@@ -18,7 +18,7 @@
 import http from "node:http";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { Readable } from "node:stream";
-import { existsSync, unlinkSync } from "node:fs";
+import { unlink } from "node:fs/promises";
 import { ignore } from "../../error-handling.ts";
 import type {
   PBNetworkRuntime,
@@ -72,7 +72,7 @@ async function sendResponse(res: ServerResponse, response: Response): Promise<vo
 
 export function createNodeNetwork(): PBNetworkRuntime {
   return {
-    serve(opts: PBServeOptions): PBServerHandle {
+    async serve(opts: PBServeOptions): Promise<PBServerHandle> {
       let handler = opts.fetch;
       // Under Node the WS handshake arrives as the server's "upgrade" event,
       // never through the request handler — upgrade() answers null and the
@@ -113,8 +113,11 @@ export function createNodeNetwork(): PBNetworkRuntime {
       if (opts.socketPath) {
         // Fresh bind: a stale socket file from a crashed daemon blocks the
         // listen — the callers unlink beforehand, this is the belt on top.
+        // 2026-10-11 async mandate: the unlink is awaited (async fs) — the
+        // listen must happen strictly after it, and a missing file is the
+        // normal case, so ENOENT is simply ignored.
         try {
-          if (existsSync(opts.socketPath)) unlinkSync(opts.socketPath);
+          await unlink(opts.socketPath);
         } catch (err) {
           ignore(`unlink stale socket ${opts.socketPath}`, err);
         }

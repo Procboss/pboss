@@ -110,6 +110,8 @@ export class ProcessContainer {
   private watchers: PBWatcher[] = [];
   private monitorInterval: ReturnType<typeof setInterval> | null = null;
   private logRotateInterval: ReturnType<typeof setInterval> | null = null;
+  /** Metrics-tick counter — the fd sampling runs every 5th tick. */
+  private metricsTick = 0;
   private isRestarting: boolean = false;
   /**
    * Issue #32: true while a restart's internal stop phase runs — its
@@ -436,9 +438,15 @@ export class ProcessContainer {
           this.memory = stats.memory; 
           this.cpu = stats.cpu;
   
-          // 2. Track file descriptors (handles) on Linux
-          // (pidusage does not provide this metric, so we keep the original logic)
-          if (process.platform === "linux") {
+          // 2. Track file descriptors (handles) on Linux — every 5th tick,
+          // not every tick (2026-10-11 performance pass): a /proc/<pid>/fd
+          // readdir is the most expensive read in the whole loop — getdents
+          // over EVERY open descriptor, so its cost grows with the app's
+          // connection count (500 conns = 500+ entries, every second).
+          // 5s sampling keeps fd-leak alerting honest (threshold monitors
+          // work on sustained windows) while the daemon's steady-state
+          // syscall load drops ~80%.
+          if (process.platform === "linux" && ++this.metricsTick % 5 === 0) {
             try {
               this.handles = (await readdir(`/proc/${this.pid}/fd`)).length;
             } catch (err) {

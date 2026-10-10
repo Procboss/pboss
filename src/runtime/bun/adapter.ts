@@ -22,7 +22,8 @@ export function createBunAdapter(): RuntimeAdapter {
     network: createBunNetwork(),
     misc: {
       sleep: (ms: number) => Bun.sleep(ms),
-      which: (cmd: string) => Bun.which(cmd) ?? null,
+      // 2026-10-11 async mandate: which is async across all adapters.
+      which: async (cmd: string): Promise<string | null> => Bun.which(cmd) ?? null,
       runtimeVersion: () => Bun.version,
       mainPath: () => (typeof Bun.main === "string" ? Bun.main : null),
     },

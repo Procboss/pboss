@@ -124,8 +124,8 @@ describe("Installation mode detection", () => {
     expect(bun).toBe(Bun.which("bun"));
   });
 
-  test("findNpm returns a path or null without throwing", () => {
-    expect(["string", "null"]).toContain(typeof findNpm());
+  test("findNpm returns a path or null without throwing", async () => {
+    expect(["string", "null"]).toContain(typeof (await findNpm()));
   });
 
   test("daemonSpawnCommand uses bun + daemon.ts in script mode", async () => {

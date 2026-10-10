@@ -1346,8 +1346,8 @@ export class PBoss extends EventEmitter<PBossEvents> {
     // Open log files for daemon stdout/stderr
     // Append sinks — the adapter's native file redirection (Bun: fd,
     // Node: stream, Deno: pump). A fresh daemon's launch logs append.
-    const outLog = R.filesystem.sink(DAEMON_OUT_LOG_FILE);
-    const errLog = R.filesystem.sink(DAEMON_ERR_LOG_FILE);
+    const outLog = await R.filesystem.sink(DAEMON_OUT_LOG_FILE);
+    const errLog = await R.filesystem.sink(DAEMON_ERR_LOG_FILE);
 
     let proc;
     try {

@@ -11,7 +11,7 @@
  * License: GPL-3.0-only
  */
 
-import { statSync } from "node:fs";
+import { stat } from "node:fs/promises";
 import { delimiter, join } from "node:path";
 
 /**
@@ -24,11 +24,14 @@ import { delimiter, join } from "node:path";
  *
  * Optional extra directories are appended AFTER the PATH entries (used by
  * callers that know runtime-specific install roots like ~/.bun/bin).
+ *
+ * 2026-10-11 async mandate: the scan awaits its stat calls — a PATH of any
+ * realistic length must never block the event loop.
  */
-export function scanPathFor(
+export async function scanPathFor(
   cmd: string,
   opts: { platform?: NodeJS.Platform; pathEnv?: string; extraDirs?: string[] } = {}
-): string | null {
+): Promise<string | null> {
   const platform = opts.platform ?? process.platform;
   const isWin = platform === "win32";
   const name = isWin && !/\.(exe|cmd|bat)$/i.test(cmd) ? `${cmd}.exe` : cmd;
@@ -40,7 +43,7 @@ export function scanPathFor(
   for (const dir of dirs) {
     const candidate = join(dir, name);
     try {
-      const st = statSync(candidate);
+      const st = await stat(candidate);
       if (!st.isFile()) continue;
       if (!isWin && (st.mode & 0o111) === 0) continue; // needs an execute bit on POSIX
       return candidate;

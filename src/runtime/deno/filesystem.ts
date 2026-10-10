@@ -11,6 +11,7 @@
  */
 
 import { gzipSync, gunzipSync } from "node:zlib";
+import { open } from "node:fs/promises";
 import type { PBFileSink, PBFilesystemRuntime, PBWatcher } from "../core/types.ts";
 
 export function createDenoFilesystem(): PBFilesystemRuntime {
@@ -61,10 +62,15 @@ export function createDenoFilesystem(): PBFilesystemRuntime {
       return gunzipSync(data);
     },
 
-    sink(path: string): PBFileSink {
-      // Deno.Command cannot take a file as stdout — deno/process.ts spawns
-      // piped and pumps to the path. The sink is just the tagged path here.
-      return { __pbFileSink: path };
+    async sink(path: string): Promise<PBFileSink> {
+      // Deno.Command cannot take a file as stdout — deno/process.ts passes
+      // the sink's raw fd instead. The fd is opened ASYNC here (2026-10-11
+      // mandate; node:fs/promises is the sanctioned node-compat file API —
+      // the Deno-native FsFile exposes no rid anymore) and the FileHandle is
+      // anchored on the sink so it cannot be GC'd before the spawn has
+      // dup'd the fd. deno/process.ts closes it right after the spawn.
+      const fh = await open(path, "a");
+      return { __pbFileSink: path, fd: fh.fd, handle: fh };
     },
 
     watch(dir: string, onChange: (filename: string) => void): PBWatcher {

@@ -91,7 +91,7 @@ describe("deno runtime adapter — real deno", () => {
 import { createDenoNetwork } from ${JSON.stringify(ADAPTER_URL)};
 const R = createDenoNetwork();
 const sock = ${JSON.stringify(sock)};
-const handle = R.serve({
+const handle = await R.serve({
   socketPath: sock,
   fetch: () => new Response(JSON.stringify({ pong: true, pid: 4242 }), {
     headers: { "content-type": "application/json" },
@@ -129,7 +129,7 @@ await handle.stop();
 import { createDenoNetwork } from ${JSON.stringify(ADAPTER_URL)};
 const R = createDenoNetwork();
 const sock = ${JSON.stringify(sock)};
-const handle = R.serve({
+const handle = await R.serve({
   socketPath: sock,
   fetch: () => new Response(
     new ReadableStream({
@@ -166,8 +166,8 @@ import { createDenoFilesystem } from ${JSON.stringify(pathToFileURL(join(REPO, "
 const P = createDenoProcess();
 const F = createDenoFilesystem();
 const child = P.spawn([Deno.execPath(), "run", "-A", "--sloppy-imports", ${JSON.stringify(join(home, "child.ts"))}], {
-  stdout: F.sink(${JSON.stringify(sink)}),
-  stderr: F.sink(${JSON.stringify(sink)}),
+  stdout: await F.sink(${JSON.stringify(sink)}),
+  stderr: await F.sink(${JSON.stringify(sink)}),
   stdin: "ignore",
   detached: true,
 });

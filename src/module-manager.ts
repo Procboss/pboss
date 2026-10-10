@@ -145,7 +145,7 @@ async function resolveModuleInstaller(): Promise<[string, string]> {
   const bun = await findBun();
   if (bun) return [bun, "add"];
 
-  const npm = findNpm();
+  const npm = await findNpm();
   if (npm) return [npm, "install"];
 
   throw new Error(

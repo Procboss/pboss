@@ -30,8 +30,7 @@
  * see resolveUpgradeChannel().
  */
 
-import { mkdir, readFile, writeFile, stat } from "fs/promises";
-import { existsSync, copyFileSync, writeFileSync } from "fs";
+import { mkdir, readFile, writeFile, stat, access, copyFile } from "fs/promises";
 import { homedir } from "os";
 import { join, dirname } from "path";
 import { fileURLToPath } from "node:url";
@@ -660,7 +659,8 @@ export async function healWindowsShims(
   plan: UpgradePlan,
   opts: {
     platform?: NodeJS.Platform;
-    which?: (cmd: string) => string | null;
+    /** Sync (test mocks) or async (the adapter default) — always awaited. */
+    which?: (cmd: string) => string | null | Promise<string | null>;
     moduleDir?: string;
   } = {},
 ): Promise<string | null> {
@@ -668,7 +668,7 @@ export async function healWindowsShims(
   if (platform !== "win32") return null;
   if (plan.channel !== "npm" && plan.channel !== "bun") return null;
   const which = opts.which ?? ((cmd: string) => R.misc.which(cmd));
-  const pbossBin = which("pboss");
+  const pbossBin = await which("pboss");
   if (!pbossBin) return null;
   const binDir = dirname(pbossBin);
   // Where the just-updated package lives. The running module sits inside
@@ -681,12 +681,22 @@ export async function healWindowsShims(
     join(homedir(), ".bun", "install", "global", "node_modules", "pboss", "bin", "pboss.ps1"),
     join(binDir, "node_modules", "pboss", "bin", "pboss.ps1"),
   ];
-  const wrapper = candidates.find((c) => existsSync(c));
+  // Async existence probe (2026-10-11 mandate — no existsSync).
+  let wrapper: string | null = null;
+  for (const c of candidates) {
+    try {
+      await access(c);
+      wrapper = c;
+      break;
+    } catch {
+      // not there — keep looking
+    }
+  }
   if (!wrapper) return null;
-  copyFileSync(wrapper, join(binDir, "pboss.ps1"));
+  await copyFile(wrapper, join(binDir, "pboss.ps1"));
   // The same two-line bootstrap the PowerShell installer writes: run the
   // wrapper twin under powershell, forward every argument verbatim.
-  writeFileSync(
+  await writeFile(
     join(binDir, "pboss.cmd"),
     "@echo off\r\npowershell -NoProfile -ExecutionPolicy Bypass -File \"%~dp0pboss.ps1\" %*\r\n",
   );
@@ -739,7 +749,8 @@ export function parseVersionOutput(text: string): string | null {
  */
 export async function verifyInstalledVersion(
   opts: {
-    which?: (cmd: string) => string | null;
+    /** Sync (test mocks) or async (the adapter default) — always awaited. */
+    which?: (cmd: string) => string | null | Promise<string | null>;
     spawnFn?: (cmd: string[]) => Promise<{ code: number; stdout: string }> | { code: number; stdout: string };
   } = {},
 ): Promise<InstalledVersion | null> {
@@ -763,7 +774,7 @@ export async function verifyInstalledVersion(
     });
 
   try {
-    const path = which("pboss");
+    const path = await which("pboss");
     if (!path) return null;
     const { code, stdout } = await spawnFn([path, "--version"]);
     if (code !== 0) return null;

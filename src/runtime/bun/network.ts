@@ -19,7 +19,9 @@ import type {
 
 export function createBunNetwork(): PBNetworkRuntime {
   return {
-    serve(opts: PBServeOptions): PBServerHandle {
+    // Async per the 2026-10-11 adapter contract (Bun.serve itself binds
+    // synchronously — no I/O happens before it returns).
+    async serve(opts: PBServeOptions): Promise<PBServerHandle> {
       // reload() swaps this closure — cheaper and runtime-uniform compared
       // to Bun.serve's server.reload(opts), with identical semantics for
       // the daemon's "rebind the handler" use.

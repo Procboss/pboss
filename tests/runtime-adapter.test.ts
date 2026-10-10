@@ -89,10 +89,12 @@ describe("the adapter uses each runtime's NATIVE APIs (source pins)", () => {
   // These pins are the regression wall: replacing a native implementation
   // with a node-compat one (the architecture's forbidden direction) fails.
 
-  test("bun/process.ts uses Bun.spawn / Bun.spawnSync — and no node:child_process", () => {
+  test("bun/process.ts uses Bun.spawn — and no sync spawn, no node:child_process", () => {
     const src = read("src/runtime/bun/process.ts");
     expect(src).toContain("Bun.spawn(");
-    expect(src).toContain("Bun.spawnSync(");
+    // 2026-10-11 async mandate: the adapter contract has NO spawnSync —
+    // the bun adapter must never spawn synchronously again.
+    expect(src).not.toContain("spawnSync");
     expect(src).not.toContain("node:child_process");
   });
 
@@ -101,7 +103,12 @@ describe("the adapter uses each runtime's NATIVE APIs (source pins)", () => {
     expect(src).toContain("Bun.file(");
     expect(src).toContain("Bun.write(");
     expect(src).toContain("Bun.gzipSync(");
-    expect(src).not.toContain("node:fs/promises");
+    // The async-fd exception (2026-10-11 async mandate): sink() opens its
+    // append-mode fd with node:fs/promises open — Bun's own native
+    // implementation — because there is NO Bun-native async fd API
+    // (BunFile-as-stdio truncates; FileSink is rejected by Bun.spawn;
+    // both verified live). Bun-native APIs stay first everywhere else.
+    expect(src).toContain('from "node:fs/promises"');
   });
 
   test("bun/network.ts uses Bun.serve + the native unix fetch option", () => {
@@ -224,7 +231,7 @@ describe("the bun adapter's unix-socket transport (end-to-end)", () => {
     const sock = join(dir, "test.sock");
     try {
       let reloaded = false;
-      const server = R.network.serve({
+      const server = await R.network.serve({
         socketPath: sock,
         fetch: async (req) => {
           const body = (await req.json()) as { hello?: string };

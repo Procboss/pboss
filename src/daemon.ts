@@ -312,17 +312,19 @@ export default class Daemon {
   }
 
   // initialize MUST be called before startServer
-  startServer(): PBServerHandle {
+  async startServer(): Promise<PBServerHandle> {
     
     if (!this.initialized) {
       throw new Error("Daemon.initialize() must be called before startServer()");
     }
     
     // The runtime adapter's NATIVE unix-socket server: Bun.serve({unix}),
-    // node:http listen(path), Deno.serve({path}).
+    // node:http listen(path), Deno.serve({path}). Async contract — the node
+    // adapter awaits its stale-socket unlink before listen.
     const opts = this.getServerOpts();
-    this.server = R.network.serve({ socketPath: opts.socketPath!, fetch: (req) => opts.fetch(req) });
-    return this.server;
+    const server = await R.network.serve({ socketPath: opts.socketPath!, fetch: (req) => opts.fetch(req) });
+    this.server = server;
+    return server;
   }
   
   // The stream half's write function: byte-safe (Response body chunks must
@@ -493,7 +495,7 @@ export default class Daemon {
         case "dashboard": {
           const port = msg.data?.port || DASHBOARD_PORT;
           const metricsPort = msg.data?.metricsPort || METRICS_PORT;
-          dashboard.start(port, metricsPort);
+          await dashboard.start(port, metricsPort);
           return { type: "dashboard", data: { port, metricsPort }, success: true, id: msg.id };
         }
         case "dashboardStop": {
@@ -674,7 +676,7 @@ export default class Daemon {
         }
         case "daemonReload": {
           if (!this.server) {
-            this.server = this.startServer();
+            this.server = await this.startServer();
           } else {
             this.server.reload(this.boundFetch);
           }
@@ -766,7 +768,7 @@ if (import.meta.main === true && /(?:^|[/\\])daemon\.ts$/.test(process.argv[1] ?
   (async () => {
     const dm = new Daemon();
     await dm.initialize();
-    dm.startServer();
+    await dm.startServer();
     console.log(`Daemon listening on ${DAEMON_SOCKET}`);
   })().catch((err) => {
     if (err instanceof DaemonConflictError) {

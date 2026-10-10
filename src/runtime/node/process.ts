@@ -1,16 +1,17 @@
 /**
  * ProcBoss (pboss) — Node process adapter.
  *
- * Node-native process spawning via node:child_process (spawn / spawnSync).
- * Node's child streams are adapted to web ReadableStreams ONCE at spawn
- * time so the rest of pboss deals with one shape; the native stream itself
- * stays the source.
+ * Node-native process spawning via node:child_process spawn (async only —
+ * the 2026-10-11 async mandate removed spawnSync: a blocking spawn stalls
+ * the daemon's whole event loop). Node's child streams are adapted to web
+ * ReadableStreams ONCE at spawn time so the rest of pboss deals with one
+ * shape; the native stream itself stays the source.
  *
  * https://procboss.com
  * License: GPL-3.0-only
  */
 
-import { spawn, spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { Readable } from "node:stream";
 import type {
   PBChild,
@@ -66,19 +67,6 @@ export function createNodeProcess(): PBProcessRuntime {
         unref() {
           child.unref();
         },
-      };
-    },
-
-    spawnSync(cmd: string[], opts: { cwd?: string } = {}) {
-      const r = spawnSync(cmd[0]!, cmd.slice(1), {
-        cwd: opts.cwd,
-        encoding: "utf8",
-        stdio: ["ignore", "pipe", "pipe"],
-      });
-      return {
-        stdout: r.stdout ?? "",
-        stderr: r.stderr ?? "",
-        exitCode: r.status ?? null,
       };
     },
 

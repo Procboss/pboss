@@ -92,11 +92,33 @@ if (process.env.PORT) fs.writeFileSync(path.join(__dirname, "worker-" + id + ".p
 setInterval(() => {}, 1 << 30);
 `;
 
+// Boot-crash app: announces each fork (one tick per life), dies instantly —
+// the wrapper must retry it WITH BACKOFF, never fork-bomb the box.
+const CRASH_APP = `const fs = require("node:fs");
+const path = require("node:path");
+const id = process.env.NODE_APP_INSTANCE || "0";
+fs.appendFileSync(path.join(__dirname, "crash-" + id + ".ticks"), "x");
+process.exit(3);
+`;
+
+// The benchmark's app shape: a real LISTENING http worker — a death after
+// listening is a HEALTHY death (the wrapper replaces it immediately), which
+// is exactly what the repeated-kill scenario pins.
+const HTTP_APP = `const fs = require("node:fs");
+const path = require("node:path");
+const http = require("node:http");
+const id = process.env.NODE_APP_INSTANCE || "0";
+fs.writeFileSync(path.join(__dirname, "worker-" + id + ".started"), String(process.pid));
+http.createServer((req, res) => { res.writeHead(200); res.end("ok"); }).listen(0);
+`;
+
 let TEST_HOME_CREATED = false;
 
 beforeAll(async () => {
   await mkdir(TEST_DIR, { recursive: true });
   await writeFile(join(TEST_DIR, "app.cjs"), WORKER_APP);
+  await writeFile(join(TEST_DIR, "crash.cjs"), CRASH_APP);
+  await writeFile(join(TEST_DIR, "http-app.cjs"), HTTP_APP);
   await writeFile(
     join(TEST_DIR, "bun-app.js"),
     "setInterval(() => {}, 1 << 30);\n"
@@ -226,8 +248,38 @@ describe("ensureNodeClusterWrapper: the generated primary wrapper", () => {
     // zero-downtime rolling reload on SIGHUP
     expect(NODE_CLUSTER_WRAPPER_SOURCE).toContain('"SIGHUP"');
     expect(NODE_CLUSTER_WRAPPER_SOURCE).toContain("next.once(\"online\"");
-    // a crashed worker is replaced with backoff
+    // a crashed worker is replaced (2026-10-11 performance pass: healthy
+    // workers IMMEDIATELY, boot-crash loops with backoff)
+    expect(NODE_CLUSTER_WRAPPER_SOURCE).toContain("replacing immediately");
     expect(NODE_CLUSTER_WRAPPER_SOURCE).toContain("respawning in");
+  });
+
+  test("the 2026-10-11 respawn policy pins: immediate for healthy, backoff for boot crashes", () => {
+    // a worker that lived >= CRASH_INSTANT_MS is healthy — replaced in the
+    // exit handler, zero delay (the benchmark measured the old escalating
+    // backoff at 7.3s median per kill — 37x slower than pm2). LISTENED is
+    // the primary signal: a worker that reached a serving state is healthy
+    // no matter how short its life.
+    expect(NODE_CLUSTER_WRAPPER_SOURCE).toContain('w.on("listening", () => listened.add(w.id));');
+    expect(NODE_CLUSTER_WRAPPER_SOURCE).toContain("const wasHealthy = listened.has(worker.id) || livedMs >= CRASH_INSTANT_MS;");
+    expect(NODE_CLUSTER_WRAPPER_SOURCE).toContain("const CRASH_INSTANT_MS = 2000;");
+    expect(NODE_CLUSTER_WRAPPER_SOURCE).toContain("function replaceWorker(i, pid)");
+    expect(NODE_CLUSTER_WRAPPER_SOURCE).toContain("replaceWorker(i, pid);");
+    // backoff exists ONLY for workers that died at boot, repeatedly
+    expect(NODE_CLUSTER_WRAPPER_SOURCE).toContain("bootCrashes.set(i, next);");
+    expect(NODE_CLUSTER_WRAPPER_SOURCE).toContain("RESPAWN_BASE_DELAY * Math.pow(2, next - 1)");
+    // the whole-wrapper fork-rate breaker (30 forks / 10s)
+    expect(NODE_CLUSTER_WRAPPER_SOURCE).toContain("function forkRateLimited()");
+    expect(NODE_CLUSTER_WRAPPER_SOURCE).toContain("forkLog.length >= FORK_RATE_MAX");
+    // a reload-retired worker never triggers a respawn — it is marked as
+    // retiring BEFORE its disconnect
+    expect(NODE_CLUSTER_WRAPPER_SOURCE).toContain("retiring.add(old.id);");
+    expect(NODE_CLUSTER_WRAPPER_SOURCE).toContain("retiring.has(worker.id)");
+    // the old escalating policy is GONE — no stable-uptime reset, no
+    // per-death counter growth, no 250ms floor
+    expect(NODE_CLUSTER_WRAPPER_SOURCE).not.toContain("STABLE_UPTIME_MS");
+    expect(NODE_CLUSTER_WRAPPER_SOURCE).not.toContain("crashes.get(");
+    expect(NODE_CLUSTER_WRAPPER_SOURCE).not.toContain("Math.max(delay, 250)");
   });
 
   test("node --check: the generated wrapper parses under the real Node", async () => {
@@ -352,6 +404,143 @@ describe("node:cluster apps through the ProcessManager (real wrapper, real worke
     await until(async () => !alive(newPid) && !alive(pid1));
     await pm.deleteAll();
   }, 60000);
+
+  test("THE BENCHMARK'S SCENARIO (2026-10-11): repeated SIGKILLs are each replaced in ~fork time", async () => {
+    const pm = new ProcessManager();
+    await wipeMarkers();
+    const states = await pm.start({
+      name: "nodeapi5",
+      script: join(TEST_DIR, "http-app.cjs"),
+      cwd: TEST_DIR,
+      instances: 2,
+      interpreter: "node",
+    });
+    expect(states.length).toBe(1);
+
+    await until(() => workersUp(2));
+
+    // The node-suite benchmark killed a worker every time its replacement
+    // came up, 10 times in a row — each worker is a LISTENING http server,
+    // exactly this shape. The OLD policy escalated on every quick death
+    // (300ms doubling to a 15s cap; measured median 7.3s — 37x slower than
+    // pm2's ~0.19s). The new policy forks the replacement right in the
+    // exit handler: a listened worker's death is replaced in ~fork time.
+    const PER_KILL_BUDGET_MS = 2500;
+    let totalMs = 0;
+    for (let kill = 0; kill < 5; kill++) {
+      const pid = await readPid(0);
+      expect(alive(pid)).toBe(true);
+      const t0 = Date.now();
+      process.kill(pid, "SIGKILL");
+      const replaced = await until(
+        async () => (await readPid(0)) !== pid && !Number.isNaN(await readPid(0)),
+        PER_KILL_BUDGET_MS
+      );
+      totalMs += Date.now() - t0;
+      expect(replaced).toBe(true); // replaced within the per-kill budget
+      expect(alive(await readPid(0))).toBe(true);
+      await sleep(400); // let the replacement LISTEN (healthy classification)
+    }
+    // Five kills recovered in less than the old policy's FOURTH kill alone
+    // (0.3+0.6+1.2+2.4 = 4.5s of pure backoff delay).
+    expect(totalMs).toBeLessThan(4500);
+
+    const container = (pm as any).processes.get(states[0]!.id);
+    expect(container.status).toBe("online");
+    expect(container.restartCount).toBe(0); // the wrapper absorbed it all
+
+    await pm.stop("nodeapi5");
+    await pm.deleteAll();
+  }, 60000);
+
+  test("a boot-crash loop retries with backoff — never a fork bomb, wrapper stays up", async () => {
+    const pm = new ProcessManager();
+    // Both tick files (one per worker index); the wrapper only engages with
+    // instances > 1 — a 1-instance "cluster" is just a fork (owner rule).
+    const tickFiles = [join(TEST_DIR, "crash-0.ticks"), join(TEST_DIR, "crash-1.ticks")];
+    for (const f of tickFiles) await rm(f, { force: true });
+    const states = await pm.start({
+      name: "nodecrash",
+      script: join(TEST_DIR, "crash.cjs"),
+      cwd: TEST_DIR,
+      instances: 2,
+      interpreter: "node",
+    });
+    expect(states.length).toBe(1);
+    const wrapperPid = states[0]!.pid!;
+
+    // ~4.5s of a crash-at-boot app on BOTH indices: the wrapper must keep
+    // retrying, but gently — 100ms backoff doubling (capped at 2s) means
+    // ~6 forks per index in this window, not the hundreds a no-backoff
+    // respawn loop would fork.
+    await sleep(4500);
+    for (const f of tickFiles) {
+      const ticks = (await readFile(f, "utf8")).length;
+      expect(ticks).toBeGreaterThanOrEqual(3); // it IS retrying
+      expect(ticks).toBeLessThanOrEqual(8); // with backoff, not a fork bomb
+    }
+
+    // The wrapper survived the whole loop (a reffed respawn timer holds a
+    // workerless primary alive) — pboss's own restart accounting untouched.
+    expect(alive(wrapperPid)).toBe(true);
+    const container = (pm as any).processes.get(states[0]!.id);
+    expect(container.restartCount).toBe(0);
+
+    await pm.stop("nodecrash");
+    await until(() => !alive(wrapperPid));
+    await pm.deleteAll();
+    for (const f of tickFiles) await rm(f, { force: true });
+  }, 60000);
+
+  test("a rolling reload never over-subscribes the worker count", async () => {
+    const pm = new ProcessManager();
+    await wipeMarkers();
+    const states = await pm.start({
+      name: "nodeapi6",
+      script: join(TEST_DIR, "app.cjs"),
+      cwd: TEST_DIR,
+      instances: 2,
+      interpreter: "node",
+    });
+    await until(() => workersUp(2));
+
+    // Direct children of the wrapper = live cluster workers (Linux /proc).
+    const wrapperPid = states[0]!.pid!;
+    const childCount = async (): Promise<number> => {
+      const text = await readFile(`/proc/${wrapperPid}/task/${wrapperPid}/children`, "utf8");
+      return text.trim().length === 0 ? 0 : text.trim().split(/\s+/).length;
+    };
+
+    // TWO consecutive reloads: each retires workers one at a time, and a
+    // reload-retired worker's exit is a PLANNED retirement (the retiring
+    // set) — never a death to respawn. The count settles at exactly N; a
+    // respawn-on-retired-exit bug would settle one generation ABOVE N.
+    for (let round = 0; round < 2; round++) {
+      const before = await Promise.all([readPid(0), readPid(1)]);
+      process.kill(wrapperPid, "SIGHUP");
+      const rotated = await until(
+        async () => (await readPid(0)) !== before[0] && (await readPid(1)) !== before[1],
+        20000
+      );
+      expect(rotated).toBe(true);
+      // Let the reload loop's tail (final stagger + retire timers) finish:
+      // a SIGHUP that arrives while a reload is still rolling is DROPPED
+      // (the `reloading` guard — pre-existing, deliberate).
+      await sleep(1000);
+    }
+
+    // settle: retire timers SIGTERM stragglers up to ~2s after the last
+    // disconnect — then the count must be EXACTLY the instance count
+    const settled = await until(async () => (await childCount()) === 2, 8000);
+    expect(settled).toBe(true);
+    // ...and stay there — a delayed rogue respawn would push it to 3+
+    await sleep(2500);
+    expect(await childCount()).toBe(2);
+    expect(await workersUp(2)).toBe(true);
+
+    await pm.stop("nodeapi6");
+    await pm.deleteAll();
+  }, 90000);
 
   test("SIGHUP rolls the workers with zero downtime", async () => {
     const pm = new ProcessManager();

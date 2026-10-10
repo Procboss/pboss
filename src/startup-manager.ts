@@ -705,8 +705,8 @@ ${plist}`;
         // its own visible cmd.exe window).
         // The append sinks are the adapter's native file redirection
         // (Bun: fd, Node: stream, Deno: pump) — same EBUSY-retry contract.
-        const outLog = R.filesystem.sink(DAEMON_OUT_LOG_FILE);
-        const errLog = R.filesystem.sink(DAEMON_ERR_LOG_FILE);
+        const outLog = await R.filesystem.sink(DAEMON_OUT_LOG_FILE);
+        const errLog = await R.filesystem.sink(DAEMON_ERR_LOG_FILE);
         let proc;
         try {
           proc = R.process.spawn(launcherCmd, {

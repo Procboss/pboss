@@ -36,10 +36,10 @@ export class Dashboard {
     this.pm = pm;
   }
 
-  start(port: number = DASHBOARD_PORT, metricsPort: number = METRICS_PORT) {
+  async start(port: number = DASHBOARD_PORT, metricsPort: number = METRICS_PORT): Promise<void> {
     // Dashboard + WebSocket server — the runtime adapter's native serve
     // (Bun.serve / node:http+ws / Deno.serve, with native WS upgrades).
-    this.server = R.network.serve({
+    this.server = await R.network.serve({
       port,
       fetch: (req, ctx) => {
         const url = new URL(req.url);
@@ -106,7 +106,7 @@ export class Dashboard {
     });
 
     // Separate Prometheus metrics server
-    this.metricsServer = R.network.serve({
+    this.metricsServer = await R.network.serve({
       port: metricsPort,
       fetch: (req) => {
         const url = new URL(req.url);

@@ -2713,7 +2713,7 @@ ${colorize("Notes:", "dim")}
       killDaemon: () => this.pboss.kill(),
       serviceKind: () => bootServiceKindForCurrentHome(),
       runPboss: async (runArgs: string[]): Promise<number | null> => {
-        const target = installed?.path ?? R.misc.which("pboss") ?? "pboss";
+        const target = installed?.path ?? (await R.misc.which("pboss")) ?? "pboss";
         try {
           const proc = R.process.spawn([target, ...runArgs], {
             stdout: "inherit",
@@ -2968,16 +2968,28 @@ ${colorize("Notes:", "dim")}
    */
   async ensureRuntimeInstalled(runtime: RuntimeChoice): Promise<boolean> {
     const R2 = getRuntime();
-    if (R2.misc.which(runtime)) return true;
+    if (await R2.misc.which(runtime)) return true;
     // Well-known per-user locations (a PATH not yet healed by the shell).
     const { homedir } = await import("node:os");
-    const { existsSync } = await import("node:fs");
+    const { access } = await import("node:fs/promises");
     const candidates: Record<RuntimeChoice, string[]> = {
       bun: [join(homedir(), ".bun", "bin", "bun")],
       deno: [join(homedir(), ".deno", "bin", "deno")],
       node: [join(homedir(), ".local", "bin", "node")],
     };
-    if (candidates[runtime].some((c) => existsSync(c))) return true;
+    // Async existence probe (2026-10-11 mandate — no existsSync).
+    const anyExists = async (paths: string[]): Promise<boolean> => {
+      for (const c of paths) {
+        try {
+          await access(c);
+          return true;
+        } catch {
+          // not there — keep looking
+        }
+      }
+      return false;
+    };
+    if (await anyExists(candidates[runtime])) return true;
 
     console.log(`ProcBoss requires ${runtimeLabel(runtime)}, but ${runtimeLabel(runtime)} was not found.`);
     console.log("");
@@ -2996,10 +3008,10 @@ ${colorize("Notes:", "dim")}
       const proc = R2.process.spawn(cmd, { stdout: "inherit", stderr: "inherit" });
       ok = ((await proc.exited) ?? -1) === 0;
     }
-    if (!ok || !R2.misc.which(runtime)) {
+    if (!ok || !(await R2.misc.which(runtime))) {
       // A freshly installed runtime often is not on THIS shell's PATH yet —
       // accept the well-known locations too before declaring failure.
-      if (candidates[runtime].some((c) => existsSync(c))) return true;
+      if (await anyExists(candidates[runtime])) return true;
       console.error(`Unable to install ${runtimeLabel(runtime)} automatically.`);
       console.error("");
       console.error(`Please install ${runtimeLabel(runtime)} and run:`);
@@ -3737,7 +3749,7 @@ ${colorize("Notes:", "dim")}
         try {
           const dm = new Daemon();
           await dm.initialize(true);
-          dm.startServer();
+          await dm.startServer();
           console.log(`Daemon listening on ${DAEMON_SOCKET}`);
           await new Promise(() => {});
         } catch (err) {

@@ -27,7 +27,7 @@ import { ignore } from "../../error-handling.ts";
 
 export function createDenoNetwork(): PBNetworkRuntime {
   return {
-    serve(opts: PBServeOptions): PBServerHandle {
+    async serve(opts: PBServeOptions): Promise<PBServerHandle> {
       let handler = opts.fetch;
       const wsHandlers = opts.websocket;
 
