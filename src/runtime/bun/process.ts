@@ -11,7 +11,7 @@
  * License: GPL-3.0-only
  */
 
-import type { PBChild, PBFileSink, PBSpawnOptions, PBCaptured, PBProcessRuntime } from "../core/types";
+import type { PBChild, PBFileSink, PBSpawnOptions, PBCaptured, PBProcessRuntime } from "../core/types.ts";
 
 /** Bun's stdio tokens are the adapter's already; file sinks pass their fd. */
 function bunStdio(target: PBFileSink | string | undefined, fallback: "pipe" | "ignore") {

@@ -29,7 +29,7 @@
  * https://procboss.com
  * License: GPL-3.0-only
  */
-import { commandRuntime } from "./install-mode";
+import { commandRuntime } from "./install-mode.ts";
 
 /**
  * The deno permission categories (deno 2.x flag surface). Anything else in a

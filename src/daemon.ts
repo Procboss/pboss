@@ -14,30 +14,30 @@
  * License: GPL-3.0-only
  */
 
-import { ProcessManager } from "./process-manager";
-import { Dashboard } from "./dashboard";
-import { ModuleManager } from "./module-manager";
-import { CronJobManager } from "./cron-jobs";
-import { DependencyError } from "./dependencies";
-import { CloudAgent, loadCloudConfig, saveCloudConfig, resolveCloudUrl, fetchFleet, type CloudConfig } from "./cloud";
+import { ProcessManager } from "./process-manager.ts";
+import { Dashboard } from "./dashboard.ts";
+import { ModuleManager } from "./module-manager.ts";
+import { CronJobManager } from "./cron-jobs.ts";
+import { DependencyError } from "./dependencies.ts";
+import { CloudAgent, loadCloudConfig, saveCloudConfig, resolveCloudUrl, fetchFleet, type CloudConfig } from "./cloud.ts";
 import {
   DAEMON_SOCKET,
   DAEMON_PID_FILE,
   DASHBOARD_PORT,
   METRICS_PORT,
   VERSION,
-} from "./constants";
+} from "./constants.ts";
 import {
   DaemonConflictError,
   EXIT_DAEMON_CONFLICT,
   ignore,
-} from "./error-handling";
-import { probeDaemon } from "./daemon-probe";
-import { enrichPathWithBun } from "./install-mode";
-import { ensureDirs, tightenPbossHomeMode } from "./utils";
-import type { DaemonMessage, DaemonResponse } from "./types";
-import { getRuntime } from "./runtime";
-import type { PBServerHandle } from "./runtime";
+} from "./error-handling.ts";
+import { probeDaemon } from "./daemon-probe.ts";
+import { enrichPathWithBun } from "./install-mode.ts";
+import { ensureDirs, tightenPbossHomeMode } from "./utils.ts";
+import type { DaemonMessage, DaemonResponse } from "./types.ts";
+import { getRuntime } from "./runtime/index.ts";
+import type { PBServerHandle } from "./runtime/index.ts";
 
 const R = getRuntime();
 import { readFile, rm, unlink, stat } from "node:fs/promises";

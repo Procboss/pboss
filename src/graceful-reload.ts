@@ -13,10 +13,10 @@
  * https://github.com/procboss/pboss
  * License: GPL-3.0-only
  */
-import type { ProcessContainer } from "./process-container";
-import { treeKill } from "./utils";
-import { ignore } from "./error-handling";
-import { getRuntime } from "./runtime";
+import type { ProcessContainer } from "./process-container.ts";
+import { treeKill } from "./utils.ts";
+import { ignore } from "./error-handling.ts";
+import { getRuntime } from "./runtime/index.ts";
 const R = getRuntime();
 
 export class GracefulReload {

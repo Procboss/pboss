@@ -17,10 +17,10 @@
  * License: GPL-3.0-only
  */
 
-import { PBossCLI } from "./index";
-import { ensureDirs } from "./utils";
-import { getRuntime } from "./runtime";
-import { stampRuntimeSelectionOnFirstRun } from "./runtime-config";
+import { PBossCLI } from "./index.ts";
+import { ensureDirs } from "./utils.ts";
+import { getRuntime } from "./runtime/index.ts";
+import { stampRuntimeSelectionOnFirstRun } from "./runtime-config.ts";
 
 await ensureDirs();
 

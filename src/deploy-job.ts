@@ -54,11 +54,11 @@ async function pathExists(p: string): Promise<boolean> {
 }
 import { homedir } from "node:os";
 import { join, dirname, resolve } from "node:path";
-import { PBOSS_HOME } from "./constants";
-import { ignore } from "./error-handling";
-import type { ProcessManager } from "./process-manager";
-import type { CloudAgentFrame } from "./cloud";
-import type { DeployRunPayload, DeployRestorePayload, DeployPurgePayload } from "./cloud";
+import { PBOSS_HOME } from "./constants.ts";
+import { ignore } from "./error-handling.ts";
+import type { ProcessManager } from "./process-manager.ts";
+import type { CloudAgentFrame } from "./cloud.ts";
+import type { DeployRunPayload, DeployRestorePayload, DeployPurgePayload } from "./cloud.ts";
 
 /* ── wire payload (mirror of the cloud's DeployRunPayload) ───────────── */
 

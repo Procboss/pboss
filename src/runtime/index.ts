@@ -25,13 +25,13 @@
  * License: GPL-3.0-only
  */
 
-import { detectRuntime, runtimeDisplayName } from "./detect";
-import type { RuntimeAdapter, RuntimeName } from "./core/types";
-import { createBunAdapter } from "./bun/adapter";
-import { createNodeAdapter } from "./node/adapter";
-import { createDenoAdapter } from "./deno/adapter";
+import { detectRuntime, runtimeDisplayName } from "./detect.ts";
+import type { RuntimeAdapter, RuntimeName } from "./core/types.ts";
+import { createBunAdapter } from "./bun/adapter.ts";
+import { createNodeAdapter } from "./node/adapter.ts";
+import { createDenoAdapter } from "./deno/adapter.ts";
 
-export type { RuntimeName } from "./core/types";
+export type { RuntimeName } from "./core/types.ts";
 export type {
   RuntimeAdapter,
   PBChild,
@@ -40,8 +40,8 @@ export type {
   PBWatcher,
   PBServerHandle,
   PBWsSocket,
-} from "./core/types";
-export { detectRuntime, runtimeDisplayName } from "./detect";
+} from "./core/types.ts";
+export { detectRuntime, runtimeDisplayName } from "./detect.ts";
 
 let cached: RuntimeAdapter | null = null;
 

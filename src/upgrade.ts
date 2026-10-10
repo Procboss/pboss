@@ -35,10 +35,10 @@ import { existsSync, copyFileSync, writeFileSync } from "fs";
 import { homedir } from "os";
 import { join, dirname } from "path";
 import { fileURLToPath } from "node:url";
-import { PBOSS_HOME } from "./constants";
-import { ignore } from "./error-handling";
-import { DENO_MIN_DEP_AGE_FLAG, helpTextSupportsMinDepAge } from "./deno-eligibility";
-import { getRuntime } from "./runtime";
+import { PBOSS_HOME } from "./constants.ts";
+import { ignore } from "./error-handling.ts";
+import { DENO_MIN_DEP_AGE_FLAG, helpTextSupportsMinDepAge } from "./deno-eligibility.ts";
+import { getRuntime } from "./runtime/index.ts";
 const R = getRuntime();
 
 /** Where the install channel is recorded (written by installers). */

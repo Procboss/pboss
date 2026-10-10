@@ -11,7 +11,7 @@
  */
 
 import { gzipSync, gunzipSync } from "node:zlib";
-import type { PBFileSink, PBFilesystemRuntime, PBWatcher } from "../core/types";
+import type { PBFileSink, PBFilesystemRuntime, PBWatcher } from "../core/types.ts";
 
 export function createDenoFilesystem(): PBFilesystemRuntime {
   return {

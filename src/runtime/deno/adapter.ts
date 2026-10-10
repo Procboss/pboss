@@ -9,11 +9,11 @@
  * License: GPL-3.0-only
  */
 
-import type { RuntimeAdapter } from "../core/types";
-import { createDenoProcess } from "./process";
-import { createDenoFilesystem } from "./filesystem";
-import { createDenoNetwork } from "./network";
-import { scanPathFor } from "../shared";
+import type { RuntimeAdapter } from "../core/types.ts";
+import { createDenoProcess } from "./process.ts";
+import { createDenoFilesystem } from "./filesystem.ts";
+import { createDenoNetwork } from "./network.ts";
+import { scanPathFor } from "../shared.ts";
 
 /** file:// URL → absolute path, without node:url's fromFileUrl (its types
  * vary across runtimes — the conversion is two predictable slices). */

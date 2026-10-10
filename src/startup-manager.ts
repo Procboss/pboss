@@ -28,10 +28,10 @@
 import { join, dirname } from "path";
 import { readFile, rm, stat, realpath } from "fs/promises";
 import { mkdir } from "fs/promises";
-import { ignore } from "./error-handling";
-import { colorize } from "./utils";
-import { stopDaemonIfRunning } from "./daemon-probe";
-import { probeDaemon } from "./daemon-probe";
+import { ignore } from "./error-handling.ts";
+import { colorize } from "./utils.ts";
+import { stopDaemonIfRunning } from "./daemon-probe.ts";
+import { probeDaemon } from "./daemon-probe.ts";
 import {
   PBOSS_HOME,
   DAEMON_SOCKET,
@@ -39,15 +39,15 @@ import {
   DAEMON_ERR_LOG_FILE,
   RESURRECT_OUT_LOG_FILE,
   RESURRECT_ERR_LOG_FILE,
-} from "./constants";
+} from "./constants.ts";
 import {
   IS_COMPILED,
   findBun,
   daemonSpawnCommand,
   cliSpawnCommand,
   installModeDescription,
-} from "./install-mode";
-import { getRuntime } from "./runtime";
+} from "./install-mode.ts";
+import { getRuntime } from "./runtime/index.ts";
 const R = getRuntime();
 
 /** Async existence probe — every filesystem touch in this module is async. */

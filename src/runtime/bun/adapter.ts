@@ -8,10 +8,10 @@
  * License: GPL-3.0-only
  */
 
-import type { RuntimeAdapter } from "../core/types";
-import { createBunProcess } from "./process";
-import { createBunFilesystem } from "./filesystem";
-import { createBunNetwork } from "./network";
+import type { RuntimeAdapter } from "../core/types.ts";
+import { createBunProcess } from "./process.ts";
+import { createBunFilesystem } from "./filesystem.ts";
+import { createBunNetwork } from "./network.ts";
 
 export function createBunAdapter(): RuntimeAdapter {
   return {

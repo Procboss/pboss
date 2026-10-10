@@ -16,7 +16,7 @@
  
 import { homedir } from "os";
 import { join } from "path";
-import packageJson from '../package.json' assert { type: 'json' };
+import packageJson from "../package.json" with { type: "json" };
 
 
 export const APP_NAME = packageJson.name;

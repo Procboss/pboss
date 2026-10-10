@@ -14,14 +14,14 @@
  * License: GPL-3.0-only
  */
  
-import type { MetricSnapshot, ProcessState } from "./types";
-import { getSystemInfo } from "./utils";
-import { METRICS_DIR } from "./constants";
-import { ignore } from "./error-handling";
+import type { MetricSnapshot, ProcessState } from "./types.ts";
+import { getSystemInfo } from "./utils.ts";
+import { METRICS_DIR } from "./constants.ts";
+import { ignore } from "./error-handling.ts";
 import { join } from "path";
 import pidusage from "pidusage";
 import { readdir } from "node:fs/promises";
-import { getRuntime } from "./runtime";
+import { getRuntime } from "./runtime/index.ts";
 const R = getRuntime();
 
 export class Monitor {

@@ -21,8 +21,8 @@
  */
 
 import { closeSync, openSync } from "node:fs";
-import type { PBChild, PBProcessRuntime, PBCaptured, PBSpawnOptions, PBFileSink } from "../core/types";
-import { ignore } from "../../error-handling";
+import type { PBChild, PBProcessRuntime, PBCaptured, PBSpawnOptions, PBFileSink } from "../core/types.ts";
+import { ignore } from "../../error-handling.ts";
 
 /** Map adapter stdio tokens to Deno's ("ignore" is Bun/Node vocabulary). */
 function denoStdio(t: PBSpawnOptions["stdout"]): "piped" | "inherit" | "null" {

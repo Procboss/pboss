@@ -22,12 +22,12 @@ import { readFile, writeFile, chmod, rm, mkdir } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { platform, arch, hostname, totalmem, freemem, loadavg, cpus } from "node:os";
 import { dirname } from "node:path";
-import { VERSION, CLOUD_FILE, CLOUD_DEFAULT_URL, CLOUD_REPORT_INTERVAL_MS } from "./constants";
-import { getSystemInfo, colorize } from "./utils";
-import { ignore } from "./error-handling";
-import type { ProcessManager } from "./process-manager";
-import type { PbossProcessEvent } from "./events";
-import type { ProcessState, StartOptions, LogItem, CronJob } from "./types";
+import { VERSION, CLOUD_FILE, CLOUD_DEFAULT_URL, CLOUD_REPORT_INTERVAL_MS } from "./constants.ts";
+import { getSystemInfo, colorize } from "./utils.ts";
+import { ignore } from "./error-handling.ts";
+import type { ProcessManager } from "./process-manager.ts";
+import type { PbossProcessEvent } from "./events.ts";
+import type { ProcessState, StartOptions, LogItem, CronJob } from "./types.ts";
 import {
   runDeployJob,
   runRestoreJob,
@@ -35,7 +35,7 @@ import {
   cancelDeployJob,
   deployJobRunning,
   gitInfoForProcess,
-} from "./deploy-job";
+} from "./deploy-job.ts";
 import {
   ThresholdMonitor,
   DEFAULT_THRESHOLD_CONFIG,
@@ -45,10 +45,10 @@ import {
   type ProcessExtra,
   type ProcessAlertOptions,
   type ThresholdConfig,
-} from "./threshold-monitor";
-import type { CronJobManager } from "./cron-jobs";
-import { EnvManager } from "./env-manager";
-import { getRuntime } from "./runtime";
+} from "./threshold-monitor.ts";
+import type { CronJobManager } from "./cron-jobs.ts";
+import { EnvManager } from "./env-manager.ts";
+import { getRuntime } from "./runtime/index.ts";
 const R = getRuntime();
 
 /**

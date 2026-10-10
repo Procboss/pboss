@@ -40,10 +40,10 @@ import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import { randomUUID } from "node:crypto";
-import { PBOSS_HOME } from "./constants";
-import { ignore } from "./error-handling";
-import { getRuntime } from "./runtime";
-import { DENO_MIN_DEP_AGE_FLAG, fetchDenoEligibility } from "./deno-eligibility";
+import { PBOSS_HOME } from "./constants.ts";
+import { ignore } from "./error-handling.ts";
+import { getRuntime } from "./runtime/index.ts";
+import { DENO_MIN_DEP_AGE_FLAG, fetchDenoEligibility } from "./deno-eligibility.ts";
 
 const R = getRuntime();
 

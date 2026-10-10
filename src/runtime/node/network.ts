@@ -19,14 +19,14 @@ import http from "node:http";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { Readable } from "node:stream";
 import { existsSync, unlinkSync } from "node:fs";
-import { ignore } from "../../error-handling";
+import { ignore } from "../../error-handling.ts";
 import type {
   PBNetworkRuntime,
   PBServeCtx,
   PBServeOptions,
   PBServerHandle,
   PBWsSocket,
-} from "../core/types";
+} from "../core/types.ts";
 
 /** IncomingMessage → standard Request (Node's globals are web-shaped ≥18). */
 async function toRequest(req: IncomingMessage): Promise<Request> {

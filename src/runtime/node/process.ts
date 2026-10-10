@@ -18,7 +18,7 @@ import type {
   PBProcessRuntime,
   PBSpawnOptions,
   PBCaptured,
-} from "../core/types";
+} from "../core/types.ts";
 
 /** node's StdioOptions for one channel. */
 type NodeStdio = "pipe" | "ignore" | "inherit" | import("node:fs").WriteStream;

@@ -20,47 +20,47 @@
    EcosystemConfig,
    MetricSnapshot,
    LogItem,
- } from "./types";
- import { ProcessContainer } from "./process-container";
- import { LogManager } from "./log-manager";
- import { ClusterManager } from "./cluster-manager";
- import { HealthChecker } from "./health-checker";
- import { CronManager } from "./cron-manager";
- import { Monitor } from "./monitor";
- import { searchLogFiles, type LogSearchMatch } from "./log-manager";
- import { GracefulReload } from "./graceful-reload";
- import { parseMemory, DUMP_FILE } from "./utils";
+ } from "./types.ts";
+ import { ProcessContainer } from "./process-container.ts";
+ import { LogManager } from "./log-manager.ts";
+ import { ClusterManager } from "./cluster-manager.ts";
+ import { HealthChecker } from "./health-checker.ts";
+ import { CronManager } from "./cron-manager.ts";
+ import { Monitor } from "./monitor.ts";
+ import { searchLogFiles, type LogSearchMatch } from "./log-manager.ts";
+ import { GracefulReload } from "./graceful-reload.ts";
+ import { parseMemory, DUMP_FILE } from "./utils.ts";
  import {
    resolveScriptInterpreter,
    commandRuntime,
    isJsTsFile,
- } from "./install-mode";
+ } from "./install-mode.ts";
  import {
    effectiveProcessRuntime,
    baseProcessName,
    writeRuntimeOverride,
    removeRuntimeOverrides,
- } from "./runtime-overrides";
- import type { RuntimeChoice } from "./runtime-config";
- import { ignore } from "./error-handling";
+ } from "./runtime-overrides.ts";
+ import type { RuntimeChoice } from "./runtime-config.ts";
+ import { ignore } from "./error-handling.ts";
  import { EventEmitter } from "events";
  import {
    DependencyEngine,
    parseDependsOn,
    type StartInvocation,
- } from "./dependencies";
+ } from "./dependencies.ts";
  import type {
    DepsReport,
    DependentRef,
    NormalizedDependency,
- } from "./types";
+ } from "./types.ts";
  import {
    PROCESS_EVENT_KINDS,
    type PbossProcessEvent,
    type ProcessEventKind,
    type ProcessEventSource,
    type ProcessManagerEventMap,
- } from "./events";
+ } from "./events.ts";
  import { mkdir } from "fs/promises";
  import {
    DEFAULT_KILL_TIMEOUT,
@@ -69,9 +69,9 @@
    DEFAULT_RESTART_DELAY,
    DEFAULT_LOG_MAX_SIZE,
    DEFAULT_LOG_RETAIN,
- } from "./constants";
+ } from "./constants.ts";
 import path from "path";
-import { getRuntime } from "./runtime";
+import { getRuntime } from "./runtime/index.ts";
 const R = getRuntime();
  
  /**
@@ -566,7 +566,7 @@ const R = getRuntime();
   /** Config deps, tolerated (persisted dumps can predate normalization). */
   private normalizedDeps(raw: unknown): NormalizedDependency[] {
     try {
-      return parseDependsOn(raw as import("./types").DependencySpec[] | undefined);
+      return parseDependsOn(raw as import("./types.ts").DependencySpec[] | undefined);
     } catch {
       return [];
     }

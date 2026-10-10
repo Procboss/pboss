@@ -14,12 +14,12 @@
  * License: GPL-3.0-only
  */
 
-import { ProcessManager } from "./process-manager";
-import { getDashboardHTML } from "./dashboard-ui";
-import { DASHBOARD_PORT, METRICS_PORT } from "./constants";
-import { ignore } from "./error-handling";
-import { getRuntime } from "./runtime";
-import type { PBServerHandle, PBWsSocket } from "./runtime";
+import { ProcessManager } from "./process-manager.ts";
+import { getDashboardHTML } from "./dashboard-ui.ts";
+import { DASHBOARD_PORT, METRICS_PORT } from "./constants.ts";
+import { ignore } from "./error-handling.ts";
+import { getRuntime } from "./runtime/index.ts";
+import type { PBServerHandle, PBWsSocket } from "./runtime/index.ts";
 
 const R = getRuntime();
 

@@ -13,8 +13,8 @@
  * https://github.com/procboss/pboss
  * License: GPL-3.0-only
  */
-import type { PBChild, PBWatcher } from "./runtime";
-import { getRuntime } from "./runtime";
+import type { PBChild, PBWatcher } from "./runtime/index.ts";
+import { getRuntime } from "./runtime/index.ts";
 
 const R = getRuntime();
 import type {
@@ -22,22 +22,22 @@ import type {
   ProcessState,
   ProcessStatus,
   LogRotateOptions,
-} from "./types";
-import { LogManager } from "./log-manager";
-import { ClusterManager } from "./cluster-manager";
-import { HealthChecker } from "./health-checker";
-import { CronManager } from "./cron-manager";
-import { treeKill, readEnvFileOverrides } from "./utils";
-import { ignore, warn } from "./error-handling";
-import { ensureNodeClusterWrapper } from "./node-cluster";
-import type { PbossProcessEvent, ProcessEventKind, ProcessEventSource } from "./events";
+} from "./types.ts";
+import { LogManager } from "./log-manager.ts";
+import { ClusterManager } from "./cluster-manager.ts";
+import { HealthChecker } from "./health-checker.ts";
+import { CronManager } from "./cron-manager.ts";
+import { treeKill, readEnvFileOverrides } from "./utils.ts";
+import { ignore, warn } from "./error-handling.ts";
+import { ensureNodeClusterWrapper } from "./node-cluster.ts";
+import type { PbossProcessEvent, ProcessEventKind, ProcessEventSource } from "./events.ts";
 import { join, resolve as pathResolve } from "path";
 import {
   PID_DIR,
   MONITOR_INTERVAL,
   DEFAULT_LOG_MAX_SIZE,
   DEFAULT_LOG_RETAIN,
-} from "./constants";
+} from "./constants.ts";
 import pidusage from "pidusage";
 import { readdir } from "node:fs/promises";
 

@@ -28,9 +28,9 @@
  * (`pboss startup install`) starts the service, which owns the daemon.
  */
 
-import { StartupManager } from "./startup-manager";
-import { writeChannelStamp, parseUserAgent } from "./upgrade";
-import { loadCloudConfig } from "./cloud";
+import { StartupManager } from "./startup-manager.ts";
+import { writeChannelStamp, parseUserAgent } from "./upgrade.ts";
+import { loadCloudConfig } from "./cloud.ts";
 
 /**
  * True when the package manager is performing a GLOBAL install (npm sets

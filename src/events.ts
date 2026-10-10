@@ -20,7 +20,7 @@
  * https://github.com/procboss/pboss
  * License: GPL-3.0-only
  */
-import type { ProcessState } from "./types";
+import type { ProcessState } from "./types.ts";
 
 /**
  * WHY something happened — attached to every event so consumers can tell

@@ -15,9 +15,9 @@
  */
 
 import Table from "cli-table3";
-import type { ProcessState, ProcessStatus, CronJob } from "./types";
-import { color } from "./colors";
-import { colorize } from "./utils";
+import type { ProcessState, ProcessStatus, CronJob } from "./types.ts";
+import { color } from "./colors.ts";
+import { colorize } from "./utils.ts";
 
 // ---------- Helpers ----------
 

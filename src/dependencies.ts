@@ -47,12 +47,12 @@ import type {
   StartOptions,
   EcosystemConfig,
   SystemServiceState,
-} from "./types";
-import { DEPENDENCY_POLICIES } from "./types";
-import type { ProcessContainer } from "./process-container";
-import type { ProcessEventSource } from "./events";
-import { ignore } from "./error-handling";
-import { getRuntime } from "./runtime";
+} from "./types.ts";
+import { DEPENDENCY_POLICIES } from "./types.ts";
+import type { ProcessContainer } from "./process-container.ts";
+import type { ProcessEventSource } from "./events.ts";
+import { ignore } from "./error-handling.ts";
+import { getRuntime } from "./runtime/index.ts";
 const R = getRuntime();
 
 // ── Configuration parsing ─────────────────────────────────────────────────

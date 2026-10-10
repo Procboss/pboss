@@ -15,9 +15,9 @@
  */
  
 import { join } from "path";
-import { PBOSS_HOME } from "./constants";
-import { warn } from "./error-handling";
-import { getRuntime } from "./runtime";
+import { PBOSS_HOME } from "./constants.ts";
+import { warn } from "./error-handling.ts";
+import { getRuntime } from "./runtime/index.ts";
 const R = getRuntime();
 
 export class EnvManager {

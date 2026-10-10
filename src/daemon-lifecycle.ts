@@ -27,12 +27,12 @@
  */
 
 import { fileURLToPath } from "node:url";
-import type { DaemonProbe } from "./daemon-probe";
-import type { BootServiceKind } from "./startup-manager";
-import { bootServiceLabel } from "./startup-manager";
-import { compareVersions } from "./upgrade";
-import { formatUptime } from "./utils";
-import { runtimeLabel, type RuntimeChoice } from "./runtime-config";
+import type { DaemonProbe } from "./daemon-probe.ts";
+import type { BootServiceKind } from "./startup-manager.ts";
+import { bootServiceLabel } from "./startup-manager.ts";
+import { compareVersions } from "./upgrade.ts";
+import { formatUptime } from "./utils.ts";
+import { runtimeLabel, type RuntimeChoice } from "./runtime-config.ts";
 
 /* ── the entry a daemon would run (install-drift detection) ─────────────── */
 

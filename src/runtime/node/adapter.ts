@@ -11,11 +11,11 @@
 
 import { setTimeout as sleepMs } from "node:timers/promises";
 import { isAbsolute, resolve } from "node:path";
-import type { RuntimeAdapter } from "../core/types";
-import { createNodeProcess } from "./process";
-import { createNodeFilesystem } from "./filesystem";
-import { createNodeNetwork } from "./network";
-import { scanPathFor } from "../shared";
+import type { RuntimeAdapter } from "../core/types.ts";
+import { createNodeProcess } from "./process.ts";
+import { createNodeFilesystem } from "./filesystem.ts";
+import { createNodeNetwork } from "./network.ts";
+import { scanPathFor } from "../shared.ts";
 
 export function createNodeAdapter(): RuntimeAdapter {
   return {

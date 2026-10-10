@@ -117,6 +117,21 @@ same command installs, reinstalls, and upgrades in place.
 > it — the installer pins the exact version, `pboss upgrade` runs the
 > same unpinned command; to pin manually, use `npm:pboss@<version>/deno-entry`.
 
+**JSR (Deno, from source)**
+
+```bash
+deno install -g -A --min-dep-age=0 --name pboss jsr:@procboss/pboss/cli
+```
+
+[JSR](https://jsr.io/@procboss/pboss) serves the same TypeScript npm ships
+compiled — unbundled, with the registry transpiling per consumer. The
+`/cli` entry is the CLI (`deno run jsr:@procboss/pboss/cli` anywhere Deno
+runs), `.` the programmatic API, `./types` the type surface. The flags match
+the npm route above for the same reasons: `-A` because a process manager
+needs the grants, `--min-dep-age=0` to bypass Deno's 24-hour hold on the
+freshly published version; add `--reload --force` to re-resolve and
+overwrite an existing installation in place.
+
 ### The Runtime Selection
 
 `pboss` never guesses a runtime from whatever happens to be installed —
@@ -323,6 +338,28 @@ pboss upgrade            # do it (adds --channel <x> to repair a misdetected cha
      runtime's package ecosystem now, so the .runtime selection decides the
      upgrade command — the "installer" channel and the runtime channels are
      the same thing. -->
+
+### Publishing (maintainers)
+
+npm publishes with `npm publish` (`prepublishOnly` builds `dist/` and runs
+the suite). JSR publishes the source tree as
+[`@procboss/pboss`](https://jsr.io/@procboss/pboss) — `jsr.json` owns the
+package (`src/api.ts` / `src/index.ts` / `src/types.ts` map to the npm
+exports' bun conditions; the npm dependencies are pinned in its import
+map), and `tests/jsr.test.ts` keeps identity, version and import hygiene
+in lockstep with `package.json`, so the two registries can never drift:
+
+```bash
+bun run publish:jsr:dry   # every JSR check, no upload (dirty tree is fine)
+git tag vX.Y.Z && git push --tags   # CI publishes with the JSR_API_TOKEN secret
+```
+
+Pushing a `vX.Y.Z` tag triggers the
+[JSR workflow](.github/workflows/jsr-publish.yml); every branch push and PR
+runs its dry-run validation first. `bun run publish:jsr` publishes from a
+clean tree directly — it needs a token with publish scope on `@procboss`
+from [jsr.io/account/settings/tokens](https://jsr.io/account/settings/tokens).
+Bump `package.json` first — `jsr.json` must match.
 
 ---
 

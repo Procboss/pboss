@@ -18,7 +18,7 @@
  * License: GPL-3.0-only
  */
 
-import type { RuntimeName } from "./core/types";
+import type { RuntimeName } from "./core/types.ts";
 
 /**
  * Detect the executing runtime. Pure, synchronous, cheap — but still called

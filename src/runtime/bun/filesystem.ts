@@ -11,7 +11,7 @@
 
 import { openSync, readdirSync, statSync, watch as fsWatch } from "node:fs";
 import { join, relative } from "node:path";
-import type { PBFileSink, PBFilesystemRuntime, PBWatcher } from "../core/types";
+import type { PBFileSink, PBFilesystemRuntime, PBWatcher } from "../core/types.ts";
 
 export function createBunFilesystem(): PBFilesystemRuntime {
   return {

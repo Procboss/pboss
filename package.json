@@ -37,7 +37,9 @@
     "test": "bun test --timeout=60000",
     "lint": "bun x tsc --noEmit --noUnusedLocals",
     "build": "bun run ./scripts/build-dist.ts",
-    "prepublishOnly": "bun run ./scripts/build-dist.ts && bun test --timeout=60000"
+    "prepublishOnly": "bun run ./scripts/build-dist.ts && bun test --timeout=60000",
+    "publish:jsr": "bunx jsr publish",
+    "publish:jsr:dry": "bunx jsr publish --dry-run --allow-dirty"
   },
   "keywords": [
     "process-manager",

@@ -15,11 +15,11 @@
  */
 
 import path, { join } from "path";
-import { MODULE_DIR } from "./constants";
+import { MODULE_DIR } from "./constants.ts";
 import { symlink, cp, rm, readdir, stat } from "fs/promises";
-import { findBun, findNpm } from "./install-mode";
-import type { ProcessManager } from "./process-manager";
-import { getRuntime } from "./runtime";
+import { findBun, findNpm } from "./install-mode.ts";
+import type { ProcessManager } from "./process-manager.ts";
+import { getRuntime } from "./runtime/index.ts";
 const R = getRuntime();
 
 /** Async existence probe (stat — no sync syscalls on the daemon's loop). */

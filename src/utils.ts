@@ -15,11 +15,11 @@
  */
 
 import { join } from "path";
-import { ALL_DIRS, PBOSS_HOME } from "./constants";
+import { ALL_DIRS, PBOSS_HOME } from "./constants.ts";
 import { mkdir, readFile, chmod } from "fs/promises";
-import { ignore } from "./error-handling";
+import { ignore } from "./error-handling.ts";
 import { totalmem, freemem, loadavg, platform, hostname, uptime } from "node:os";
-import { getRuntime } from "./runtime";
+import { getRuntime } from "./runtime/index.ts";
 const R = getRuntime();
 
 export const DUMP_FILE = join(PBOSS_HOME, "dump.json");

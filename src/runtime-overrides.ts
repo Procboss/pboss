@@ -50,7 +50,7 @@
 import { mkdir, readFile, writeFile, rename, unlink } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
-import { PBOSS_HOME } from "./constants";
+import { PBOSS_HOME } from "./constants.ts";
 import {
   RUNTIME_FILE,
   SUPPORTED_RUNTIMES,
@@ -58,7 +58,7 @@ import {
   normalizeRuntime,
   readRuntimeFileRaw,
   type RuntimeChoice,
-} from "./runtime-config";
+} from "./runtime-config.ts";
 
 /** The store file. PBOSS_HOME overrides ~/.pboss (tests, portability). */
 export const RUNTIME_OVERRIDES_FILE = join(PBOSS_HOME, "runtime-overrides");

@@ -42,9 +42,9 @@
 
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
-import { ALERT_THRESHOLDS_FILE } from "./constants";
-import { ignore } from "./error-handling";
-import type { CloudEventReport, CloudProcessReport } from "./cloud";
+import { ALERT_THRESHOLDS_FILE } from "./constants.ts";
+import { ignore } from "./error-handling.ts";
+import type { CloudEventReport, CloudProcessReport } from "./cloud.ts";
 
 /* ── configuration shape (mirrors ~/.pboss/alert-thresholds.json) ─────── */
 

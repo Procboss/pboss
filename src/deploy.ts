@@ -13,8 +13,8 @@
  * https://github.com/procboss/pboss
  * License: GPL-3.0-only
  */
- import type { DeployConfig } from "./types";
- import { getRuntime } from "./runtime";
+ import type { DeployConfig } from "./types.ts";
+ import { getRuntime } from "./runtime/index.ts";
  const R = getRuntime();
  
  export class DeployManager {

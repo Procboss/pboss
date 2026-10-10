@@ -38,10 +38,10 @@ import { join, dirname, win32 as pathWin32, basename } from "path";
 import { createRequire } from "node:module";
 import { stat, readFile } from "fs/promises";
 import { homedir } from "os";
-import { ignore } from "./error-handling";
-import { getRuntime } from "./runtime";
-import type { RuntimeName } from "./runtime";
-import type { RuntimeChoice } from "./runtime-config";
+import { ignore } from "./error-handling.ts";
+import { getRuntime } from "./runtime/index.ts";
+import type { RuntimeName } from "./runtime/index.ts";
+import type { RuntimeChoice } from "./runtime-config.ts";
 
 /**
  * True when pboss is running as a compiled standalone executable.

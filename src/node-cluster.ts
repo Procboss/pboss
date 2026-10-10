@@ -42,7 +42,7 @@
 
 import { join } from "path";
 import { readFile, writeFile, mkdir } from "fs/promises";
-import { PBOSS_HOME } from "./constants";
+import { PBOSS_HOME } from "./constants.ts";
 
 /** The generated wrapper's file name inside PBOSS_HOME. */
 export const NODE_CLUSTER_WRAPPER_NAME = "node-cluster-wrapper.mjs";

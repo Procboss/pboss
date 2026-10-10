@@ -26,23 +26,23 @@ import {
   METRICS_PORT,
   DAEMON_OUT_LOG_FILE,
   DAEMON_ERR_LOG_FILE,
-} from "./constants";
-import { ensureDirs, generateId } from "./utils";
-import { daemonSpawnCommand } from "./install-mode";
-import { ignore } from "./error-handling";
-import { probeDaemon, waitForDaemon, stopDaemonIfRunning } from "./daemon-probe";
+} from "./constants.ts";
+import { ensureDirs, generateId } from "./utils.ts";
+import { daemonSpawnCommand } from "./install-mode.ts";
+import { ignore } from "./error-handling.ts";
+import { probeDaemon, waitForDaemon, stopDaemonIfRunning } from "./daemon-probe.ts";
 import {
   bootServiceKindForCurrentHome,
   controllableService,
   startBootService,
   bootServiceLabel,
-} from "./startup-manager";
-import Daemon from "./daemon";
+} from "./startup-manager.ts";
+import Daemon from "./daemon.ts";
 import {
   PROCESS_EVENT_KINDS,
   type PbossProcessEvent,
-} from "./events";
-import { getRuntime } from "./runtime";
+} from "./events.ts";
+import { getRuntime } from "./runtime/index.ts";
 
 const R = getRuntime();
 
@@ -58,7 +58,7 @@ import type {
   ProcessStatus,
   LogItem,
   DepsReport,
-} from "./types";
+} from "./types.ts";
 
 //
 // Bus event types emitted by PBoss
@@ -1872,39 +1872,45 @@ export class PBossError extends Error {
 
 //  standalone function exports
 
-export const pboss = PBoss.getDefaultInstance();
+export const pboss: PBoss = PBoss.getDefaultInstance();
 
-export const list = () => PBoss.list();
-export const describe = (target: string | number) => PBoss.describe(target);
-export const deps = (target: string | number) => PBoss.deps(target);
-export const logs = (target: string | number = "all", lines: number = 20) => PBoss.logs(target, lines);
+export const list = (): Promise<ProcessState[]> => PBoss.list();
+export const describe = (target: string | number): Promise<ProcessState[]> => PBoss.describe(target);
+export const deps = (target: string | number): Promise<DepsReport[]> => PBoss.deps(target);
+export const logs = (target: string | number = "all", lines: number = 20): Promise<LogItem[]> => PBoss.logs(target, lines);
 export const streamLogs = (
   target: string | number = "all",
   callback: (log: LogItem) => void,
   signal?: AbortSignal
-) => PBoss.streamLogs(target, callback, signal);
-export const metrics = () => PBoss.metrics();
-export const prometheus = () => PBoss.prometheus();
-export const start = (options: StartOptions) => PBoss.start(options);
-export const startEcosystem = (config: EcosystemConfig) => PBoss.startEcosystem(config);
-export const stop = (target: string | number = "all") => PBoss.stop(target);
-export const restart = (target: string | number = "all") => PBoss.restart(target);
-export const reload = (target: string | number = "all") => PBoss.reload(target);
-export const del = (target: string | number = "all") => PBoss.delete(target);
-export const scale = (target: string | number, count: number) => PBoss.scale(target, count);
-export const flush = (target?: string | number) => PBoss.flush(target);
+): Promise<void> => PBoss.streamLogs(target, callback, signal);
+export const metrics = (): Promise<MetricSnapshot> => PBoss.metrics();
+export const prometheus = (): Promise<string> => PBoss.prometheus();
+export const start = (options: StartOptions): Promise<ProcessState[]> => PBoss.start(options);
+export const startEcosystem = (config: EcosystemConfig): Promise<ProcessState[]> => PBoss.startEcosystem(config);
+export const stop = (target: string | number = "all"): Promise<ProcessState[]> => PBoss.stop(target);
+export const restart = (target: string | number = "all"): Promise<ProcessState[]> => PBoss.restart(target);
+export const reload = (target: string | number = "all"): Promise<ProcessState[]> => PBoss.reload(target);
+export const del = (target: string | number = "all"): Promise<ProcessState[]> => PBoss.delete(target);
+export const scale = (target: string | number, count: number): Promise<ProcessState[]> => PBoss.scale(target, count);
+export const flush = (target?: string | number): Promise<void> => PBoss.flush(target);
 export const cronAdd = (
   schedule: string,
   command: string,
   options: Omit<CronJobConfig, "schedule" | "command"> = {}
-) => PBoss.cronAdd(schedule, command, options);
-export const cronJobs = () => PBoss.cronJobs();
-export const cronRemove = (target: string | number) => PBoss.cronRemove(target);
-export const cronNext = (target: string | number, count = 3) => PBoss.cronNext(target, count);
-export const cronTrigger = (target: string | number) => PBoss.cronTrigger(target);
-export const save = () => PBoss.save();
-export const resurrect = () => PBoss.resurrect();
-export const ping = () => PBoss.ping();
-export const kill = () => PBoss.kill();
+): Promise<CronJob> => PBoss.cronAdd(schedule, command, options);
+export const cronJobs = (): Promise<CronJob[]> => PBoss.cronJobs();
+export const cronRemove = (target: string | number): Promise<CronJob> => PBoss.cronRemove(target);
+export const cronNext = (target: string | number, count = 3): Promise<number[]> => PBoss.cronNext(target, count);
+export const cronTrigger = (target: string | number): Promise<CronJob> => PBoss.cronTrigger(target);
+export const save = (): Promise<void> => PBoss.save();
+export const resurrect = (): Promise<ProcessState[]> => PBoss.resurrect();
+export const ping = (): Promise<{
+  pid: number;
+  uptime: number;
+  runtime?: "node" | "bun" | "deno";
+  runtimeVersion?: string;
+  version?: string;
+}> => PBoss.ping();
+export const kill = (): Promise<void> => PBoss.kill();
 
 export default PBoss;

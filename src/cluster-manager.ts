@@ -12,24 +12,24 @@
  * https://procboss.com
  * License: GPL-3.0-only
  */
-import type { ProcessDescription } from "./types";
-import { getCpuCount, readEnvFileOverrides } from "./utils";
+import type { ProcessDescription } from "./types.ts";
+import { getCpuCount, readEnvFileOverrides } from "./utils.ts";
 import {
   resolveScriptInterpreter,
   commandRuntime,
   findBun,
   nodeSupportsTypeStripping,
   runtimeCommandPrefix,
-} from "./install-mode";
-import { effectiveProcessRuntime } from "./runtime-overrides";
-import { mergeDenoPermissions } from "./deno-permissions";
+} from "./install-mode.ts";
+import { effectiveProcessRuntime } from "./runtime-overrides.ts";
+import { mergeDenoPermissions } from "./deno-permissions.ts";
 import {
   ensureReusePortFiles,
   reusePortClusterPlatform,
   runtimeSupportsReusePort,
-} from "./reuseport-cluster";
-import { getRuntime } from "./runtime";
-import type { PBChild } from "./runtime";
+} from "./reuseport-cluster.ts";
+import { getRuntime } from "./runtime/index.ts";
+import type { PBChild } from "./runtime/index.ts";
 import path from "path"
 
 const R = getRuntime();

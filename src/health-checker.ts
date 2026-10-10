@@ -14,7 +14,7 @@
  * License: GPL-3.0-only
  */
 
-import type { HealthCheckConfig } from "./types";
+import type { HealthCheckConfig } from "./types.ts";
 
 export class HealthChecker {
   private checks: Map<number, {

@@ -112,6 +112,11 @@ describe("README.md: the untouched core contract survives removals", () => {
     expect(readme).toContain(
       "deno install -g -A --min-dep-age=0 --name pboss --reload --force npm:pboss/deno-entry",
     );
+    // 2026-10-10: the JSR source install — same shape as the deno npm route
+    // (name pinned, grants explicit, supply-chain hold disabled).
+    expect(readme).toContain(
+      "deno install -g -A --min-dep-age=0 --name pboss jsr:@procboss/pboss/cli",
+    );
     // 2026-09-29: per-runtime install blocks at the owner's request — a bold
     // runtime label above its own fenced single-command block, so GitHub's
     // copy button copies exactly one install command.

@@ -13,7 +13,7 @@
  * https://github.com/procboss/pboss
  * License: GPL-3.0-only
  */
-import { parseCron } from "./utils";
+import { parseCron } from "./utils.ts";
 
 export class CronManager {
   private jobs: Map<number, {

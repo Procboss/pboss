@@ -18,10 +18,10 @@
 import { readFile, writeFile, chmod, rm, mkdir } from "node:fs/promises";
 import { platform, arch, hostname } from "node:os";
 import { dirname } from "node:path";
-import { CLOUD_USER_FILE, VERSION } from "./constants";
-import { resolveCloudUrl } from "./cloud";
-import { ignore } from "./error-handling";
-import { getRuntime } from "./runtime";
+import { CLOUD_USER_FILE, VERSION } from "./constants.ts";
+import { resolveCloudUrl } from "./cloud.ts";
+import { ignore } from "./error-handling.ts";
+import { getRuntime } from "./runtime/index.ts";
 const R = getRuntime();
 
 /* ── wire shapes (the cloud's /api/device responses) ──────────────────── */

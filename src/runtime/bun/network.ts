@@ -15,7 +15,7 @@ import type {
   PBServeOptions,
   PBServerHandle,
   PBWsSocket,
-} from "../core/types";
+} from "../core/types.ts";
 
 export function createBunNetwork(): PBNetworkRuntime {
   return {

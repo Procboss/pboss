@@ -41,8 +41,8 @@
 
 import { join } from "path";
 import { readFile, writeFile, mkdir } from "fs/promises";
-import { PBOSS_HOME } from "./constants";
-import { getRuntime } from "./runtime";
+import { PBOSS_HOME } from "./constants.ts";
+import { getRuntime } from "./runtime/index.ts";
 
 const R = getRuntime();
 

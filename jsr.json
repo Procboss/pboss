@@ -1,0 +1,25 @@
+{
+  "$schema": "https://jsr.io/schema/config-file.v1.json",
+  "name": "@procboss/pboss",
+  "version": "1.7.5",
+  "exports": {
+    ".": "./src/api.ts",
+    "./cli": "./src/index.ts",
+    "./types": "./src/types.ts"
+  },
+  "publish": {
+    "include": [
+      "src/**",
+      "package.json",
+      "README.md",
+      "LICENSE"
+    ]
+  },
+  "imports": {
+    "chalk": "npm:chalk@^5.6.2",
+    "cli-table3": "npm:cli-table3@^0.6.5",
+    "cron-parser": "npm:cron-parser@^5",
+    "pidusage": "npm:pidusage@^4.0.1",
+    "ws": "npm:ws@^8.18.0"
+  }
+}

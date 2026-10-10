@@ -16,8 +16,8 @@
  */
 
 import path, { resolve, extname, join } from "path";
-import { getRuntime, runtimeDescription, runtimeDisplayName } from "./runtime";
-import { installModeDescription, daemonSpawnCommand } from "./install-mode";
+import { getRuntime, runtimeDescription, runtimeDisplayName } from "./runtime/index.ts";
+import { installModeDescription, daemonSpawnCommand } from "./install-mode.ts";
 import {
   isValidRuntime,
   normalizeRuntime,
@@ -32,9 +32,9 @@ import {
   writeRuntimeSelection,
   RUNTIME_FILE,
   type RuntimeChoice,
-} from "./runtime-config";
-import { launcherRuntimeFromEnv } from "./runtime-overrides";
-import { probeDaemon } from "./daemon-probe";
+} from "./runtime-config.ts";
+import { launcherRuntimeFromEnv } from "./runtime-overrides.ts";
+import { probeDaemon } from "./daemon-probe.ts";
 
 const R = getRuntime();
 import readline from "node:readline";
@@ -44,10 +44,10 @@ import {
   DAEMON_SOCKET,
   DASHBOARD_PORT,
   METRICS_PORT,
-} from "./constants";
-import { ensureDirs, formatBytes, formatUptime, colorize, padRight, dumpEntryCount } from "./utils";
-import { PBoss, loadEcosystemConfig, findDefaultConfigFile, waitForDaemon } from "./api";
-import { DeployManager } from "./deploy";
+} from "./constants.ts";
+import { ensureDirs, formatBytes, formatUptime, colorize, padRight, dumpEntryCount } from "./utils.ts";
+import { PBoss, loadEcosystemConfig, findDefaultConfigFile, waitForDaemon } from "./api.ts";
+import { DeployManager } from "./deploy.ts";
 import {
   StartupManager,
   bootServiceInstalledForCurrentHome,
@@ -59,9 +59,9 @@ import {
   startBootService,
   stopBootService,
   restartBootService,
-} from "./startup-manager";
-import { EnvManager } from "./env-manager";
-import { DaemonConflictError, EXIT_DAEMON_CONFLICT, ignore } from "./error-handling";
+} from "./startup-manager.ts";
+import { EnvManager } from "./env-manager.ts";
+import { DaemonConflictError, EXIT_DAEMON_CONFLICT, ignore } from "./error-handling.ts";
 import type {
   StartOptions,
   ProcessState,
@@ -69,10 +69,10 @@ import type {
   DependencySpec,
   DependencyPolicy,
   DepsReport,
-} from "./types";
-import { statusColor } from "./colors";
-import { liveWatchProcess, printProcessTable, printCronTable } from "./process-table";
-import Daemon, { ignoreHangup } from "./daemon";
+} from "./types.ts";
+import { statusColor } from "./colors.ts";
+import { liveWatchProcess, printProcessTable, printCronTable } from "./process-table.ts";
+import Daemon, { ignoreHangup } from "./daemon.ts";
 import chalk from "chalk";
 import {
   requestDeviceCode,
@@ -84,7 +84,7 @@ import {
   clearCloudUser,
   cloudUserMe,
   cloudUserRevoke,
-} from "./cloud-auth";
+} from "./cloud-auth.ts";
 import {
   currentChannelContext,
   detectChannel,
@@ -101,16 +101,16 @@ import {
   type InstallChannel,
   type ChannelContext,
   type DenoPin,
-} from "./upgrade";
-import { fetchDenoEligibility } from "./deno-eligibility";
-import { resolveCloudUrl, describeCloudLink } from "./cloud";
+} from "./upgrade.ts";
+import { fetchDenoEligibility } from "./deno-eligibility.ts";
+import { resolveCloudUrl, describeCloudLink } from "./cloud.ts";
 import {
   composeDaemonStatus,
   daemonEntryArg,
   realignDaemonAfterUpgrade,
-} from "./daemon-lifecycle";
-import { normalizeDenoPermissions } from "./deno-permissions";
-import { commandRuntime } from "./install-mode";
+} from "./daemon-lifecycle.ts";
+import { normalizeDenoPermissions } from "./deno-permissions.ts";
+import { commandRuntime } from "./install-mode.ts";
 
 // ---------------------------------------------------------------------------
 // PBossCLI class — Delegates all process engine operations to PBoss API
@@ -835,7 +835,7 @@ export class PBossCLI {
     }
   }
 
-  async cmdStop(args: string[]) {
+  async cmdStop(args: string[]): Promise<void> {
     // A custom js/ts ecosystem file can drive the fleet commands too:
     // `pboss stop --config ./any.js` (flag anywhere) or the conventional
     // positional `pboss stop ecosystem.config.js`.
@@ -853,7 +853,7 @@ export class PBossCLI {
     }
   }
 
-  async cmdRestart(args: string[]) {
+  async cmdRestart(args: string[]): Promise<void> {
     const { configPath, rest } = extractConfigFlag(args);
     if (configPath) return this.runFleetOnConfig("restart", configPath);
     const target = rest[0] || "all";
@@ -868,7 +868,7 @@ export class PBossCLI {
     }
   }
 
-  async cmdReload(args: string[]) {
+  async cmdReload(args: string[]): Promise<void> {
     const { configPath, rest } = extractConfigFlag(args);
     if (configPath) return this.runFleetOnConfig("reload", configPath);
     const target = rest[0] || "all";
@@ -883,7 +883,7 @@ export class PBossCLI {
     }
   }
 
-  async cmdDelete(args: string[]) {
+  async cmdDelete(args: string[]): Promise<void> {
     const { configPath, rest } = extractConfigFlag(args);
     // --config extracts BEFORE the force scan so a config path can never be
     // mistaken for a force flag (its value is already consumed above).

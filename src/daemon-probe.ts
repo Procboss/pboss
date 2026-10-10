@@ -25,9 +25,9 @@
  * License: GPL-3.0-only
  */
 
-import { DAEMON_SOCKET } from "./constants";
-import { ignore } from "./error-handling";
-import { getRuntime } from "./runtime";
+import { DAEMON_SOCKET } from "./constants.ts";
+import { ignore } from "./error-handling.ts";
+import { getRuntime } from "./runtime/index.ts";
 const R = getRuntime();
 export type DaemonProbe = {
   pid: number;

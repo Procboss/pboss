@@ -12,7 +12,7 @@
 import { createWriteStream, watch as fsWatch } from "node:fs";
 import fsp from "node:fs/promises";
 import { gzipSync, gunzipSync } from "node:zlib";
-import type { PBFileSink, PBFilesystemRuntime, PBWatcher } from "../core/types";
+import type { PBFileSink, PBFilesystemRuntime, PBWatcher } from "../core/types.ts";
 
 export function createNodeFilesystem(): PBFilesystemRuntime {
   return {

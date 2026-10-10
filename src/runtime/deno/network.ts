@@ -22,8 +22,8 @@ import type {
   PBServeOptions,
   PBServerHandle,
   PBWsSocket,
-} from "../core/types";
-import { ignore } from "../../error-handling";
+} from "../core/types.ts";
+import { ignore } from "../../error-handling.ts";
 
 export function createDenoNetwork(): PBNetworkRuntime {
   return {
