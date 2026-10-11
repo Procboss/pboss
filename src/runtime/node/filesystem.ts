@@ -11,7 +11,11 @@
 
 import { createWriteStream, watch as fsWatch } from "node:fs";
 import fsp from "node:fs/promises";
-import { gzipSync, gunzipSync } from "node:zlib";
+import { gzip, gunzip } from "node:zlib";
+import { promisify } from "node:util";
+
+const gzipAsync = promisify(gzip) as (data: Uint8Array) => Promise<Buffer>;
+const gunzipAsync = promisify(gunzip) as (data: Uint8Array) => Promise<Buffer>;
 import type { PBFileSink, PBFilesystemRuntime, PBWatcher } from "../core/types.ts";
 
 export function createNodeFilesystem(): PBFilesystemRuntime {
@@ -57,12 +61,14 @@ export function createNodeFilesystem(): PBFilesystemRuntime {
       }
     },
 
-    gzip(data: Uint8Array): Uint8Array {
-      return gzipSync(data);
+    async gzip(data: Uint8Array): Promise<Uint8Array> {
+      // node:zlib's async form — the compression runs on the libuv thread
+      // pool, so a big log rotation never blocks the daemon's event loop.
+      return new Uint8Array(await gzipAsync(data));
     },
 
-    gunzip(data: Uint8Array): Uint8Array {
-      return gunzipSync(data);
+    async gunzip(data: Uint8Array): Promise<Uint8Array> {
+      return new Uint8Array(await gunzipAsync(data));
     },
 
     async sink(path: string): Promise<PBFileSink> {

@@ -44,11 +44,14 @@ export function createBunFilesystem(): PBFilesystemRuntime {
       return new Uint8Array(await Bun.file(path).slice(start, end).arrayBuffer());
     },
 
-    gzip(data: Uint8Array): Uint8Array {
+    async gzip(data: Uint8Array): Promise<Uint8Array> {
+      // Bun.gzipSync is Bun's native compressor — the fastest available
+      // here. The async contract keeps callers scheduling around the
+      // (log-rotation-rare) compression instead of assuming it.
       return Bun.gzipSync(new Uint8Array(data));
     },
 
-    gunzip(data: Uint8Array): Uint8Array {
+    async gunzip(data: Uint8Array): Promise<Uint8Array> {
       return Bun.gunzipSync(new Uint8Array(data));
     },
 

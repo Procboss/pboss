@@ -317,7 +317,7 @@ export class LogManager {
             try {
               if (await R.filesystem.exists(dst)) {
                 const data = await R.filesystem.readText(dst);
-                const compressed = R.filesystem.gzip(new TextEncoder().encode(data));
+                const compressed = await R.filesystem.gzip(new TextEncoder().encode(data));
                 await R.filesystem.write(`${dst}.gz`, compressed);
                 await unlink(dst);
               }
@@ -467,7 +467,7 @@ export async function searchLogFiles(
       // .gz files are read as BYTES — a text round-trip would corrupt the
       // compressed stream before gunzip ever sees it.
       text = path.endsWith(".gz")
-        ? new TextDecoder().decode(R.filesystem.gunzip(await R.filesystem.readBytes(path)))
+        ? new TextDecoder().decode(await R.filesystem.gunzip(await R.filesystem.readBytes(path)))
         : await R.filesystem.readText(path);
     } catch (err) {
       ignore(`read log file ${path} for search`, err);

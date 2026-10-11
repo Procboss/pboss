@@ -35,6 +35,9 @@ declare const Deno: {
       stderr: Uint8Array;
     }>;
   };
+  // Release a raw OS fd (descriptor release — the native Deno API the
+  // process adapter uses to drop its sink-fd copies after a spawn).
+  close(fd: number): void;
   // filesystem
   readTextFile(path: string): Promise<string>;
   readFile(path: string): Promise<Uint8Array>;

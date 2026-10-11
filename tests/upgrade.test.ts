@@ -573,7 +573,7 @@ describe("verifyInstalledVersion (the upgrade's receipt)", () => {
   test("resolves pboss from PATH, spawns --version, reports both", async () => {
     const ran: string[][] = [];
     const result = await verifyInstalledVersion({
-      which: (cmd) => (cmd === "pboss" ? "/home/alice/.local/bin/pboss" : null),
+      which: async (cmd) => (cmd === "pboss" ? "/home/alice/.local/bin/pboss" : null),
       spawnFn: async (cmd) => {
         ran.push(cmd);
         return { code: 0, stdout: "pboss v1.2.5\n" };
@@ -586,19 +586,19 @@ describe("verifyInstalledVersion (the upgrade's receipt)", () => {
   test("null when pboss is not on PATH, exits non-zero, or prints junk", async () => {
     expect(
       await verifyInstalledVersion({
-        which: () => null,
+        which: async () => null,
         spawnFn: async () => ({ code: 0, stdout: "pboss v1.2.5" }),
       }),
     ).toBeNull();
     expect(
       await verifyInstalledVersion({
-        which: () => "/usr/local/bin/pboss",
+        which: async () => "/usr/local/bin/pboss",
         spawnFn: async () => ({ code: 1, stdout: "boom" }),
       }),
     ).toBeNull();
     expect(
       await verifyInstalledVersion({
-        which: () => "/usr/local/bin/pboss",
+        which: async () => "/usr/local/bin/pboss",
         spawnFn: async () => ({ code: 0, stdout: "junk" }),
       }),
     ).toBeNull();
@@ -607,7 +607,7 @@ describe("verifyInstalledVersion (the upgrade's receipt)", () => {
   test("never throws — a spawning failure is just unverifiable", async () => {
     expect(
       await verifyInstalledVersion({
-        which: () => "/usr/local/bin/pboss",
+        which: async () => "/usr/local/bin/pboss",
         spawnFn: async () => {
           throw new Error("ENOENT");
         },
@@ -763,7 +763,7 @@ describe("upgrade: healWindowsShims (the Windows shim re-heal)", () => {
     writeFileSync(join(tmp, "binDir", "pboss.cmd"), "@echo off\r\nsh pboss.sh %*\r\n"); // npm's broken shim
     return {
       tmp,
-      which: () => join(tmp, "binDir", "pboss.CMD"),
+      which: async () => join(tmp, "binDir", "pboss.CMD"),
       moduleDir: join(tmp, "pkg", "src"),
       binDir: join(tmp, "binDir"),
     };

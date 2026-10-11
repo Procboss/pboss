@@ -26,7 +26,7 @@ export function createNodeAdapter(): RuntimeAdapter {
     network: createNodeNetwork(),
     misc: {
       sleep: (ms: number) => sleepMs(ms),
-      which: (cmd: string) => scanPathFor(cmd),
+      which: async (cmd: string) => await scanPathFor(cmd),
       runtimeVersion: () => process.versions.node,
       mainPath(): string | null {
         // argv[1] is the executed script — meaningful when the CLI entry is

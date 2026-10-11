@@ -269,11 +269,13 @@ describe("the bun adapter's unix-socket transport (end-to-end)", () => {
       expect(await R.filesystem.readText(f)).toBe("hello runtime world");
       expect(await R.filesystem.size(f)).toBe(19); // 19 chars — counted twice
       expect(new TextDecoder().decode(await R.filesystem.readRange(f, 6, 13))).toBe("runtime");
-      const gz = R.filesystem.gzip(new TextEncoder().encode("compress me"));
-      expect(new TextDecoder().decode(R.filesystem.gunzip(gz))).toBe("compress me");
+      const gz = await R.filesystem.gzip(new TextEncoder().encode("compress me"));
+      expect(new TextDecoder().decode(await R.filesystem.gunzip(gz))).toBe("compress me");
       // binary safety through readBytes (gzip data must not text-roundtrip)
       await R.filesystem.write(join(dir, "x.gz"), gz);
-      expect(new TextDecoder().decode(R.filesystem.gunzip(await R.filesystem.readBytes(join(dir, "x.gz"))))).toBe("compress me");
+      expect(
+        new TextDecoder().decode(await R.filesystem.gunzip(await R.filesystem.readBytes(join(dir, "x.gz"))))
+      ).toBe("compress me");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

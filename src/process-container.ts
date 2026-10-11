@@ -476,13 +476,18 @@ export class ProcessContainer {
     };
 
     this.logRotateInterval = setInterval(() => {
-      this.logManager.checkRotation(
-        this.name,
-        this.id,
-        rotateOpts,
-        this.config.outFile,
-        this.config.errorFile
-      );
+      // Fire-and-forget WITH a catch: checkRotation is async, and an
+      // unhandled rejection inside a timer would take the whole daemon
+      // down (bun's default) — rotation must degrade, never crash.
+      this.logManager
+        .checkRotation(
+          this.name,
+          this.id,
+          rotateOpts,
+          this.config.outFile,
+          this.config.errorFile
+        )
+        .catch((err) => ignore(`log rotation tick for ${this.name}`, err));
     }, 60000);
   }
 

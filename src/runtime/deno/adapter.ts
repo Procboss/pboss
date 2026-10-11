@@ -33,7 +33,7 @@ export function createDenoAdapter(): RuntimeAdapter {
     network: createDenoNetwork(),
     misc: {
       sleep: (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)),
-      which: (cmd: string) => scanPathFor(cmd),
+      which: async (cmd: string) => await scanPathFor(cmd),
       runtimeVersion: () => Deno.version.deno,
       mainPath(): string | null {
         try {

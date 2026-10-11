@@ -125,8 +125,9 @@ export interface PBFilesystemRuntime {
   /** Byte-accurate range read — log tailing on a growing file. */
   readRange(path: string, start: number, end: number): Promise<Uint8Array>;
   /** Synchronous (de)compression of log rotations. */
-  gzip(data: Uint8Array): Uint8Array;
-  gunzip(data: Uint8Array): Uint8Array;
+  /** Log-rotation compression — async, off the daemon's event loop. */
+  gzip(data: Uint8Array): Promise<Uint8Array>;
+  gunzip(data: Uint8Array): Promise<Uint8Array>;
   /**
    * A spawn-redirect sink appending to `path`. Async — opening the target
    * is filesystem I/O and must never block the event loop (2026-10-11
