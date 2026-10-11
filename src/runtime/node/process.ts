@@ -34,17 +34,55 @@ function nodeStdio(target: PBFileSink | string | undefined, fallback: "pipe" | "
 export function createNodeProcess(): PBProcessRuntime {
   return {
     spawn(cmd: string[], opts: PBSpawnOptions = {}): PBChild {
-      const child = spawn(cmd[0]!, cmd.slice(1), {
-        cwd: opts.cwd,
-        env: opts.env,
-        stdio: [
-          opts.stdin === "pipe" ? "pipe" : "ignore",
-          nodeStdio(opts.stdout, "pipe"),
-          nodeStdio(opts.stderr, "pipe"),
-        ],
-        detached: opts.detached,
-        windowsHide: opts.windowsHide,
-      });
+      const outSink = typeof opts.stdout === "object" && opts.stdout !== null ? (opts.stdout as PBFileSink) : null;
+      const errSink = typeof opts.stderr === "object" && opts.stderr !== null ? (opts.stderr as PBFileSink) : null;
+      const sinks = [outSink, errSink].filter(
+        (s, i, all): s is PBFileSink => s !== null && all.indexOf(s) === i
+      );
+
+      /**
+       * Release the sink streams. node:child_process PIPES a stream stdio
+       * target (no fd dup like Bun/Deno), so this must NOT run before the
+       * child is done — hooked on "close" (the event AFTER exit AND stdio
+       * drain, so no buffered output is lost). Without it every spawn with
+       * a sink leaked one fd for this process's whole lifetime (a cron
+       * job's every-second run drained the daemon's fd budget). Idempotent
+       * by construction — sink.close() no-ops an already-ended stream.
+       */
+      const releaseSinks = () => {
+        for (const sink of sinks) {
+          try {
+            void sink.close?.().catch(() => {
+              /* a half-dead stream's end() — nothing left to save */
+            });
+          } catch {
+            /* already destroyed — nothing to release */
+          }
+        }
+      };
+
+      let child;
+      try {
+        child = spawn(cmd[0]!, cmd.slice(1), {
+          cwd: opts.cwd,
+          env: opts.env,
+          stdio: [
+            opts.stdin === "pipe" ? "pipe" : "ignore",
+            nodeStdio(opts.stdout, "pipe"),
+            nodeStdio(opts.stderr, "pipe"),
+          ],
+          detached: opts.detached,
+          windowsHide: opts.windowsHide,
+        });
+      } catch (err) {
+        // The spawn never happened — the sinks were never wired to a child.
+        releaseSinks();
+        throw err;
+      }
+      // Synchronous spawn failure (bad argv/env shape) threw above; an
+      // async one (ENOENT) fires "error" and THEN "close" — one hook
+      // releases the sinks for both endings, after stdio has drained.
+      child.on("close", releaseSinks);
 
       const exited = new Promise<number | null>((resolve) => {
         child.on("exit", (code) => resolve(code ?? null));

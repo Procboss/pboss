@@ -16,7 +16,7 @@
  * License: GPL-3.0-only
  */
 import { describe, test, expect } from "bun:test";
-import { readFileSync, mkdtempSync, rmSync, writeFileSync, existsSync } from "node:fs";
+import { readFileSync, mkdtempSync, rmSync, writeFileSync, existsSync, fstatSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import {
@@ -298,6 +298,150 @@ describe("the bun adapter's unix-socket transport (end-to-end)", () => {
     const text = await new Response(child.stdout!).text();
     expect(text.trim()).toBe("streaming");
     expect(await child.exited).toBe(3);
+  });
+});
+
+describe("file sinks: the parent releases its side (the fd-leak regression, 2026-10-12)", () => {
+  // The incident this pins: the bun adapter's spawn dropped the sink's
+  // FileHandle. An unclosed Bun FileHandle that reaches GC THROWS
+  // ERR_INVALID_STATE from its finalizer — and under `bun test` that
+  // unhandled error failed dozens of UNRELATED tests at random GC timings
+  // (the 2026-10-12 owner run: 48 failures, one leak). The daemon also
+  // pinned one fd per cron run until collection. The adapters now own the
+  // release: bun/deno close the parent's copy once the child holds its
+  // dup, node ends its stream when the child closes.
+
+  test("bun: spawn closes the sink's FileHandle — the child's dup does the writing", async () => {
+    const R = getRuntime();
+    expect(R.name).toBe("bun");
+    const dir = mkdtempSync(join(tmpdir(), "pboss-sink-bun-"));
+    try {
+      const log = join(dir, "job.log");
+      const sink = await R.filesystem.sink(log);
+      expect(typeof sink.fd).toBe("number");
+      expect(typeof sink.close).toBe("function");
+
+      const proc = R.process.spawn(["sh", "-c", "echo sink-line"], {
+        stdout: sink,
+        stderr: sink,
+        stdin: "ignore",
+      });
+      expect(await proc.exited).toBe(0);
+
+      // The parent's copy is closed (fire-and-forget) — fstat must fail
+      // with EBADF once the close lands. Poll for the async close.
+      let ebadf = false;
+      for (let i = 0; i < 200 && !ebadf; i++) {
+        try {
+          fstatSync(sink.fd!);
+        } catch (err) {
+          ebadf = (err as { code?: string }).code === "EBADF";
+        }
+        if (!ebadf) await Bun.sleep(10);
+      }
+      expect(ebadf).toBe(true);
+
+      // The child wrote through its OWN dup — the redirect is intact.
+      expect(readFileSync(log, "utf8")).toContain("sink-line");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 20_000);
+
+  test("bun: consumed sinks collect quietly — the pre-fix finalizer threw during GC", async () => {
+    const R = getRuntime();
+    expect(R.name).toBe("bun");
+    const dir = mkdtempSync(join(tmpdir(), "pboss-sink-gc-"));
+    try {
+      // A consumed sink: closed by the adapter at spawn; close() again
+      // pins the idempotence the shared stdout/stderr object relies on.
+      const consumed = await R.filesystem.sink(join(dir, "gc.log"));
+      const proc = R.process.spawn(["sh", "-c", "true"], {
+        stdout: consumed,
+        stderr: consumed,
+        stdin: "ignore",
+      });
+      await proc.exited;
+      await consumed.close?.();
+
+      // An unconsumed sink (the api.ts EBUSY-fallback shape): the caller
+      // releases it explicitly instead of leaving it for GC to find.
+      const orphan = await R.filesystem.sink(join(dir, "orphan.log"));
+      await orphan.close?.();
+
+      // Drop every reference and force a FULL collection. Pre-fix, the
+      // unclosed handle's finalizer threw right here; if the release ever
+      // regresses, the error surfaces in THIS test — not in a random test
+      // two files later.
+      Bun.gc(true);
+      expect(true).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 20_000);
+
+  test("node: the sink stream ends when the child closes (real node subprocess)", async () => {
+    const nodeBin = Bun.which("node");
+    if (!nodeBin) return; // node absent — the bun coverage above stands alone
+    const dir = mkdtempSync(join(tmpdir(), "pboss-sink-node-"));
+    try {
+      const log = join(dir, "node-sink.log");
+      const probe = join(dir, "probe.ts");
+      writeFileSync(
+        probe,
+        [
+          `import { createNodeFilesystem } from ${JSON.stringify(join(REPO, "src/runtime/node/filesystem.ts"))};`,
+          `import { createNodeProcess } from ${JSON.stringify(join(REPO, "src/runtime/node/process.ts"))};`,
+          `const fs = createNodeFilesystem();`,
+          `const P = createNodeProcess();`,
+          `const log = ${JSON.stringify(log)};`,
+          `const sink = await fs.sink(log);`,
+          `const child = P.spawn(["/bin/sh", "-c", "echo node-sink-line"], { stdout: sink, stderr: sink, stdin: "ignore" });`,
+          `const code = await child.exited;`,
+          `await new Promise((r) => setTimeout(r, 500)); // let the close event release the sinks`,
+          `const ended = (sink as { writableEnded?: boolean }).writableEnded === true;`,
+          `const content = await fs.readText(log);`,
+          `console.log("RESULT=" + JSON.stringify({ code, ended, hasLine: content.includes("node-sink-line") }));`,
+        ].join("\n")
+      );
+      // Real node runs the adapter source (type stripping is native since
+      // node 22.6/23) — the same files the dist bundle ships.
+      const r = Bun.spawnSync([nodeBin, "--no-warnings", probe], {
+        stdout: "pipe",
+        stderr: "pipe",
+        stdin: "ignore",
+        timeout: 30_000,
+      });
+      const out = r.stdout.toString() + r.stderr.toString();
+      expect(r.exitCode).toBe(0);
+      const line = out.slice(out.indexOf("RESULT=") + 7).trim();
+      expect(line).not.toBe("");
+      const result = JSON.parse(line) as { code: number | null; ended: boolean; hasLine: boolean };
+      expect(result.code).toBe(0);
+      // The adapter ends the stream after the child closes — the fd goes
+      // with it instead of staying pinned for the process's lifetime.
+      expect(result.ended).toBe(true);
+      expect(result.hasLine).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 60_000);
+
+  test("source pins: every process adapter owns its sinks' release", () => {
+    // bun: the finally-wrapped release (success AND throwing spawn)
+    expect(read("src/runtime/bun/process.ts")).toContain("sink.close");
+    // node: the close-event release (after stdio drain)
+    expect(read("src/runtime/node/process.ts")).toContain("releaseSinks");
+    // deno: the post-spawn release
+    expect(read("src/runtime/deno/process.ts")).toContain("sink.close");
+    // the sinks themselves carry the idempotent close()
+    for (const rel of [
+      "src/runtime/bun/filesystem.ts",
+      "src/runtime/deno/filesystem.ts",
+      "src/runtime/node/filesystem.ts",
+    ]) {
+      expect(read(rel)).toContain("close");
+    }
   });
 });
 

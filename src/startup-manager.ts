@@ -48,6 +48,7 @@ import {
   installModeDescription,
 } from "./install-mode.ts";
 import { getRuntime } from "./runtime/index.ts";
+import type { PBFileSink } from "./runtime/core/types.ts";
 const R = getRuntime();
 
 /** Async existence probe — every filesystem touch in this module is async. */
@@ -704,14 +705,19 @@ ${plist}`;
         // windowsHide: true (a detached console child would otherwise get
         // its own visible cmd.exe window).
         // The append sinks are the adapter's native file redirection
-        // (Bun: fd, Node: stream, Deno: pump) — same EBUSY-retry contract.
-        const outLog = await R.filesystem.sink(DAEMON_OUT_LOG_FILE);
-        const errLog = await R.filesystem.sink(DAEMON_ERR_LOG_FILE);
+        // (Bun: fd, Node: stream, Deno: pump) — same EBUSY-retry contract
+        // as api.launchDaemon: created inside the try so any open failure
+        // (the Windows launcher-handle collision below) degrades to
+        // silent stdio instead of failing the install.
+        let outLog: PBFileSink | null = null;
+        let errLog: PBFileSink | null = null;
         let proc;
         try {
+          outLog = await R.filesystem.sink(DAEMON_OUT_LOG_FILE);
+          errLog = await R.filesystem.sink(DAEMON_ERR_LOG_FILE);
           proc = R.process.spawn(launcherCmd, {
-            stdout: outLog,
-            stderr: errLog,
+            stdout: outLog ?? "ignore",
+            stderr: errLog ?? "ignore",
             stdin: "ignore",
             detached: true,
             windowsHide: true,
@@ -720,9 +726,11 @@ ${plist}`;
         } catch (err) {
           // Log-file open raced the task launcher's cmd.exe handles
           // (wscript → cmd /c "... 1>> out 2>> err" holds them for the
-          // daemon's lifetime) — EBUSY on Windows. The daemon runs fine
-          // without these files; spawn silently instead of failing the
-          // install (best-effort contract, see method doc).
+          // daemon's lifetime) — EBUSY on Windows. Sinks that never
+          // reached a spawn are the adapters' to release (their spawn's
+          // finally closes them). The daemon runs fine without these
+          // files; spawn silently instead of failing the install
+          // (best-effort contract, see method doc).
           ignore("spawn Run-key daemon with log files (retrying with silent stdio)", err);
           proc = R.process.spawn(launcherCmd, {
             stdout: "ignore",

@@ -74,9 +74,15 @@ export function createDenoFilesystem(): PBFilesystemRuntime {
       // mandate; node:fs/promises is the sanctioned node-compat file API —
       // the Deno-native FsFile exposes no rid anymore) and the FileHandle is
       // anchored on the sink so it cannot be GC'd before the spawn has
-      // dup'd the fd. deno/process.ts closes it right after the spawn.
+      // dup'd the fd. deno/process.ts closes it right after the spawn
+      // (sink.close() — idempotent when both sinks are the same object).
       const fh = await open(path, "a");
-      return { __pbFileSink: path, fd: fh.fd, handle: fh };
+      return {
+        __pbFileSink: path,
+        fd: fh.fd,
+        handle: fh,
+        close: () => fh.close(),
+      };
     },
 
     watch(dir: string, onChange: (filename: string) => void): PBWatcher {

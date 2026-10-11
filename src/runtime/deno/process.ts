@@ -39,27 +39,39 @@ export function createDenoProcess(): PBProcessRuntime {
       // comment): kernel-owned, survives the parent, no background pump.
       // The fd was opened ASYNC by the sink (2026-10-11 mandate) — spawn
       // itself performs no filesystem I/O.
-      const outSink = typeof opts.stdout === "object" ? (opts.stdout as PBFileSink) : null;
-      const errSink = typeof opts.stderr === "object" ? (opts.stderr as PBFileSink) : null;
+      const outSink = typeof opts.stdout === "object" && opts.stdout !== null ? (opts.stdout as PBFileSink) : null;
+      const errSink = typeof opts.stderr === "object" && opts.stderr !== null ? (opts.stderr as PBFileSink) : null;
 
-      const command = new Deno.Command(cmd[0]!, {
-        args: cmd.slice(1),
-        cwd: opts.cwd,
-        env: opts.env ?? Deno.env.toObject(),
-        stdin: "null",
-        stdout: outSink ? outSink.fd! : denoStdio(opts.stdout ?? "pipe"),
-        stderr: errSink ? errSink.fd! : denoStdio(opts.stderr ?? "pipe"),
-      });
-      const child = command.spawn();
-
-      // The child holds its own dup from spawn; the parent copies (the
-      // sinks' FileHandles) must not leak into every later spawn this
-      // process performs. close() is async — voided fire-and-forget; the
-      // fd is already dup'd into the child, and FileHandle.close() is
-      // idempotent when both sinks are the same object.
-      for (const sink of [outSink, errSink]) {
-        const fh = sink?.handle as { close(): Promise<void> } | undefined;
-        if (fh) void fh.close().catch((err: unknown) => ignore("close sink fd", err));
+      let child;
+      try {
+        const command = new Deno.Command(cmd[0]!, {
+          args: cmd.slice(1),
+          cwd: opts.cwd,
+          env: opts.env ?? Deno.env.toObject(),
+          stdin: "null",
+          stdout: outSink ? outSink.fd! : denoStdio(opts.stdout ?? "pipe"),
+          stderr: errSink ? errSink.fd! : denoStdio(opts.stderr ?? "pipe"),
+        });
+        child = command.spawn();
+      } finally {
+        // The child holds its own dup from spawn; the parent copies (the
+        // sinks' FileHandles) must not leak into every later spawn this
+        // process performs — and a throwing spawn releases them instead of
+        // orphaning them (an unclosed handle rides GC and, under Bun's
+        // node:fs/promises, that throws). close() is async — voided
+        // fire-and-forget; the fd is already dup'd into the child, and
+        // FileHandle.close() is idempotent when both sinks are the same
+        // object.
+        for (const sink of [outSink, errSink]) {
+          if (!sink) continue;
+          try {
+            void (sink.close?.() ?? Promise.resolve()).catch((err: unknown) =>
+              ignore("close sink fd", err)
+            );
+          } catch (err) {
+            ignore("close sink fd", err);
+          }
+        }
       }
 
       const exited = child.status.then((s) => s.code ?? null);

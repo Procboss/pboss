@@ -38,6 +38,7 @@ import {
   type PbossProcessEvent,
 } from "./events.ts";
 import { getRuntime } from "./runtime/index.ts";
+import type { PBFileSink } from "./runtime/core/types.ts";
 
 const R = getRuntime();
 
@@ -1346,14 +1347,19 @@ export class PBoss extends EventEmitter<PBossEvents> {
     // Open log files for daemon stdout/stderr
     // Append sinks — the adapter's native file redirection (Bun: fd,
     // Node: stream, Deno: pump). A fresh daemon's launch logs append.
-    const outLog = await R.filesystem.sink(DAEMON_OUT_LOG_FILE);
-    const errLog = await R.filesystem.sink(DAEMON_ERR_LOG_FILE);
-
+    // Created INSIDE the try: an open failure (the Windows EBUSY sharing
+    // violation below — or any disk error) falls back to silent stdio
+    // instead of failing the launch; the daemon does not need these
+    // files to run, its real logs are the per-process files in logs/.
+    let outLog: PBFileSink | null = null;
+    let errLog: PBFileSink | null = null;
     let proc;
     try {
+      outLog = await R.filesystem.sink(DAEMON_OUT_LOG_FILE);
+      errLog = await R.filesystem.sink(DAEMON_ERR_LOG_FILE);
       proc = R.process.spawn(spawnArgs, {
-        stdout: outLog,
-        stderr: errLog,
+        stdout: outLog ?? "ignore",
+        stderr: errLog ?? "ignore",
         stdin: "ignore",
         // detached: the daemon must OUTLIVE this CLI process. `pboss start`
         // (and every ensure-daemon path) brings it up and returns; without
@@ -1379,10 +1385,10 @@ export class PBoss extends EventEmitter<PBossEvents> {
       // cmd /c "... 1>> daemon.out.log 2>> daemon.err.log" keeps cmd.exe's
       // redirect handles open for the daemon's whole lifetime, and the
       // duplicate spawn this launcher races gets EBUSY on them (owner
-      // report 2026-09-15). The daemon does not need those files to run —
-      // its real logs are the per-process files in logs/; the probe above
-      // already made a true duplicate unlikely. Fall back to silent stdio
-      // rather than failing the command.
+      // report 2026-09-15). Sinks that never reached a spawn are the
+      // adapters' to release (their spawn throws — the finally there
+      // closes them); the daemon runs fine without the files — fall back
+      // to silent stdio rather than failing the command.
       ignore("spawn daemon with log files (retrying with silent stdio)", err);
       proc = R.process.spawn(spawnArgs, {
         stdout: "ignore",

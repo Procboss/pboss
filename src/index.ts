@@ -2042,7 +2042,7 @@ Examples:
   }
 
   async cmdCloud(args: string[]) {
-const { requestDeviceCode, pollDeviceToken, browserPlausible, openBrowser, loadCloudUser, clearCloudUser } =
+    const { requestDeviceCode, pollDeviceToken, browserPlausible, openBrowser, loadCloudUser } =
       await import("./cloud-auth.ts");
     const { resolveCloudUrl } = await import("./cloud.ts");
     const sub = args[0];

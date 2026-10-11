@@ -68,6 +68,18 @@ export interface PBFileSink {
    * the spawn has dup'd the fd — a GC'd handle closes its fd.
    */
   readonly handle?: unknown;
+  /**
+   * Release the parent's side of the sink, idempotently and without
+   * throwing. The creating runtime's `process.spawn` calls this once the
+   * child holds its own copy of the redirect (Bun/Deno dup the fd at
+   * spawn; Node ends its stream when the child closes) — and a spawn
+   * that never happened (bad argv) releases an unconsumed sink instead
+   * of leaking it. The 2026-10-12 lesson: an unclosed Bun FileHandle
+   * that reaches garbage collection THROWS (ERR_INVALID_STATE), which
+   * under `bun test` failed dozens of unrelated tests at random GC
+   * timings, and in the daemon pins one fd per cron run until collected.
+   */
+  close?(): Promise<void>;
 }
 
 export interface PBSpawnOptions {

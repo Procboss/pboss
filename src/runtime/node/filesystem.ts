@@ -72,11 +72,38 @@ export function createNodeFilesystem(): PBFilesystemRuntime {
     },
 
     async sink(path: string): Promise<PBFileSink> {
-      // node:child_process takes streams as stdio targets natively; appended
-      // so daemon launch logs survive restarts. Async per the 2026-10-11
-      // mandate (createWriteStream opens the file lazily on its own).
+      // node:child_process accepts a WriteStream as a stdio target and —
+      // when it has an OPEN file descriptor — uses that fd directly: the
+      // child dups it, the same kernel-owned redirect Bun and Deno get.
+      //
+      // The catch (found live, 2026-10-12): createWriteStream opens
+      // LAZILY, and spawn() handed a stream whose fd is still null throws
+      // ERR_INVALID_ARG_VALUE — which the daemon launch's fallback then
+      // swallowed into stdio "ignore": under real node the daemon has
+      // been running with NO launch logs since the async mandate. The
+      // sink() therefore awaits the "open" event before returning: fd
+      // pinned, spawn accepts it, the redirect is real.
       const stream = createWriteStream(path, { flags: "a" });
-      return Object.assign(stream, { __pbFileSink: path }) as unknown as PBFileSink;
+      // A WriteStream with no "error" listener dies loudly on the first
+      // write failure (node throws unhandled 'error' events). The
+      // redirect is best-effort everywhere in pboss — a full disk must
+      // not take the daemon down with it.
+      stream.on("error", () => {});
+      await new Promise<void>((resolve, reject) => {
+        stream.once("open", () => resolve());
+        stream.once("error", reject);
+      });
+      return Object.assign(stream, {
+        __pbFileSink: path,
+        close: () =>
+          new Promise<void>((resolve) => {
+            if (stream.writableEnded) {
+              resolve();
+              return;
+            }
+            stream.end(() => resolve());
+          }),
+      }) as unknown as PBFileSink;
     },
 
     watch(dir: string, onChange: (filename: string) => void): PBWatcher {

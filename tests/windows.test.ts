@@ -966,11 +966,15 @@ describe("Windows Support & Cross-Platform Compatibility", () => {
       // the degraded raw-command branch of bringUpWindowsDaemon — the
       // variable is launcherCmd there, but it IS the daemon command in that
       // branch) must fall back to stdio "ignore" instead of failing the
-      // command.
+      // command. Since 2026-10-12 the sink CREATION sits inside the same
+      // try (the node adapter's sinks open eagerly now — an open failure
+      // degrades to silent stdio exactly like the spawn-time EBUSY, never
+      // failing the launch) and the spawn consumes the sinks null-safely.
       for (const rel of ["src/api.ts", "src/startup-manager.ts"]) {
         const src = readFileSync(join(import.meta.dir, "..", rel), "utf8");
-        // the log-redirecting spawn is wrapped in try { ... }
-        expect(src).toMatch(/try\s*\{\s*\n\s*proc = R\.process\.spawn\((spawnArgs|launcherCmd),\s*\{\s*\n\s*stdout: outLog,/);
+        // the sinks AND the log-redirecting spawn are wrapped in try { ... }
+        expect(src).toMatch(/try\s*\{\s*\n\s*outLog = await R\.filesystem\.sink\(/);
+        expect(src).toMatch(/proc = R\.process\.spawn\((spawnArgs|launcherCmd),\s*\{\s*\n\s*stdout: outLog \?\? "ignore",/);
         // and the catch re-spawns with silent stdio
         expect(src).toContain('retrying with silent stdio');
         expect(src).toMatch(/proc = R\.process\.spawn\((spawnArgs|launcherCmd),\s*\{\s*\n\s*stdout: "ignore",/);

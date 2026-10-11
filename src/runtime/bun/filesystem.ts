@@ -67,9 +67,16 @@ export function createBunFilesystem(): PBFilesystemRuntime {
       // and FileSink is rejected by Bun.spawn. The FileHandle is anchored
       // on the sink so it cannot be GC'd before the spawn has dup'd the fd
       // (a GC'd handle closes its fd) — and once the child holds its dup,
-      // the parent's copy may close harmlessly.
+      // the parent's copy is closed by process.spawn via sink.close() (an
+      // explicitly closed handle NEVER rides Bun's GC finalizer, which
+      // throws ERR_INVALID_STATE for handles it has to collect).
       const fh = await open(path, "a");
-      return { __pbFileSink: path, fd: fh.fd, handle: fh };
+      return {
+        __pbFileSink: path,
+        fd: fh.fd,
+        handle: fh,
+        close: () => fh.close(),
+      };
     },
 
     watch(dir: string, onChange: (filename: string) => void): PBWatcher {
