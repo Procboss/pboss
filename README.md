@@ -47,6 +47,53 @@ The full documentation lives at [docs.procboss.com](https://docs.procboss.com)
 
 ---
 
+## Benchmarks
+
+pboss is benchmarked against **pm2** head-to-head in the public
+[`procboss/benchmarks`](https://github.com/Procboss/benchmarks) repo — same
+application, same runtime binary, same machine, same load, manager order
+alternating; every raw number committed beside the code that produced it.
+Two suites: **Node** (fork + native `node:cluster` on both managers — the
+apples-to-apples cluster race) and **Bun** (fork on both; cluster is
+pboss-only — pm2 cannot cluster a Bun app, and is recorded as *not supported*,
+never fork-mode in disguise).
+
+**Latest re-run: pboss v1.8.0 vs pm2 5.4.3** (standard profile: 10/100/500
+connections × 60 s × 5 repeats per manager per mode; 105 measured load runs,
+zero errors/timeouts/non-2xx; zero failures and zero orphans through every
+50-restart storm). The suite READMEs in the benchmarks repo regenerate this
+summary automatically on every run, so what you read there is always the
+latest published measurement.
+
+**Node apps — cluster mode, 100 connections, 2 workers** (both managers
+native `node:cluster`):
+
+| Metric | pm2 | pboss | Winner |
+| --- | --- | --- | --- |
+| Average requests/sec | 55,954 | 58,539 | **pboss (+4.6%)** |
+| Average latency (mean) | 1.25 ms | 1.18 ms | **pboss (−5.6%)** |
+| Cold startup (median) | 641 ms | 419 ms | **pboss (−34.6%)** |
+| Warm startup (median) | 422 ms | 242 ms | **pboss (−42.7%)** |
+| **Worker respawn after SIGKILL (mean)** | 151.1 ms | **93.2 ms** | **pboss (−38.3%)** |
+| Health stayed up during worker kill | 100% | 100% | tie |
+| Restart storm, all workers (median) | 498 ms | 300 ms | **pboss (−39.8%)** |
+
+**Node apps — fork mode, 100 connections**: throughput a tie (57,512 vs
+57,519 rps — the manager is not in the request path), latency −2.8%, tree
+memory −6.0%, cold start −24.0%, warm start −35.6%, SIGKILL crash recovery
+−49.3%, 50-restart storm −51.9% — pboss wins every operational metric.
+
+**Bun apps — fork mode, 100 connections**: cold start −13.5%, warm start
+−39.1%, crash recovery −2.1%, 50-restart storm −49.4% (pm2 keeps a marginal
++2.4% rps lead at this load). **Bun cluster mode** (pboss alone): a
+SIGKILLed worker is replaced in **~81 ms** with `/health` continuity held at
+100%, and the whole cluster restarts in ~178 ms.
+
+One machine, one moment in time — clone the benchmarks repo and re-run the
+suites on your own hardware before making decisions that matter.
+
+---
+
 ## Installation
 
 ### Universal Installer (recommended)
