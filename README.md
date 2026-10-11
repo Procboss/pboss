@@ -49,21 +49,27 @@ The full documentation lives at [docs.procboss.com](https://docs.procboss.com)
 
 ## Benchmarks
 
-pboss is benchmarked against **pm2** head-to-head in the public
+pboss is benchmarked head-to-head in the public
 [`procboss/benchmarks`](https://github.com/Procboss/benchmarks) repo — same
 application, same runtime binary, same machine, same load, manager order
 alternating; every raw number committed beside the code that produced it.
-Two suites: **Node** (fork + native `node:cluster` on both managers — the
-apples-to-apples cluster race) and **Bun** (fork on both; cluster is
-pboss-only — pm2 cannot cluster a Bun app, and is recorded as *not supported*,
-never fork-mode in disguise).
+Three suites: **Node** (vs pm2 — fork + native `node:cluster` on both managers,
+the apples-to-apples cluster race), **Bun** (vs pm2 — fork on both; cluster is
+pboss-only, pm2 cannot cluster a Bun app and is recorded as *not supported*,
+never fork-mode in disguise), and **Deno** (vs
+[pup](https://github.com/hexagon/pup) — fork on both, and cluster with each
+manager's own native model: pboss's SO_REUSEPORT workers vs pup's built-in
+load balancer).
 
-**Latest re-run: pboss v1.8.0 vs pm2 5.4.3** (standard profile: 10/100/500
-connections × 60 s × 5 repeats per manager per mode; 105 measured load runs,
-zero errors/timeouts/non-2xx; zero failures and zero orphans through every
-50-restart storm). The suite READMEs in the benchmarks repo regenerate this
-summary automatically on every run, so what you read there is always the
-latest published measurement.
+**Latest re-runs: pboss v1.8.0 vs pm2 5.4.3** (node + bun suites, standard
+profile: 10/100/500 connections × 60 s × 5 repeats per manager per mode; 105
+measured load runs each, zero errors/timeouts/non-2xx; zero failures and zero
+orphans through every 50-restart storm) **and pboss v1.8.0 vs pup 1.0.4**
+(deno suite, same standard profile: 60 measured load runs, zero
+errors/timeouts/non-2xx; crash recovery, worker respawn and restart storms
+for both managers at their out-of-the-box restart policies). The suite
+READMEs in the benchmarks repo regenerate this summary automatically on every
+run, so what you read there is always the latest published measurement.
 
 **Node apps — cluster mode, 100 connections, 2 workers** (both managers
 native `node:cluster`):
@@ -88,6 +94,28 @@ memory −6.0%, cold start −24.0%, warm start −35.6%, SIGKILL crash recovery
 +2.4% rps lead at this load). **Bun cluster mode** (pboss alone): a
 SIGKILLed worker is replaced in **~81 ms** with `/health` continuity held at
 100%, and the whole cluster restarts in ~178 ms.
+
+**Deno apps — vs pup, 100 connections, 2 workers, both native cluster models**
+(pboss: N SO_REUSEPORT workers · pup: built-in load balancer over N backends):
+
+| Metric | pup | pboss | Winner |
+| --- | --- | --- | --- |
+| Average requests/sec (cluster) | 13,035 | 73,435 | **pboss (+463%)** |
+| Average latency, mean (cluster) | 7.25 ms | 0.70 ms | **pboss (−90%)** |
+| Average CPU of tree (cluster) | 123.1% | 63.2% | **pboss (−49%)** |
+| Average memory of tree (cluster) | 267.4 MB | 163.5 MB | **pboss (−39%)** |
+| Cold startup, fork (median) | 1,063 ms | 339 ms | **pboss (−68%)** |
+| Warm startup, fork (median) | 273 ms | 136 ms | **pboss (−50%)** |
+| Idle overhead (RSS) | 88.8 MB | 63.7 MB | **pboss (−28%)** |
+| **SIGKILL recovery, fork (mean)** | 10,959 ms | **67 ms** | **pboss (−99.4%)** |
+| **Worker respawn, cluster (mean)** | 10,834 ms | **84 ms** | **pboss (−99.2%)** |
+| Restart storm, fork (median) | 1,012 ms | 167 ms | **pboss (−84%)** |
+
+(Deno fork-mode throughput is a statistical tie — 72,534 vs 71,707 rps — the
+manager is not in the request path. pup's crash numbers reflect its default
+10-second restart delay, run out-of-the-box exactly like the pm2 suites; a
+tuned `restartDelayMs` narrows the gap but the default is what most installs
+run. Full tables: the deno suite's REPORT.md.)
 
 One machine, one moment in time — clone the benchmarks repo and re-run the
 suites on your own hardware before making decisions that matter.
