@@ -47,7 +47,6 @@ import {
 } from "./constants.ts";
 import { ensureDirs, formatBytes, formatUptime, colorize, padRight, dumpEntryCount } from "./utils.ts";
 import { PBoss, loadEcosystemConfig, findDefaultConfigFile, waitForDaemon } from "./api.ts";
-import { DeployManager } from "./deploy.ts";
 import {
   StartupManager,
   bootServiceInstalledForCurrentHome,
@@ -60,7 +59,6 @@ import {
   stopBootService,
   restartBootService,
 } from "./startup-manager.ts";
-import { EnvManager } from "./env-manager.ts";
 import { DaemonConflictError, EXIT_DAEMON_CONFLICT, ignore } from "./error-handling.ts";
 import type {
   StartOptions,
@@ -72,43 +70,12 @@ import type {
 } from "./types.ts";
 import { statusColor } from "./colors.ts";
 import { liveWatchProcess, printProcessTable, printCronTable } from "./process-table.ts";
-import Daemon, { ignoreHangup } from "./daemon.ts";
 import chalk from "chalk";
-import {
-  requestDeviceCode,
-  pollDeviceToken,
-  browserPlausible,
-  openBrowser,
-  loadCloudUser,
-  saveCloudUser,
-  clearCloudUser,
-  cloudUserMe,
-  cloudUserRevoke,
-} from "./cloud-auth.ts";
-import {
-  currentChannelContext,
-  detectChannel,
-  configuredRuntimeChannel,
-  resolveUpgradeChannel,
-  runtimeForChannel,
-  buildUpgradePlan,
-  compareVersions,
-  fetchLatestVersion,
-  probeDenoMinDepAge,
-  runUpgradePlan,
-  verifyInstalledVersion,
-  writeChannelStamp,
-  type InstallChannel,
-  type ChannelContext,
-  type DenoPin,
+import type {
+  InstallChannel,
+  ChannelContext,
+  DenoPin,
 } from "./upgrade.ts";
-import { fetchDenoEligibility } from "./deno-eligibility.ts";
-import { resolveCloudUrl, describeCloudLink } from "./cloud.ts";
-import {
-  composeDaemonStatus,
-  daemonEntryArg,
-  realignDaemonAfterUpgrade,
-} from "./daemon-lifecycle.ts";
 import { normalizeDenoPermissions } from "./deno-permissions.ts";
 import { commandRuntime } from "./install-mode.ts";
 
@@ -1725,6 +1692,7 @@ Every alert also supports sustained durations in the JSON file
   }
 
   async cmdDeploy(args: string[]) {
+const { DeployManager } = await import("./deploy.ts");
     const configFile = args[0];
     const environment = args[1];
 
@@ -2074,6 +2042,9 @@ Examples:
   }
 
   async cmdCloud(args: string[]) {
+const { requestDeviceCode, pollDeviceToken, browserPlausible, openBrowser, loadCloudUser, clearCloudUser } =
+      await import("./cloud-auth.ts");
+    const { resolveCloudUrl } = await import("./cloud.ts");
     const sub = args[0];
     const rest = args.slice(1);
 
@@ -2368,6 +2339,9 @@ ${colorize("Notes:", "dim")}
    * --no-browser to skip the tab-open attempt on desktops.
    */
   async cmdLogin(args: string[]) {
+const { requestDeviceCode, pollDeviceToken, browserPlausible, openBrowser, loadCloudUser, cloudUserMe, clearCloudUser, saveCloudUser } =
+      await import("./cloud-auth.ts");
+    const { resolveCloudUrl } = await import("./cloud.ts");
     let url: string | undefined;
     let noBrowser = false;
     for (let i = 0; i < args.length; i++) {
@@ -2434,6 +2408,7 @@ ${colorize("Notes:", "dim")}
   }
 
   async cmdLogout() {
+const { loadCloudUser, cloudUserRevoke, clearCloudUser } = await import("./cloud-auth.ts");
     const cred = await loadCloudUser();
     if (!cred) {
       console.log(colorize("Not logged in.", "yellow"));
@@ -2452,6 +2427,7 @@ ${colorize("Notes:", "dim")}
   }
 
   async cmdWhoami() {
+const { loadCloudUser, cloudUserMe } = await import("./cloud-auth.ts");
     const cred = await loadCloudUser();
     if (!cred) {
       console.log(colorize("Not logged in — run `pboss login`.", "yellow"));
@@ -2481,6 +2457,14 @@ ${colorize("Notes:", "dim")}
    *                 (fixes a misdetected machine once and for all)
    */
   async cmdUpgrade(args: string[]) {
+const {
+      currentChannelContext, detectChannel, configuredRuntimeChannel, resolveUpgradeChannel,
+      runtimeForChannel, buildUpgradePlan, compareVersions, fetchLatestVersion,
+      probeDenoMinDepAge, runUpgradePlan, verifyInstalledVersion, writeChannelStamp,
+    } = await import("./upgrade.ts");
+    const { realignDaemonAfterUpgrade } = await import("./daemon-lifecycle.ts");
+    const { fetchDenoEligibility } = await import("./deno-eligibility.ts");
+    const { describeCloudLink } = await import("./cloud.ts");
     const dryRun = args.includes("--check") || args[0] === "check";
     const assumeYes = args.includes("--yes") || args.includes("-y");
     const channelFlagIdx = args.indexOf("--channel");
@@ -2855,6 +2839,7 @@ ${colorize("Notes:", "dim")}
    * verified for it. Any failure leaves the previous selection untouched.
    */
   async cmdRuntimeChange(args: string[]) {
+    const { probeDenoMinDepAge } = await import("./upgrade.ts");
     // An explicit non-interactive answer keeps scripts honest (spec §12's
     // selector is interactive; automation pins it instead of guessing).
     const answer = args.find((a) => a.startsWith("--answer="));
@@ -3023,6 +3008,7 @@ ${colorize("Notes:", "dim")}
   }
 
   async cmdEnv(args: string[]) {
+const { EnvManager } = await import("./env-manager.ts");
     const envMgr = new EnvManager();
     const subCmd = args[0];
 
@@ -3201,6 +3187,7 @@ ${colorize("Notes:", "dim")}
 
   /** `pboss daemon status` — the issue #41 report. */
   private async daemonStatusFlow(): Promise<number> {
+const { composeDaemonStatus, daemonEntryArg } = await import("./daemon-lifecycle.ts");
     const report = composeDaemonStatus({
       live: await probeDaemon(),
       installedVersion: VERSION,
@@ -3735,6 +3722,7 @@ ${colorize("Notes:", "dim")}
         // deno-flavored daemon shares the spawning session's process group
         // and POSIX kills that group when a session leader exits / the
         // terminal tears down; the daemon must outlive all of it.
+        const { default: Daemon, ignoreHangup } = await import("./daemon.ts");
         ignoreHangup();
         // Reboot-survival self-heal: when we come up OUTSIDE systemd (CLI
         // on-demand), linger is usually off — flip it on so the NEXT reboot

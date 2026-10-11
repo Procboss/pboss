@@ -31,13 +31,8 @@ import { ensureDirs, generateId } from "./utils.ts";
 import { daemonSpawnCommand } from "./install-mode.ts";
 import { ignore } from "./error-handling.ts";
 import { probeDaemon, waitForDaemon, stopDaemonIfRunning } from "./daemon-probe.ts";
-import {
-  bootServiceKindForCurrentHome,
-  controllableService,
-  startBootService,
-  bootServiceLabel,
-} from "./startup-manager.ts";
-import Daemon from "./daemon.ts";
+
+import type Daemon from "./daemon.ts"; // type-only — the class loads on demand (CLI hot path keeps the daemon graph out)
 import {
   PROCESS_EVENT_KINDS,
   type PbossProcessEvent,
@@ -352,6 +347,7 @@ export class PBoss extends EventEmitter<PBossEvents> {
 
     if (this.noDaemon) {
       if (!this._inProcessDaemon) {
+        const { default: Daemon } = await import("./daemon.ts");
         this._inProcessDaemon = new Daemon();
         await this._inProcessDaemon.initialize(false);
       }
@@ -427,6 +423,7 @@ export class PBoss extends EventEmitter<PBossEvents> {
 
     if (this.noDaemon) {
       if (!this._inProcessDaemon) {
+        const { default: Daemon } = await import("./daemon.ts");
         this._inProcessDaemon = new Daemon();
         await this._inProcessDaemon.initialize(false);
       }
@@ -772,6 +769,7 @@ export class PBoss extends EventEmitter<PBossEvents> {
   ): Promise<void> {
     if (this.noDaemon) {
       if (!this._inProcessDaemon) {
+        const { default: Daemon } = await import("./daemon.ts");
         this._inProcessDaemon = new Daemon();
         await this._inProcessDaemon.initialize(false);
       }
@@ -1306,6 +1304,8 @@ export class PBoss extends EventEmitter<PBossEvents> {
     // ── The service path: the daemon belongs to the manager (issue #41) ──
     // Home-scoped: a unit that serves ANOTHER home answers "none" here —
     // it can never start THIS socket's daemon.
+    const { bootServiceKindForCurrentHome, controllableService, startBootService, bootServiceLabel } =
+      await import("./startup-manager.ts");
     const kind = await bootServiceKindForCurrentHome();
     if (controllableService(kind)) {
       const r = await startBootService();
@@ -1549,6 +1549,7 @@ export class PBoss extends EventEmitter<PBossEvents> {
   async send(message: DaemonMessage): Promise<DaemonResponse> {
     if (this.noDaemon) {
       if (!this._inProcessDaemon) {
+        const { default: Daemon } = await import("./daemon.ts");
         this._inProcessDaemon = new Daemon();
         await this._inProcessDaemon.initialize(false);
       }
