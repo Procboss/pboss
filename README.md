@@ -64,12 +64,14 @@ load balancer).
 **Latest re-runs: pboss v1.8.0 vs pm2 5.4.3** (node + bun suites, standard
 profile: 10/100/500 connections × 60 s × 5 repeats per manager per mode; 105
 measured load runs each, zero errors/timeouts/non-2xx; zero failures and zero
-orphans through every 50-restart storm) **and pboss v1.8.0 vs pup 1.0.4**
-(deno suite, same standard profile: 60 measured load runs, zero
+orphans through every 50-restart storm) **and pboss v1.8.1 vs pup 1.0.4**
+(deno suite, same standard profile: 31 measured load runs, zero
 errors/timeouts/non-2xx; crash recovery, worker respawn and restart storms
-for both managers at their out-of-the-box restart policies). The suite
-READMEs in the benchmarks repo regenerate this summary automatically on every
-run, so what you read there is always the latest published measurement.
+for both managers at their out-of-the-box restart policies — pboss run from a
+git checkout of this repo under `deno run`, the same runtime pup itself uses).
+The suite READMEs in the benchmarks repo regenerate this summary automatically
+on every run, so what you read there is always the latest published
+measurement.
 
 **Node apps — cluster mode, 100 connections, 2 workers** (both managers
 native `node:cluster`):
@@ -100,19 +102,22 @@ SIGKILLed worker is replaced in **~81 ms** with `/health` continuity held at
 
 | Metric | pup | pboss | Winner |
 | --- | --- | --- | --- |
-| Average requests/sec (cluster) | 13,035 | 73,435 | **pboss (+463%)** |
-| Average latency, mean (cluster) | 7.25 ms | 0.70 ms | **pboss (−90%)** |
-| Average CPU of tree (cluster) | 123.1% | 63.2% | **pboss (−49%)** |
-| Average memory of tree (cluster) | 267.4 MB | 163.5 MB | **pboss (−39%)** |
-| Cold startup, fork (median) | 1,063 ms | 339 ms | **pboss (−68%)** |
-| Warm startup, fork (median) | 273 ms | 136 ms | **pboss (−50%)** |
-| Idle overhead (RSS) | 88.8 MB | 63.7 MB | **pboss (−28%)** |
-| **SIGKILL recovery, fork (mean)** | 10,959 ms | **67 ms** | **pboss (−99.4%)** |
-| **Worker respawn, cluster (mean)** | 10,834 ms | **84 ms** | **pboss (−99.2%)** |
-| Restart storm, fork (median) | 1,012 ms | 167 ms | **pboss (−84%)** |
+| Average requests/sec (cluster) | 12,444 | 69,088 | **pboss (+455%)** |
+| Average latency, mean (cluster) | 7.51 ms | 0.96 ms | **pboss (−87%)** |
+| Average CPU of tree (cluster) | 121.8% | 62.2% | **pboss (−49%)** |
+| Average memory of tree (cluster) | 269.4 MB | 158.2 MB | **pboss (−41%)** |
+| Cold startup, fork (median) | 1,142 ms | 316 ms | **pboss (−72%)** |
+| Warm startup, fork (median) | 285 ms | 159 ms | **pboss (−44%)** |
+| Idle overhead (RSS) | 88.3 MB | 63.3 MB | **pboss (−28%)** |
+| **SIGKILL recovery, fork (mean)** | 10,958 ms | **67 ms** | **pboss (−99.4%)** |
+| **Worker respawn, cluster (mean)** | 10,921 ms | **87 ms** | **pboss (−99.2%)** |
+| Health stayed up through worker kills | 70% | **100%** | **pboss** |
+| Restart storm, fork (median) | 1,015 ms | 106 ms | **pboss (−90%)** |
 
-(Deno fork-mode throughput is a statistical tie — 72,534 vs 71,707 rps — the
-manager is not in the request path. pup's crash numbers reflect its default
+(Deno fork-mode throughput is a statistical tie — 68,491 vs 67,953 rps, well
+inside run-to-run noise — the manager is not in the request path; tree memory
+is −16% and every operational metric (startup, restart, crash recovery,
+storm) above is pboss's by 44–99%. pup's crash numbers reflect its default
 10-second restart delay, run out-of-the-box exactly like the pm2 suites; a
 tuned `restartDelayMs` narrows the gap but the default is what most installs
 run. Full tables: the deno suite's REPORT.md.)
