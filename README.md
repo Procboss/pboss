@@ -437,14 +437,14 @@ in lockstep with `package.json`, so the two registries can never drift:
 
 ```bash
 bun run publish:jsr:dry   # every JSR check, no upload (dirty tree is fine)
-git tag vX.Y.Z && git push --tags   # CI publishes with the JSR_API_TOKEN secret
+bun run publish:jsr       # the real publish (clean tree + token required)
 ```
 
-Pushing a `vX.Y.Z` tag triggers the
-[JSR workflow](.github/workflows/jsr-publish.yml); every branch push and PR
-runs its dry-run validation first. `bun run publish:jsr` publishes from a
-clean tree directly — it needs a token with publish scope on `@procboss`
-from [jsr.io/account/settings/tokens](https://jsr.io/account/settings/tokens).
+JSR publishing is MANUAL (owner decision, 2026-10-12: the CI dry-run job
+that ran on every push kept breaking the action, and the tag-triggered
+auto-publish went with it). `bun run publish:jsr` publishes from a clean
+tree directly — it needs a token with publish scope on `@procboss` from
+[jsr.io/account/settings/tokens](https://jsr.io/account/settings/tokens).
 Bump `package.json` first — `jsr.json` must match.
 
 ---

@@ -7,8 +7,9 @@ import { builtinModules } from "module";
  * JSR publishability contract (Task 242, 2026-10-10).
  *
  * pboss publishes to jsr.io as @procboss/pboss — the source tree is the
- * package. These pins keep the tree publishable so `bun run
- * publish:jsr:dry` (or the CI dry-run job) can never be broken silently:
+ * package, published MANUALLY (owner decision, 2026-10-12: the CI dry-run
+ * job is gone). These pins keep the tree publishable so `bun run
+ * publish:jsr:dry` (the manual pre-flight) is never broken silently:
  *
  * - jsr.json identity + version stay in lockstep with package.json
  * - every export target exists and mirrors package.json's bun conditions
