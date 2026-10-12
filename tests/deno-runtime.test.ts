@@ -82,6 +82,52 @@ function denoRun(
   }
 }
 
+/**
+ * Start the hermetic npm-registry stand-in (tests/helpers/fake-registry.ts)
+ * as its own PROCESS and wait for its announcement line. It must NOT be an
+ * in-process Bun.serve: the CLI runs in this file go through
+ * Bun.spawnSync, which blocks the whole test runtime — an in-process
+ * server would freeze mid-request and the CLI's version check would hang
+ * until its 10 s timeout (found the hard way: the first version of this
+ * helper hung exactly like that).
+ */
+async function startFakeRegistry(
+  latest: string,
+): Promise<{ url: string; stop: () => Promise<void> }> {
+  const child = Bun.spawn(
+    [process.execPath, "run", join(REPO, "tests/helpers/fake-registry.ts"), latest],
+    { stdout: "pipe", stderr: "pipe", stdin: "ignore" },
+  );
+  const decoder = new TextDecoder();
+  let firstLine = "";
+  const reader = child.stdout.getReader();
+  try {
+    while (!firstLine.includes("\n")) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      firstLine += decoder.decode(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const url = firstLine
+    .split("\n", 1)[0]!
+    .replace(/^FAKE_REGISTRY_READY\s+/, "")
+    .trim();
+  if (!/^http:\/\/127\.0\.0\.1:\d+$/.test(url)) {
+    child.kill("SIGKILL");
+    await child.exited;
+    throw new Error(`fake registry did not announce itself (got: ${JSON.stringify(firstLine)})`);
+  }
+  return {
+    url,
+    stop: async () => {
+      child.kill();
+      await child.exited;
+    },
+  };
+}
+
 describe("deno runtime adapter — real deno", () => {
   test.skipIf(!canDeno)("serve({path}) binds the unix socket AND socketFetch parses the reply (bugs 1+2)", async () => {
     const home = mkdtempSync(join(tmpdir(), "pboss-deno-serve-"));
@@ -320,11 +366,27 @@ console.log("child-wrote-after-parent-exit");
     "`pboss upgrade --check` completes under deno (the import.meta.dir crash — bug 5)",
     async () => {
       const home = mkdtempSync(join(tmpdir(), "pboss-deno-upg-"));
+      const pkg = join(home, "pkg");
+      mkdirSync(join(pkg, "dist"), { recursive: true });
       mkdirSync(join(home, ".pboss"), { recursive: true });
       writeFileSync(join(home, ".pboss", ".runtime"), "deno\n");
+      // A deno-global-shaped install (a gitless parent — running the repo's
+      // own dist resolves "source checkout"), so the DENO channel's full
+      // path runs: pin probe, eligibility, plan display, dry run.
+      copyFileSync(join(REPO, "dist", "cli.deno.js"), join(pkg, "dist", "cli.deno.js"));
+      copyFileSync(join(REPO, "dist", "cli.js"), join(pkg, "dist", "cli.js"));
+      // Hermetic registry: the run must exercise the full resolution no
+      // matter what network the machine sits behind.
+      const registry = await startFakeRegistry("9.9.9");
       try {
-        const proc = Bun.spawnSync([denoBin!, "run", "-A", DIST_ENTRY, "upgrade", "--check"], {
-          env: { ...process.env, HOME: home, PBOSS_HOME: join(home, ".pboss"), TERM: "dumb" },
+        const proc = Bun.spawnSync([denoBin!, "run", "-A", join(pkg, "dist", "cli.deno.js"), "upgrade", "--check"], {
+          env: {
+            ...process.env,
+            HOME: home,
+            PBOSS_HOME: join(home, ".pboss"),
+            PBOSS_REGISTRY: registry.url,
+            TERM: "dumb",
+          },
           stdout: "pipe",
           stderr: "pipe",
           stdin: "ignore",
@@ -340,11 +402,70 @@ console.log("child-wrote-after-parent-exit");
         // It got far enough to print the upgrade header (registry answers
         // or the hold note — either is a completed channel resolution).
         expect(out).toContain("pboss upgrade");
+        // The channel resolved as a deno install, and the local registry's
+        // 9.9.9 is ahead of this repo's VERSION, so the FULL dry run ran:
+        // version compare, deno window, plan display.
+        expect(out).toContain("Installed via:  deno (global)");
+        expect(out).toContain("Latest:");
+        expect(out).toContain("dry run");
+        expect(proc.exitCode).toBe(0);
       } finally {
+        await registry.stop();
         rmSync(home, { recursive: true, force: true });
       }
     },
     120_000,
+  );
+
+  test.skipIf(!canDeno || !DIST_BUILT)(
+    "`pboss upgrade` with an unreachable registry still shows the header first (owner report, 2026-10-12)",
+    async () => {
+      // The owner's machine could not reach registry.npmjs.org: the fetch
+      // timed out and the command exited on the red hold note ALONE — the
+      // header, the channel, and the current version never printed. The
+      // header now prints BEFORE the registry is contacted, so the
+      // hold-note failure mode can never hide what the command knows.
+      const home = mkdtempSync(join(tmpdir(), "pboss-deno-hold-"));
+      const pkg = join(home, "pkg");
+      mkdirSync(join(pkg, "dist"), { recursive: true });
+      mkdirSync(join(home, ".pboss"), { recursive: true });
+      writeFileSync(join(home, ".pboss", ".runtime"), "deno\n");
+      copyFileSync(join(REPO, "dist", "cli.deno.js"), join(pkg, "dist", "cli.deno.js"));
+      copyFileSync(join(REPO, "dist", "cli.js"), join(pkg, "dist", "cli.js"));
+      try {
+        // Port 1 on loopback: nothing listens, and Deno refuses restricted
+        // ports instantly (a blackhole address would burn the 10 s fetch
+        // timeout on every run of this test).
+        const proc = Bun.spawnSync([denoBin!, "run", "-A", join(pkg, "dist", "cli.deno.js"), "upgrade", "--check"], {
+          env: {
+            ...process.env,
+            HOME: home,
+            PBOSS_HOME: join(home, ".pboss"),
+            PBOSS_REGISTRY: "http://127.0.0.1:1",
+            TERM: "dumb",
+          },
+          stdout: "pipe",
+          stderr: "pipe",
+          stdin: "ignore",
+          timeout: 60_000,
+        });
+        const out = new TextDecoder().decode(proc.stdout) + new TextDecoder().decode(proc.stderr);
+        // The header — channel and current version — printed FIRST...
+        expect(out).toContain("pboss upgrade");
+        expect(out).toContain("Installed via:  deno (global)");
+        expect(out).toContain("Current:");
+        // ...then the honest hold note, and a non-zero exit (the upgrade
+        // cannot proceed without the registry's answer).
+        expect(out).toContain("Could not reach the registry");
+        expect(out.indexOf("pboss upgrade")).toBeLessThan(
+          out.indexOf("Could not reach the registry")
+        );
+        expect(proc.exitCode).toBe(1);
+      } finally {
+        rmSync(home, { recursive: true, force: true });
+      }
+    },
+    90_000,
   );
 
   test.skipIf(!canDeno)("inherit/ignore spawns answer null streams — the upgrade crash (bug 6)", async () => {
@@ -399,15 +520,18 @@ console.log("ADAPTER_OK");
       mkdirSync(join(home, ".pboss"), { recursive: true });
       mkdirSync(join(home, "shim"), { recursive: true });
       const log = join(home, "shim", "install.log");
+      // Hermetic registry (owner report, 2026-10-12): the e2e must not
+      // depend on the machine's reach of registry.npmjs.org.
+      const registry = await startFakeRegistry("1.7.4");
       try {
         // A deno-global-shaped install: the dist under a .git-less parent,
         // so the EXECUTING runtime (deno) resolves the channel — exactly
         // the owner's machine (`deno install -g npm:pboss/deno-entry`).
         copyFileSync(join(REPO, "dist", "cli.deno.js"), join(pkg, "dist", "cli.deno.js"));
-        // Report a version BELOW the registry's latest so the upgrade
-        // actually spawns the command (the owner's terminal: v1.6.6 →
-        // v1.6.7) — the repo's real version would answer "already up to
-        // date" and never execute the plan.
+        // Report a version BELOW the local registry's 1.7.4 so the
+        // upgrade actually spawns the command (the owner's terminal:
+        // v1.6.6 → v1.6.7) — the repo's real version would answer
+        // "already up to date" and never execute the plan.
         const REPO_VERSION = JSON.parse(readFileSync(join(REPO, "package.json"), "utf8")).version;
         const cliBody = readFileSync(join(REPO, "dist", "cli.js"), "utf8");
         writeFileSync(
@@ -438,6 +562,7 @@ console.log("ADAPTER_OK");
               ...process.env,
               HOME: home,
               PBOSS_HOME: join(home, ".pboss"),
+              PBOSS_REGISTRY: registry.url,
               PATH: [join(home, "shim"), process.env.PATH ?? ""].join(":"),
               TERM: "dumb",
             },
@@ -473,6 +598,7 @@ console.log("ADAPTER_OK");
           expect(logged).toContain("--min-dep-age=0");
         }
       } finally {
+        await registry.stop();
         rmSync(home, { recursive: true, force: true });
       }
     },

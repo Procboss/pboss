@@ -36,7 +36,7 @@ import { join, dirname } from "path";
 import { fileURLToPath } from "node:url";
 import { PBOSS_HOME } from "./constants.ts";
 import { ignore } from "./error-handling.ts";
-import { DENO_MIN_DEP_AGE_FLAG, helpTextSupportsMinDepAge } from "./deno-eligibility.ts";
+import { DENO_MIN_DEP_AGE_FLAG, helpTextSupportsMinDepAge, npmRegistryBase } from "./deno-eligibility.ts";
 import { getRuntime } from "./runtime/index.ts";
 const R = getRuntime();
 
@@ -555,8 +555,14 @@ export function compareVersions(a: string, b: string): number {
   return 0;
 }
 
-/** The canonical version source for every channel (they all build from it). */
-export const PBOSOL_REGISTRY_URL = "https://registry.npmjs.org/pboss/latest";
+/**
+ * The canonical version source for every channel (they all build from it).
+ * PBOSS_REGISTRY overrides the default host (npmRegistryBase — mirrors, and
+ * the e2e suite's local stand-in); the override resolves at call time.
+ */
+export function registryLatestUrl(): string {
+  return `${npmRegistryBase()}/pboss/latest`;
+}
 
 /** npm registry tarball for an exact version (what PBOSS_VERSION installs). */
 export const PBOSOL_TARBALL_URL = "https://registry.npmjs.org/pboss/-/pboss-<version>.tgz";
@@ -623,7 +629,7 @@ export async function probeDenoMinDepAge(
  */
 export async function fetchLatestVersion(
   fetcher: typeof fetch = fetch,
-  url: string = PBOSOL_REGISTRY_URL,
+  url: string = registryLatestUrl(),
 ): Promise<string | null> {
   try {
     const res = await fetcher(url, {

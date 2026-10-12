@@ -2524,6 +2524,24 @@ const {
       ? runtimeForChannel(runtimeChannel)
       : R.name;
 
+    // The header prints BEFORE the registry is contacted (owner report,
+    // 2026-10-12: a machine behind an unreachable registry saw ONLY the
+    // red hold note — the channel pboss had already resolved and the
+    // current version never showed). The label never depends on the
+    // registry's answer, so a label-only plan is safe to build here; the
+    // real plan (version pin, deno window) is built below once the
+    // registry answers.
+    const headerPlan = buildUpgradePlan(
+      channel,
+      process.platform,
+      undefined,
+      undefined,
+      universalRuntime
+    );
+    console.log(colorize("⚡ pboss upgrade", "bold"));
+    console.log(`  Installed via:  ${headerPlan.label}`);
+    console.log(`  Current:        v${VERSION}`);
+
     // The registry's latest is known BEFORE the plan is built, because the
     // universal channel pins it into the installer command
     // (PBOSS_VERSION=…) so `curl | bash` compiles exactly the release this
@@ -2582,10 +2600,6 @@ const {
       }
     }
     const plan = buildUpgradePlan(channel, process.platform, latest, denoPin, universalRuntime);
-
-    console.log(colorize("⚡ pboss upgrade", "bold"));
-    console.log(`  Installed via:  ${plan.label}`);
-    console.log(`  Current:        v${VERSION}`);
 
     const cmp = compareVersions(VERSION, effectiveLatest);
 
@@ -3443,6 +3457,8 @@ const { composeDaemonStatus, daemonEntryArg } = await import("./daemon-lifecycle
                                   deno / brew / snap) — never spawns a second CLI
                                   --check: dry run, --yes: skip confirm
                                   --channel X: fix a misdetected channel
+                                  PBOSS_REGISTRY env: version-check host
+                                  override (mirror or offline stand-in)
     
     ${colorize("Deploy:", "cyan")}
     deploy <config> <env> [setup] Deploy using ecosystem config

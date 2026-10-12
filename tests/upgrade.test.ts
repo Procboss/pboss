@@ -14,6 +14,7 @@ import {
   buildUpgradePlan,
   compareVersions,
   fetchLatestVersion,
+  registryLatestUrl,
   probeDenoMinDepAge,
   runUpgradePlan,
   healWindowsShims,
@@ -23,6 +24,7 @@ import {
   type ChannelContext,
   type UniversalRuntimeHint,
 } from "../src/upgrade";
+import { registryPackumentUrl } from "../src/deno-eligibility";
 import { VERSION } from "../src/constants";
 
 /**
@@ -640,6 +642,38 @@ describe("fetchLatestVersion (injectable fetcher)", () => {
       throw new Error("network down");
     }) as unknown as typeof fetch;
     expect(await fetchLatestVersion(throwing, "https://example.test/latest")).toBeNull();
+  });
+
+  test("PBOSS_REGISTRY overrides the version-check host (owner report, 2026-10-12)", async () => {
+    // A machine behind a firewall (or the e2e suite's local stand-in)
+    // points the version checks at a different host; trailing slashes are
+    // trimmed so the join never doubles them, and an unset/empty value
+    // keeps the public npm registry.
+    const seen: string[] = [];
+    const recording = (async (url: string | URL | Request) => {
+      seen.push(String(url));
+      return new Response(JSON.stringify({ version: "1.7.4" }), { status: 200 });
+    }) as unknown as typeof fetch;
+
+    const had = process.env.PBOSS_REGISTRY;
+    try {
+      process.env.PBOSS_REGISTRY = "https://registry.npmmirror.com/";
+      expect(await fetchLatestVersion(recording)).toBe("1.7.4");
+      expect(seen[0]).toBe("https://registry.npmmirror.com/pboss/latest");
+
+      expect(registryLatestUrl()).toBe("https://registry.npmmirror.com/pboss/latest");
+      expect(registryPackumentUrl()).toBe("https://registry.npmmirror.com/pboss");
+
+      delete process.env.PBOSS_REGISTRY;
+      expect(registryLatestUrl()).toBe("https://registry.npmjs.org/pboss/latest");
+      expect(registryPackumentUrl()).toBe("https://registry.npmjs.org/pboss");
+
+      process.env.PBOSS_REGISTRY = "   ";
+      expect(registryLatestUrl()).toBe("https://registry.npmjs.org/pboss/latest");
+    } finally {
+      if (had === undefined) delete process.env.PBOSS_REGISTRY;
+      else process.env.PBOSS_REGISTRY = had;
+    }
   });
 });
 

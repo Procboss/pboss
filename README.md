@@ -414,6 +414,12 @@ pboss upgrade --check    # see current → latest, the detected channel, and the
 pboss upgrade            # do it (adds --channel <x> to repair a misdetected channel)
 ```
 
+The header (channel + current version) prints before the registry is even
+contacted, so a network failure shows the honest hold note — never a bare
+error. Machines behind a firewall can point the version check at a mirror
+(or any stand-in) with `PBOSS_REGISTRY`, e.g.
+`PBOSS_REGISTRY=https://registry.npmmirror.com pboss upgrade --check`.
+
 <!-- 2026-10-04: the universal-installer channel installs through the selected
      runtime's package ecosystem now, so the .runtime selection decides the
      upgrade command — the "installer" channel and the runtime channels are

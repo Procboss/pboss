@@ -70,8 +70,30 @@ export function helpTextSupportsMinDepAge(help: string): boolean {
   return help.includes("--min-dep-age") || help.includes("--minimum-dependency-age");
 }
 
-/** The full packument is required — the `time` map is not in /latest. */
-export const PBOSS_PACKUMENT_URL = "https://registry.npmjs.org/pboss";
+/**
+ * The npm registry every version check consults — the packument here, the
+ * /latest document in upgrade.ts. PBOSS_REGISTRY overrides the default:
+ * a mirror behind a firewall (npmmirror.com), or the e2e suite's local
+ * stand-in (the tests must not depend on the machine's reach of
+ * registry.npmjs.org — an unreachable network took two of them down while
+ * the rest of the suite was green, owner report 2026-10-12). Trailing
+ * slashes are trimmed so the base join never doubles them; an unset,
+ * empty, or whitespace-only value keeps the public registry.
+ */
+export function npmRegistryBase(): string {
+  const override = (process.env.PBOSS_REGISTRY ?? "").trim().replace(/\/+$/, "");
+  return override || "https://registry.npmjs.org";
+}
+
+/**
+ * The full packument is required — the `time` map is not in /latest.
+ * Resolves the PBOSS_REGISTRY override at call time (a fresh value for a
+ * subprocess is set before it boots, so import-time binding would also
+ * work — call time is simply the honest shape for an env override).
+ */
+export function registryPackumentUrl(): string {
+  return `${npmRegistryBase()}/pboss`;
+}
 
 /** What every deno install/upgrade surface needs to know about the window. */
 export interface DenoEligibility {
@@ -150,7 +172,7 @@ export function parseDenoEligibility(doc: PackumentLike, now: number = Date.now(
  */
 export async function fetchDenoEligibility(
   fetcher: typeof fetch = fetch,
-  url: string = PBOSS_PACKUMENT_URL,
+  url: string = registryPackumentUrl(),
 ): Promise<DenoEligibility | null> {
   try {
     const res = await fetcher(url, {
