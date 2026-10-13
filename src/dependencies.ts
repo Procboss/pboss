@@ -459,7 +459,14 @@ export class DependencyEngine {
   /** Swappable provider — tests inject fakes; production uses systemd. */
   public provider: SystemServiceProvider = new SystemdServiceProvider();
 
-  constructor(private readonly host: DependencyHost) {}
+  // NOTE: erasable-only syntax (no parameter property) — the whole src tree
+  // stays runnable under plain Node type stripping (src/cli-node.ts), which
+  // rejects `constructor(private …)` transforms.
+  private readonly host: DependencyHost;
+
+  constructor(host: DependencyHost) {
+    this.host = host;
+  }
 
   /** Live containers matching a dependency name (exact or cluster prefix). */
   containersFor(name: string): ProcessContainer[] {

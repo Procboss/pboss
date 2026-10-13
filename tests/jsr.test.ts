@@ -100,10 +100,33 @@ describe("jsr.json: package identity and version lockstep", () => {
 describe("jsr.json: exports mirror package.json and exist on disk", () => {
   test("the trio — api / cli / types — same targets as npm's bun conditions", () => {
     const npmDot = pkg.exports["."] as { bun: string };
-    const npmCli = pkg.exports["./cli"] as { bun: string };
     expect(jsr.exports["."]).toBe(npmDot.bun);
-    expect(jsr.exports["./cli"]).toBe(npmCli.bun);
     expect(jsr.exports["./types"]).toBe(pkg.exports["./types"] as string);
+  });
+
+  test("the cli export is PER-RUNTIME — one entry per runtime, each with its exact shebang (owner spec, 2026-10-13)", () => {
+    // JSR is Deno's home registry: the DEFAULT ./cli entry is the deno one.
+    expect(jsr.exports["./cli"]).toBe("./src/cli-deno.ts");
+    // The bun entry is the same file npm's bun condition resolves.
+    const npmCli = pkg.exports["./cli"] as { bun: string };
+    expect(jsr.exports["./cli/bun"]).toBe("./src/index.ts");
+    expect(jsr.exports["./cli/bun"]).toBe(npmCli.bun);
+    expect(jsr.exports["./cli/node"]).toBe("./src/cli-node.ts");
+
+    // Every entry's FIRST LINE is its own runtime's exact shebang — the
+    // original complaint: JSR's cli entry carried `#!/usr/bin/env bun`
+    // while deno users were the ones running it.
+    expect(readFileSync(join(REPO, "src/index.ts"), "utf8").startsWith("#!/usr/bin/env bun\n")).toBe(true);
+    // `env -S` carries the -A a process manager needs on direct execution.
+    expect(readFileSync(join(REPO, "src/cli-deno.ts"), "utf8").startsWith("#!/usr/bin/env -S deno run -A\n")).toBe(true);
+    expect(readFileSync(join(REPO, "src/cli-node.ts"), "utf8").startsWith("#!/usr/bin/env node\n")).toBe(true);
+
+    // The shims boot the real CLI — no divergent copy of the entrypoint.
+    for (const shim of ["src/cli-deno.ts", "src/cli-node.ts"]) {
+      const body = readFileSync(join(REPO, shim), "utf8");
+      expect(body).toContain('from "./index.ts"');
+      expect(body).toContain("main");
+    }
   });
 
   test("every export target resolves to a real file", () => {

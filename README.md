@@ -212,6 +212,13 @@ needs the grants, `--min-dep-age=0` to bypass Deno's 24-hour hold on the
 freshly published version; add `--reload --force` to re-resolve and
 overwrite an existing installation in place.
 
+The CLI export is per-runtime, each entry opening with its own exact
+shebang: `/cli` is the Deno entry (`#!/usr/bin/env -S deno run -A`),
+`/cli/bun` the Bun entry (`#!/usr/bin/env bun`), `/cli/node` the Node
+entry (`#!/usr/bin/env node`) — all three boot the same CLI. Publishing is
+manual: `bun run publish:jsr` from a clean tree (`publish:jsr:dry` to
+check).
+
 ### The Runtime Selection
 
 `pboss` never guesses a runtime from whatever happens to be installed —
@@ -353,8 +360,9 @@ deny-by-default — the first restricted operation fails fast with the pointed
 `--allow-*` hint); a stated list grants exactly what it says. Short form is
 `--perms` — deliberately no single-letter alias: `-p` is already `--port`
 (PM2 parity), and a `-P`/`-p` typo would silently set the port. The
-`--permissions=` / `--perms=` spellings work too. The resolved route also
-runs `--quiet`: deno prints its "Listening on http://…" banner to STDERR,
+`--permissions=` / `--perms=` spellings work too.
+
+The resolved route also runs `--quiet`: deno prints its "Listening on http://…" banner to STDERR,
 which every process manager (pboss included) labels as an error — a healthy
 serving app no longer paints your logs red. Want the banner or full access?
 State it: your own `--interpreter-args`, or `--permissions all`.

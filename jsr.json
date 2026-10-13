@@ -1,10 +1,12 @@
 {
   "$schema": "https://jsr.io/schema/config-file.v1.json",
   "name": "@procboss/pboss",
-  "version": "1.7.6",
+  "version": "1.7.7",
   "exports": {
     ".": "./src/api.ts",
-    "./cli": "./src/index.ts",
+    "./cli": "./src/cli-deno.ts",
+    "./cli/bun": "./src/index.ts",
+    "./cli/node": "./src/cli-node.ts",
     "./types": "./src/types.ts"
   },
   "publish": {

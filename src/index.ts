@@ -3787,7 +3787,14 @@ const { composeDaemonStatus, daemonEntryArg } = await import("./daemon-lifecycle
 // Entrypoint
 // ---------------------------------------------------------------------------
 
-async function main() {
+/**
+ * Boot the pboss CLI. Exported (with the explicit return type JSR's slow-
+ * types check requires) for the per-runtime source entries — src/cli-deno.ts
+ * and src/cli-node.ts are one-line shims over THIS function, each opening
+ * with its own runtime's exact shebang. The runtime-aware body mirrors
+ * src/main.ts, the dist entry.
+ */
+export async function main(): Promise<void> {
   await ensureDirs();
   // The dev entry mirrors src/main.ts: a deno source run persists deno as
   // the machine's selection when nothing is selected (no wrapper does it on

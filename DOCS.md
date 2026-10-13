@@ -207,8 +207,9 @@ because deno executes npm package bins as modules — a shell wrapper cannot
 serve that path; the deno command runs `dist/cli.deno.js` directly, and the
 installer persists the selection to `~/.pboss/.runtime` itself (the file
 the wrapper architecture reads — `--runtime` being a launcher flag, deno's
-shim has no wrapper to consume it). The `--min-dep-age=0` flag disables
-Deno's 24-hour supply-chain hold (see the Deno Global Install section); the
+shim has no wrapper to consume it).
+
+The `--min-dep-age=0` flag disables Deno's 24-hour supply-chain hold (see the Deno Global Install section); the
 universal installer passes it too, pinning the newest release, while
 `runtime change` and `upgrade` run the same unpinned command; older Denos
 pin the newest resolvable version instead.
@@ -312,6 +313,11 @@ bun build --compile --minify --bytecode ./src/index.ts --outfile dist/pboss
 pboss --version
 ```
 
+The `pboss` command lands in the package manager's bin directory
+(`~/.bun/bin`, the npm global bin, or `~/.deno/bin`) — normally already on
+your `PATH`. When it is not, add that directory to your shell profile and
+open a new terminal; `pboss` is found from then on.
+
 ---
 
 ## Quick Start
@@ -401,7 +407,9 @@ runtime running pboss (owner rule, 2026-09-29): Bun runs the app with
 [tsx](https://github.com/privatenumber/tsx), shipped as an optional dependency;
 `--experimental-strip-types` on Node ≥ 22.6 is the fallback), Deno with
 `deno run --quiet` — no permission flags, deno's own deny-by-default (owner
-rule, 2026-10-08). A compiled standalone install has no JS runtime, so those
+rule, 2026-10-08).
+
+A compiled standalone install has no JS runtime, so those
 discover one per machine: `bun run` → `deno run --quiet` → `node`. Stating a
 runtime with `--interpreter` always wins.
 
@@ -505,15 +513,16 @@ Merge rules (verified against deno 2.9.7):
 **Permissions apply in BOTH execution modes.** Fork (single instance) and
 cluster (`--instances N`) build the worker command through the same merge
 choke point, so a stated list grants exactly what it says in either mode —
-and the unstated deny-by-default holds in both too. In cluster mode the
-`SO_REUSEPORT` decoration adds only `--unstable-net` and the shim preload
-(gated API access, never a permission grant — verified against deno 2.9.7:
-an unstated cluster app still dies at the bind with the pointed
-`Requires net access, run again with --allow-net`), and the preload file
-itself is loaded by the runtime's module graph, which needs no `allow-read`
-grant. A crash-respawn, `pboss restart`, scale or daemon resurrect re-derives
-the command from the saved config, so the permission list is enforced for
-the process's whole supervised life.
+and the unstated deny-by-default holds in both too.
+
+In cluster mode the `SO_REUSEPORT` decoration adds only `--unstable-net`
+and the shim preload (gated API access, never a permission grant — verified
+against deno 2.9.7: an unstated cluster app still dies at the bind with the
+pointed `Requires net access, run again with --allow-net`), and the preload
+file itself is loaded by the runtime's module graph, which needs no
+`allow-read` grant. A crash-respawn, `pboss restart`, scale or daemon
+resurrect re-derives the command from the saved config, so the permission
+list is enforced for the process's whole supervised life.
 
 ### Runtime discovery — how pboss finds `bun` (and why it matters)
 
@@ -1704,7 +1713,7 @@ The boot service is normally installed **automatically** — package-manager ins
 
 Install the boot startup service:
 
-- **Linux:** writes and enables a **per-user systemd unit** (`~/.config/systemd/user/pboss.service`) and drives it with `systemctl --user` — no root, no sudo. After bring-up, pboss best-effort runs `loginctl enable-linger <user>` so the daemon starts at BOOT rather than at first login; where linger is refused, the install still succeeds and says so. The start is `--no-block` with a hard health deadline (unit state + socket ping), so `install` always returns — a failing daemon produces a diagnosis, never a hang. Under sudo it is rejected — root has no user systemd session.
+- **Linux:** writes and enables a **per-user systemd unit** (`~/.config/systemd/user/pboss.service`) and drives it with `systemctl --user` — no root, no sudo. After bring-up, pboss best-effort runs `loginctl enable-linger <user>` so the daemon starts at BOOT rather than at first login; where linger is refused, the install still succeeds and says so. The start is `--no-block` with a hard health deadline (unit state + socket ping), so `install` always returns — a failing daemon produces a diagnosis, never a hang. Running as root is rejected — root has no user systemd session.
 - **macOS:** writes and loads a `launchd` LaunchAgent (`~/Library/LaunchAgents/com.pboss.daemon.plist`). No root needed or wanted. The plist pins `PATH`, `HOME`, and `PBOSS_HOME` so the daemon resolves the same `~/.pboss` as your interactive commands.
 - **Windows:** registers a Scheduled Task (`PBOSS_Daemon`) starting the daemon at **this user's logon** via `Register-ScheduledTask` (RunLevel **Limited** — Highest would require an elevated shell to register; the daemon only needs the user's normal token). No elevation required. Hosts that deny even per-user task registration ("Access is denied") fall back to the **per-user Registry Run key** (`HKCU\Software\Microsoft\Windows\CurrentVersion\Run\PBOSS_Daemon`) — same logon trigger, zero Task Scheduler permissions; the install says which mechanism was used. Only when both fail does the command exit nonzero. The daemon is also started immediately (`pboss upgrade` stops it before replacing the binary).
 
@@ -1924,7 +1933,9 @@ pboss daemon restart    # stop the old daemon, start the current one —
 
 `start` and `restart` also restore the saved process list (the systemd unit's `ExecStartPost` does this on Linux; the CLI does it everywhere else), so `daemon stop` → `daemon start` round-trips the fleet. Stopping stops managed processes with it — that is the contract, same as `pboss kill`.
 
-Service-awareness extends to the implicit path too: any command that needs the daemon (`pboss list`, `pboss start`, …) brings it up **through the installed boot service** when one exists — never a free-floating daemon `systemctl status` cannot see (and that would race the unit's own daemon for the socket). On machines with no boot service — or where the manager is unreachable from the current context, like an `ssh host pboss list` one-liner before any login session — the daemon is spawned directly instead. That spawned daemon ignores `SIGHUP`, so it survives the terminal closing, SSH dropping, or being the session leader itself; the systemd unit additionally sweeps any stray daemon before its own daemon binds (`ExecStartPre=pboss kill`), so a leftover can never fail the unit with exit 81.
+Service-awareness extends to the implicit path too: any command that needs the daemon (`pboss list`, `pboss start`, …) brings it up **through the installed boot service** when one exists — never a free-floating daemon `systemctl status` cannot see (and that would race the unit's own daemon for the socket).
+
+On machines with no boot service — or where the manager is unreachable from the current context, like an `ssh host pboss list` one-liner before any login session — the daemon is spawned directly instead. That spawned daemon ignores `SIGHUP`, so it survives the terminal closing, SSH dropping, or being the session leader itself; the systemd unit additionally sweeps any stray daemon before its own daemon binds (`ExecStartPre=pboss kill`), so a leftover can never fail the unit with exit 81.
 
 A boot service only ever manages **the home it was installed for** — the unit/plist pins its own `PBOSS_HOME`. A CLI running against a *different* home (a `PBOSS_HOME` override, a test fixture, a second pboss instance) treats that service as if it were not installed: the daemon is spawned directly, `daemon stop`/`restart` never touch the other home's manager, and `daemon status` reports `Service: none`. The two homes' daemons cannot race each other — the socket and the startup conflict check are per-home.
 
