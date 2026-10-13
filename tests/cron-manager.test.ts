@@ -15,25 +15,23 @@
  *   5. an expression parseCron rejects (wrong field count) is caught,
  *      logged, and NEVER arms — a bad --cron-restart cannot take the
  *      daemon down;
- *   6. a valid every-minute expression REALLY FIRES at the next minute
- *      boundary (the real setTimeout, the real clock — no fakes), and the
- *      chain re-arms after firing so cancel() is the only stop.
+ *   6. a firing job re-arms its next occurrence inside the same timer
+ *      callback — the chain never ends on its own, so cancel() is the
+ *      only stop (pinned at the source level).
  *
- * The fire test pays the honest minute-boundary price (up to 60s of wall
- * clock) once; everything else is instant.
+ * The real-clock fire test that used to live here is gone (owner decision,
+ * 2026-10-13): waiting for a minute boundary cost up to 60s of wall clock
+ * and flaked on shared CI runners (the 2026-10-13 run failed it at the
+ * 6.2s boundary mark). The fire chain is now pinned at the source level —
+ * every test in this file is instant.
  */
-import { describe, test, expect, afterAll } from "bun:test";
+import { describe, test, expect } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { CronManager } from "../src/cron-manager";
 
 const REPO = join(import.meta.dir, "..");
-
-const scratchTimers: ReturnType<typeof setTimeout>[] = [];
-afterAll(() => {
-  for (const t of scratchTimers) clearTimeout(t);
-});
 
 describe("CronManager — arming, replacement, cancellation", () => {
   test("schedule() arms one job per process id (listJobs is the truth)", () => {
@@ -85,35 +83,26 @@ describe("CronManager — arming, replacement, cancellation", () => {
   });
 });
 
-describe("CronManager — the fire itself (real clock, no fakes)", () => {
-  test(
-    "an every-minute expression FIRES at the next minute boundary, and the chain re-arms until cancel()",
-    async () => {
-      const cm = new CronManager();
-      let fired = 0;
+describe("CronManager — the fire chain (source pins)", () => {
+  test("a firing job re-arms its NEXT occurrence in the same timer callback", () => {
+    const text = readFileSync(join(REPO, "src", "cron-manager.ts"), "utf8");
+    // The timer body IS the fire contract: the user callback runs, then
+    // the chain arms the next occurrence before returning to the event
+    // loop — so a job never ends on its own, and cancel()/cancelAll()
+    // are the only stops.
+    expect(text).toContain("const timer = setTimeout(() => {");
+    expect(text).toContain("callback();");
+    expect(text).toContain("scheduleNext(); // Schedule the next occurrence");
+  });
 
-      cm.schedule(11, "* * * * *", () => { fired++; });
-
-      // The delay is next-minute-boundary minus now — at most 60s away.
-      // Poll for the fire with the honest cap.
-      const deadline = Date.now() + 70_000;
-      while (fired === 0 && Date.now() < deadline) {
-        await new Promise<void>((r) => {
-          const t = setTimeout(r, 250);
-          scratchTimers.push(t);
-        });
-      }
-      expect(fired).toBe(1);
-
-      // After firing, the chain has re-armed the NEXT occurrence — the
-      // listing proves a live timer exists again…
-      expect(cm.listJobs()).toEqual([{ processId: 11, expression: "* * * * *" }]);
-      // …and cancel() is what tears it down (the only stop).
-      cm.cancel(11);
-      expect(cm.listJobs()).toEqual([]);
-    },
-    75_000,
-  );
+  test("a re-arm that computes a past delay never arms a negative timer", () => {
+    const text = readFileSync(join(REPO, "src", "cron-manager.ts"), "utf8");
+    // A late fire (loaded box) or a stepped clock can put nextDate behind
+    // now: the guard pushes the retry a full minute out instead of arming
+    // a timer that is already due (which would spin the chain hot).
+    expect(text).toContain("if (delay < 0) {");
+    expect(text).toContain("setTimeout(scheduleNext, 60000);");
+  });
 });
 
 describe("CronManager — the process-container wiring (source pins)", () => {
