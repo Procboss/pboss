@@ -12,7 +12,9 @@ import { builtinModules } from "module";
  * publish:jsr:dry` (the manual pre-flight) is never broken silently:
  *
  * - jsr.json identity + version stay in lockstep with package.json
- * - every export target exists and mirrors package.json's bun conditions
+ * - every export target exists; the api/types entries mirror package.json's
+ *   bun conditions, and the CLI entries are JSR's own per-runtime surface
+ *   (CLI-first: the ROOT export is the deno CLI, owner spec 2026-10-15)
  * - every relative import in src/ carries an explicit .ts/.js/.json
  *   extension (JSR's resolver does no Node-style extension hunting)
  * - every bare import is a node builtin or an entry of jsr.json's import
@@ -98,15 +100,23 @@ describe("jsr.json: package identity and version lockstep", () => {
 });
 
 describe("jsr.json: exports mirror package.json and exist on disk", () => {
-  test("the trio — api / cli / types — same targets as npm's bun conditions", () => {
-    const npmDot = pkg.exports["."] as { bun: string };
-    expect(jsr.exports["."]).toBe(npmDot.bun);
+  test("CLI first — the ROOT export is the deno CLI; ./api and ./types mirror npm (owner spec, 2026-10-15)", () => {
+    // JSR is Deno's home registry and deno users meet the package through
+    // the CLI: `deno install -g jsr:@procboss/pboss` (no subpath) must
+    // boot it, so the root export IS the CLI. The API moved to ./api —
+    // npm's root export stays its single source of truth.
+    expect(jsr.exports["."]).toBe("./src/cli-deno.ts");
+    expect(jsr.exports["./api"]).toBe((pkg.exports["."] as { bun: string }).bun);
     expect(jsr.exports["./types"]).toBe(pkg.exports["./types"] as string);
+    // The "./cli" key is GONE — the root took over its role. A stale
+    // leftover would shadow the new layout.
+    expect(jsr.exports["./cli"]).toBeUndefined();
   });
 
-  test("the cli export is PER-RUNTIME — one entry per runtime, each with its exact shebang (owner spec, 2026-10-13)", () => {
-    // JSR is Deno's home registry: the DEFAULT ./cli entry is the deno one.
-    expect(jsr.exports["./cli"]).toBe("./src/cli-deno.ts");
+  test("the CLI export is PER-RUNTIME — one entry per runtime, each with its exact shebang (owner spec, 2026-10-13)", () => {
+    // JSR is Deno's home registry: the ROOT "." entry is the deno one
+    // (2026-10-15: cli first — it took over the old "./cli" key's role).
+    expect(jsr.exports["."]).toBe("./src/cli-deno.ts");
     // The bun entry is the same file npm's bun condition resolves.
     const npmCli = pkg.exports["./cli"] as { bun: string };
     expect(jsr.exports["./cli/bun"]).toBe("./src/index.ts");
