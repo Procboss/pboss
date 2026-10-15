@@ -3,8 +3,8 @@
   "name": "@procboss/pboss",
   "version": "1.7.7",
   "exports": {
-    ".": "./src/api.ts",
-    "./cli": "./src/cli-deno.ts",
+    ".": "./src/cli-deno.ts",
+    "./api": "./src/api.ts",
     "./cli/bun": "./src/index.ts",
     "./cli/node": "./src/cli-node.ts",
     "./types": "./src/types.ts"

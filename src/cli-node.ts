@@ -4,7 +4,7 @@
  *
  * This is the JSR package's `./cli/node` export. It exists for parity with
  * the per-runtime story — every runtime gets an entry whose shebang names
- * IT exactly (`./cli` is the deno entry, `./cli/bun` is src/index.ts with
+ * IT exactly (`.` is the deno entry, `./cli/bun` is src/index.ts with
  * the bun shebang) — and all three boot the SAME CLI in src/index.ts.
  *
  * Running TypeScript sources directly needs Node's type stripping

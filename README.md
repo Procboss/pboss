@@ -201,21 +201,21 @@ same command installs, reinstalls, and upgrades in place.
 **JSR (Deno, from source)**
 
 ```bash
-deno install -g -A --min-dep-age=0 --name pboss jsr:@procboss/pboss/cli
+deno install -g -A --min-dep-age=0 --name pboss jsr:@procboss/pboss
 ```
 
 [JSR](https://jsr.io/@procboss/pboss) serves the same TypeScript npm ships
 compiled — unbundled, with the registry transpiling per consumer. The
-`/cli` entry is the CLI (`deno run jsr:@procboss/pboss/cli` anywhere Deno
-runs), `.` the programmatic API, `./types` the type surface. The flags match
-the npm route above for the same reasons: `-A` because a process manager
-needs the grants, `--min-dep-age=0` to bypass Deno's 24-hour hold on the
-freshly published version; add `--reload --force` to re-resolve and
-overwrite an existing installation in place.
+package is CLI-first: `.` is the CLI (`deno run jsr:@procboss/pboss`
+anywhere Deno runs), `./api` the programmatic API, `./types` the type
+surface. The flags match the npm route above for the same reasons: `-A`
+because a process manager needs the grants, `--min-dep-age=0` to bypass
+Deno's 24-hour hold on the freshly published version; add `--reload
+--force` to re-resolve and overwrite an existing installation in place.
 
 The CLI export is per-runtime, each entry opening with its own exact
-shebang: `/cli` is the Deno entry (`#!/usr/bin/env -S deno run -A`),
-`/cli/bun` the Bun entry (`#!/usr/bin/env bun`), `/cli/node` the Node
+shebang: `.` is the Deno entry (`#!/usr/bin/env -S deno run -A`),
+`./cli/bun` the Bun entry (`#!/usr/bin/env bun`), `./cli/node` the Node
 entry (`#!/usr/bin/env node`) — all three boot the same CLI. Publishing is
 manual: `bun run publish:jsr` from a clean tree (`publish:jsr:dry` to
 check).
