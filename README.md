@@ -213,12 +213,14 @@ because a process manager needs the grants, `--min-dep-age=0` to bypass
 Deno's 24-hour hold on the freshly published version; add `--reload
 --force` to re-resolve and overwrite an existing installation in place.
 
-The CLI export is per-runtime, each entry opening with its own exact
-shebang: `.` is the Deno entry (`#!/usr/bin/env -S deno run -A`),
-`./cli/bun` the Bun entry (`#!/usr/bin/env bun`), `./cli/node` the Node
-entry (`#!/usr/bin/env node`) — all three boot the same CLI. Publishing is
-manual: `bun run publish:jsr` from a clean tree (`publish:jsr:dry` to
-check).
+JSR is Deno's registry, so the export set is deno-shaped: `.` is the Deno
+CLI (`#!/usr/bin/env -S deno run -A`) — the only CLI entry JSR carries.
+Bun and Node users install through npm instead (the same CLI, dispatched
+per runtime by the bin wrapper); the sibling source entries stay on disk —
+src/index.ts (`#!/usr/bin/env bun`), src/cli-node.ts
+(`#!/usr/bin/env node`) — for git-checkout and direct-source runs.
+Publishing is manual: `bun run publish:jsr` from a clean tree
+(`publish:jsr:dry` to check).
 
 ### The Runtime Selection
 

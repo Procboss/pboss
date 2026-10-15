@@ -5,10 +5,12 @@
  * This is the JSR package's ROOT export (`.`): JSR is Deno's home
  * registry, so the package is CLI-first — `deno run jsr:@procboss/pboss`
  * and `deno install -g jsr:@procboss/pboss` (no subpath) boot the
- * deno-flavored CLI, and its shebang names deno, exactly. The sibling
- * entries carry their own runtimes' shebangs: `./cli/bun` is src/index.ts
- * (`#!/usr/bin/env bun`) and `./cli/node` is src/cli-node.ts
- * (`#!/usr/bin/env node`); all three boot the SAME CLI in src/index.ts.
+ * deno-flavored CLI, and its shebang names deno, exactly. JSR carries no
+ * other CLI entry (owner trim, 2026-10-15): bun and node users install
+ * through npm, whose bin wrapper dispatches per runtime. The sibling
+ * source entries stay on disk for git-checkout runs — src/index.ts
+ * (`#!/usr/bin/env bun`) and src/cli-node.ts (`#!/usr/bin/env node`) —
+ * and all three boot the SAME CLI in src/index.ts.
  *
  * The shebang carries the permission grant a process manager needs —
  * `env -S` splits it into `deno run -A` (GNU coreutils >= 8.30, macOS >=

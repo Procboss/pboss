@@ -2,10 +2,12 @@
 /**
  * ProcBoss (pboss) — the Node.js CLI entry.
  *
- * This is the JSR package's `./cli/node` export. It exists for parity with
- * the per-runtime story — every runtime gets an entry whose shebang names
- * IT exactly (`.` is the deno entry, `./cli/bun` is src/index.ts with
- * the bun shebang) — and all three boot the SAME CLI in src/index.ts.
+ * The Node.js source entry — `node src/cli-node.ts` from a git checkout
+ * (JSR no longer exports it, owner trim 2026-10-15; npm users get the
+ * compiled dist/cli.node.js instead). It keeps the per-runtime parity:
+ * every runtime's entry opens with a shebang naming IT exactly (`.` on
+ * JSR is the deno entry, src/index.ts carries the bun shebang) — and all
+ * three boot the SAME CLI in src/index.ts.
  *
  * Running TypeScript sources directly needs Node's type stripping
  * (unflagged since Node 23.6; Node 22.6+ with --experimental-strip-types).

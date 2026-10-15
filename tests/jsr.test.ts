@@ -12,9 +12,10 @@ import { builtinModules } from "module";
  * publish:jsr:dry` (the manual pre-flight) is never broken silently:
  *
  * - jsr.json identity + version stay in lockstep with package.json
- * - every export target exists; the api/types entries mirror package.json's
- *   bun conditions, and the CLI entries are JSR's own per-runtime surface
- *   (CLI-first: the ROOT export is the deno CLI, owner spec 2026-10-15)
+ * - the exports are the trimmed trio (owner spec, 2026-10-15): `.` is the
+ *   deno CLI (CLI-first), `./api` and `./types` mirror package.json; the
+ *   per-runtime cli subpaths are GONE — JSR is Deno's registry, and
+ *   bun/node users install through npm (bin + dist), never jsr subpaths
  * - every relative import in src/ carries an explicit .ts/.js/.json
  *   extension (JSR's resolver does no Node-style extension hunting)
  * - every bare import is a node builtin or an entry of jsr.json's import
@@ -100,35 +101,29 @@ describe("jsr.json: package identity and version lockstep", () => {
 });
 
 describe("jsr.json: exports mirror package.json and exist on disk", () => {
-  test("CLI first — the ROOT export is the deno CLI; ./api and ./types mirror npm (owner spec, 2026-10-15)", () => {
+  test("CLI first, trimmed to three — root CLI, ./api, ./types (owner spec, 2026-10-15)", () => {
     // JSR is Deno's home registry and deno users meet the package through
     // the CLI: `deno install -g jsr:@procboss/pboss` (no subpath) must
-    // boot it, so the root export IS the CLI. The API moved to ./api —
-    // npm's root export stays its single source of truth.
+    // boot it, so the root export IS the deno CLI.
     expect(jsr.exports["."]).toBe("./src/cli-deno.ts");
+    // The API moved to ./api — npm's root export stays its source of truth.
     expect(jsr.exports["./api"]).toBe((pkg.exports["."] as { bun: string }).bun);
     expect(jsr.exports["./types"]).toBe(pkg.exports["./types"] as string);
-    // The "./cli" key is GONE — the root took over its role. A stale
-    // leftover would shadow the new layout.
-    expect(jsr.exports["./cli"]).toBeUndefined();
+    // The per-runtime cli subpaths are GONE (the 2026-10-15 trim): JSR
+    // serves Deno; bun and node users install through npm, whose bin
+    // wrapper dispatches per runtime. A stale subpath would shadow the
+    // trimmed layout, so pin the exact key set.
+    expect(Object.keys(jsr.exports).sort()).toEqual([".", "./api", "./types"]);
   });
 
-  test("the CLI export is PER-RUNTIME — one entry per runtime, each with its exact shebang (owner spec, 2026-10-13)", () => {
-    // JSR is Deno's home registry: the ROOT "." entry is the deno one
-    // (2026-10-15: cli first — it took over the old "./cli" key's role).
-    expect(jsr.exports["."]).toBe("./src/cli-deno.ts");
-    // The bun entry is the same file npm's bun condition resolves.
-    const npmCli = pkg.exports["./cli"] as { bun: string };
-    expect(jsr.exports["./cli/bun"]).toBe("./src/index.ts");
-    expect(jsr.exports["./cli/bun"]).toBe(npmCli.bun);
-    expect(jsr.exports["./cli/node"]).toBe("./src/cli-node.ts");
-
-    // Every entry's FIRST LINE is its own runtime's exact shebang — the
-    // original complaint: JSR's cli entry carried `#!/usr/bin/env bun`
-    // while deno users were the ones running it.
-    expect(readFileSync(join(REPO, "src/index.ts"), "utf8").startsWith("#!/usr/bin/env bun\n")).toBe(true);
-    // `env -S` carries the -A a process manager needs on direct execution.
+  test("the CLI entries keep their exact per-runtime shebangs (owner spec, 2026-10-13)", () => {
+    // The JSR root is the deno entry — its FIRST LINE names deno, exactly
+    // (the original complaint: the entry carried `#!/usr/bin/env bun` while
+    // deno users were the ones running it).
     expect(readFileSync(join(REPO, "src/cli-deno.ts"), "utf8").startsWith("#!/usr/bin/env -S deno run -A\n")).toBe(true);
+    // The sibling source entries stay on disk for npm/git users — each
+    // still opens with its own runtime's exact shebang.
+    expect(readFileSync(join(REPO, "src/index.ts"), "utf8").startsWith("#!/usr/bin/env bun\n")).toBe(true);
     expect(readFileSync(join(REPO, "src/cli-node.ts"), "utf8").startsWith("#!/usr/bin/env node\n")).toBe(true);
 
     // The shims boot the real CLI — no divergent copy of the entrypoint.

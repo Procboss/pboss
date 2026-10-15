@@ -1,0 +1,7 @@
+# bun test configuration. The preload is the suite's hermetic-home guard:
+# it locks PBOSS_HOME to a fresh temp dir before any test file (and thus
+# any src/ import) runs — see tests/helpers/preload-home.ts for the
+# incident it closes. Applies to every invocation: bare `bun test`, the
+# package scripts, and CI.
+[test]
+preload = ["./tests/helpers/preload-home.ts"]
